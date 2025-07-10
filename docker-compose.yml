@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-carpooling
+    restart: unless-stopped
+    ports:
+      - "3306:3306"           # Accesible externamente
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_USER: carpoolingUser
+      MYSQL_DATABASE: carpooling
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+
+volumes:
+  mysql_data:
