@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt'
 import jsonwebtoken from 'jsonwebtoken';
 import dotenv from 'dotenv';
-
+import { database } from '../database.js';
 dotenv.config();
 export const users =  [
     {
@@ -21,7 +21,10 @@ async function login(req, res) {
         return res.status(400).send({status: "Error", message: "All fields are required"});
         
     }
-    const comprobarUser = users.find(usuario => usuario.username === username)
+    const connection = await database.getConnection();
+    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
+    const comprobarUser = resultado[0][0]; 
+
     if(!comprobarUser){
         return res.status(404).send({status: "Error",message: "Login failed"})
     }
@@ -35,7 +38,7 @@ async function login(req, res) {
     const token = jsonwebtoken.sign({username: comprobarUser.username}, process.env.JWT_SECRET_KEY, {expiresIn: process.env.EXPIRATION_TIME});
 
     const cookiesOptions = {
-        expires:new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+        expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
         path: '/'
     };
     res.cookie("jwt", token, cookiesOptions);
@@ -51,21 +54,23 @@ async function register(req, res) {
         return res.status(400).send({status: "Error", message: "All fields are required"});
         
     }
-    const comprobarUser = users.find(usuario => usuario.username === username)
+    const connection = await database.getConnection();
+    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
+    const comprobarUser = resultado[0][0]; 
+    console.log(comprobarUser);
+
     if(comprobarUser){
         return res.status(404).send({status: "Error",message: "User already created"})
     }
-    // Aquí podrías agregar la lógica para guardar el usuario en la base de datos
     
-    const salt = await bcrypt.genSalt(5)
+    const salt = await bcrypt.genSalt(10)
     const hash = await bcrypt.hash(password,salt)
 
-    const newUser = {
-        username,
-        email,
-        password: hash
+    const newUserQuery = await connection.query("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", [username, email, hash]);
+    
+    if(newUserQuery[0].affectedRows === 0) {
+        return res.status(500).send({status: "Error", message: "Failed to register user"});
     }
-    users.push(newUser)
 
 
     res.status(201).send({status: "Success", message: `User registered successfully ${newUser.username}`});

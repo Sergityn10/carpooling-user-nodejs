@@ -28,25 +28,25 @@ app.use(cors({
 
 
 //funcionalidades de la aplicacion
-app.get("/api/test", authorization.isLoged, async (req, res) => {
+app.get("/api/test",await authorization.isLoged, async (req, res) => {
     res.status(200).send({status: "Success", message: "API is working correctly"})
 })
 
-app.get("/api/usuarios", authorization.isLoged, async (req, res) => {
+app.get("/api/usuarios", await authorization.isLoged, async (req, res) => {
     try {
         const connection = await database.getConnection();
-        const resultado = await connection.query("SELECT * FROM usuarios");
+        const resultado = await connection.query("SELECT * FROM users");
         return res.status(200).json(resultado[0]); // El resultado es un array, así que devolvemos el primer elemento
     } catch (error) {
         console.error("Error fetching users:", error);
         return res.status(500).json({ status: "Error", message: "Failed to fetch users" });
     }
 });
-app.get("/api/usuarios/:id", authorization.isLoged, async (req, res) => {
+app.get("/api/usuarios/:id", await authorization.isLoged, async (req, res) => {
     const { id } = req.params;
     try {
         const connection = await database.getConnection();
-        const resultado = await connection.query("SELECT * FROM usuarios WHERE id = ?", [id]);
+        const resultado = await connection.query("SELECT * FROM users WHERE id = ?", [id]);
         if (resultado[0].length === 0) {
             return res.status(404).json({ status: "Error", message: "User not found" });
         }
@@ -57,6 +57,6 @@ app.get("/api/usuarios/:id", authorization.isLoged, async (req, res) => {
     }
 });
 
-app.get("/",authorization.isLoged,(req, res)=> res.sendFile(__dirname + "/pages/login.html"))
+app.get("/",await authorization.isLoged,(req, res)=> res.sendFile(__dirname + "/pages/login.html"))
 app.post("/api/auth/login",(req, res)=> authentication.login(req, res))
 app.post("/api/auth/register",(req, res)=> authentication.register(req, res))
