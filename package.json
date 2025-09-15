@@ -18,7 +18,8 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.1",
-    "promise-mysql": "^5.2.0"
+    "promise-mysql": "^5.2.0",
+    "zod": "4.0.5"
   },
   "devDependencies": {
     "morgan": "^1.10.0",
