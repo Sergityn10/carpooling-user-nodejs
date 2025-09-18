@@ -1,12 +1,16 @@
 import z from "zod";
 
 const userSchema = z.object({
+    name: z.string().optional(),
+    surname: z.string().optional(),
+    phone: z.string().optional(),
     username: z.string(
         {   required_error: "Username is required",
             invalid_type_error: "Username must be a string" }
     ).min(3).max(50),
     email: z.email(),
-    password: z.string().min(6).max(100)
+    password: z.string().min(6).max(100),
+    
 });
 const loginSchema = z.object({
     username: z.string(

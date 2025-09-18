@@ -9,6 +9,7 @@ import { fileURLToPath } from "url"
 import {methods as authentication} from "./controllers/authentication.js"
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js"
 import {database} from "./database.js"
+import {methods as user} from "./controllers/user.js"
 
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -69,6 +70,10 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
         return res.status(500).json({ status: "Error", message: "Failed to fetch user" });
     }
 });
+
+app.patch("/api/users/:username", authorization.isLoged, (req, res) => user.updateUserPatch(req, res))
+
+app.delete("/api/users/:username", authorization.isLoged, (req, res) => user.removeUser(req, res))
 
 app.get("/",(req, res)=> res.sendFile(__dirname + "/pages/login.html"))
 app.post("/api/auth/login",(req, res)=> authentication.login(req, res))

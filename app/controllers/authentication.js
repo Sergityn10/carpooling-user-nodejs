@@ -7,6 +7,7 @@ import { UserSchemas } from '../schemas/user.js';
 import { TelegramInfo } from '../schemas/Telegram/telegramInfo.js';
 import { TelegramInfoServices } from './telegramInfo.js';
 import { authorization } from '../middlewares/authorization.js';
+import {methods as utils} from '../utils/hashing.js';
 dotenv.config();
 
 async function login(req, res) {
@@ -37,8 +38,11 @@ async function login(req, res) {
         expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        sameSite: "lax"
+        sameSite: "lax",
+        path: "/",
+        maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     };
+
     res.cookie("access_token", token, cookiesOptions);
     return res.status(200).send({status: "Success", message: "Login successful", token});
 }
@@ -61,8 +65,7 @@ async function register(req, res) {
         return res.status(404).send({status: "Error",message: "User already created"})
     }
     
-    const salt = await bcrypt.genSalt(10)
-    const hash = await bcrypt.hash(password,salt)
+    const hash = await utils.hashValue(10, password);
 
     const emailExists = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
     if (emailExists[0].length > 0) {
@@ -92,8 +95,7 @@ async function logout(req, res){
 }
 
 async function validate(req, res){
-    const token = req.cookies.access_token;
-    console.log(token)
+    const token = req.cookies.access_token
     if(!token){
         return res.status(401).send({status: "Error", message: "No token provided"});
     }
