@@ -56,6 +56,8 @@ app.get("/api/users", authorization.isLoged, async (req, res) => {
     }
 });
 
+app.get("/api/users/:username/info", (req, res) => user.getUserInfo(req, res))
+
 app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
     const { id } = req.params;
     try {

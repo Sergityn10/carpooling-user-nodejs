@@ -58,7 +58,41 @@ async function removeUser(req, res) {
     return res.status(200).send({status: "Success", message: "User deleted successfully"});
 }
 
+async function getUserInfo(req, res){
+    const { username } = req.params;
+    const connection = await database.getConnection();
+    let ListOpinions = await connection.query("SELECT * FROM comments WHERE username_trayect = ?", [username]);
+    ListOpinions = ListOpinions[0];
+    const numOpinions = ListOpinions.length;
+    let averageRating;
+    if(numOpinions === 0){
+        averageRating = 0;
+    }
+    else{
+        averageRating = ListOpinions.reduce((acc, opinion) => acc + opinion.rating, 0) / numOpinions;
+    }
+
+    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
+    const user = resultado[0][0];
+
+    const userInfo = {
+        username: user.username,
+        name: user.name,
+        surname: user.surname,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+        averageRating: averageRating,
+        numOpinions: numOpinions
+    }
+    if(!user){
+        return res.status(404).send({status: "Error", message: "User not found"});
+    }
+    return res.status(200).send({status: "Success", message: "User found successfully", data: userInfo});
+}
+
 export const methods = {
     updateUserPatch,
-    removeUser
+    removeUser,
+    getUserInfo
 }
