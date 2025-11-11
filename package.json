@@ -4,7 +4,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "nodemon --exec node app/index.js"
+    "dev": "nodemon --exec node app/index.js",
+    "runDocker": "docker run --rm -it -p 4000:4000 carpooling-user",
+    "buildDocker": "docker build -t carpooling-user .",
+    "up-stripe": "stripe listen --forward-to http://localhost:4000/api/webhook/stripe --forward-connect-to http://localhost:4000/api/webhook/stripe"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +22,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.1",
     "promise-mysql": "^5.2.0",
+    "stripe": "^19.1.0",
     "zod": "4.0.5"
   },
   "devDependencies": {

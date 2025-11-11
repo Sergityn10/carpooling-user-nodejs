@@ -2,7 +2,7 @@
 services:
   mysql:
     image: mysql:8.0
-    container_name: mysql-carpooling
+    container_name: mysql-carpooling2
     restart: unless-stopped
     ports:
       - "3306:3306"           # Accesible externamente
@@ -13,6 +13,11 @@ services:
     volumes:
       - ./mysql_data:/var/lib/mysql
     command: --default-authentication-plugin=mysql_native_password
-
+    networks:
+      - carpooling-network
 volumes:
   mysql_data:
+
+networks:
+  carpooling-network:
+    driver: bridge

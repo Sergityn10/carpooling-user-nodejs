@@ -11,11 +11,13 @@ async function isLoged(req, res, next) {
 
     // Aquí podrías verificar si el usuario tiene el rol de administrador, accediendo a la base de datos
     if (logueado) { // Cambia esto a la lógica de verificación de administrador
+        req.user = logueado;
+
         next(); // El usuario esta logueado, continuar con la siguiente función middleware
     } else {
         res.status(403).send({ status: "Error", message: "Access denied. Admins only." });
     }
-
+    
 }
 
 async function onlyAdmin(req, res, next) {
