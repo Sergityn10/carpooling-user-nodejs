@@ -28,7 +28,7 @@ dist/
 build/
 
 # Optional: Ignore MySQL dump or temp files
-*.sql
+
 *.sql.gz
 *.dump
 mysql_data/
