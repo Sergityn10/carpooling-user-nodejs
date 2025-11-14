@@ -33,7 +33,7 @@ app.use(morgan("dev")) // Middleware para registrar las peticiones HTTP en la co
 app.use(express.json())
 app.use(cookieParser())
 app.use(cors({
-    origin: ["http://localhost:5173", "http://192.168.0.36:5173", origin], // Cambia esto a la URL de tu frontend
+    origin: ["http://localhost:5173", "http://192.168.0.36:5173", origin, "*"], // Cambia esto a la URL de tu frontend
     methods: "GET,POST,PUT,PATCH,DELETE",
     credentials: true // Permite el uso de cookies
 }))
