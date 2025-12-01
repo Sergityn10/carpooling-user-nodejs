@@ -1,17 +1,11 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { createClient } from '@libsql/client';
 dotenv.config();
 
-const databaseConnection = mysql.createConnection({
-    host: process.env.DATABASE_HOST || 'localhost',
-    user: process.env.DATABASE_USER || 'root',
-    password: process.env.DATABASE_PASSWORD || 'password',
-    database: process.env.DATABASE_NAME || 'carpooling'
-})
+const database = createClient({
+    url: process.env.DB_URL,
+    authToken: process.env.DB_TOKEN,
+});
 
-const getConnection = async() => {
-    return databaseConnection
-}
-
-export const database=
- { getConnection };
+export default database;
