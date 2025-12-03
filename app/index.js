@@ -9,7 +9,7 @@ import { authorization } from "./middlewares/authorization.js"
 import { fileURLToPath } from "url"
 import {methods as authentication} from "./controllers/authentication.js"
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js"
-import {database} from "./database.js"
+import db from "./database.js"
 import {methods as user} from "./controllers/user.js"
 import {methods as webhook} from "./controllers/webhook.js"
 import {methods as disponibilidad_semanal} from "./controllers/disponibilidad_semanal.js"
@@ -46,6 +46,74 @@ app.use(cors({
 //     next();
 // });
 
+ await db.execute(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    img_perfil TEXT,
+    name TEXT,
+    phone TEXT,
+    fecha_nacimiento TEXT NULL, -- store as ISO string (YYYY-MM-DD)
+    dni TEXT NULL UNIQUE,
+    genero TEXT NULL CHECK (genero IN ('Masculino','Femenino','Otro')),
+    stripe_account TEXT,
+    stripe_customer_account TEXT,
+    ciudad TEXT NULL,
+    provincia TEXT NULL,
+    codigo_postal TEXT NULL,
+    direccion TEXT NULL ,
+    onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
+    about_me TEXT,
+    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+    updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+  );
+`);
+await db.execute(`
+CREATE TABLE IF NOT EXISTS comments (
+    -- 1. Clave primaria con autoincremento
+    id_comment INTEGER PRIMARY KEY AUTOINCREMENT, 
+    
+    -- 2. Tipos de datos más genéricos
+    id_trayecto INTEGER NOT NULL,
+    username_commentator TEXT NOT NULL,
+    username_trayect TEXT NOT NULL,
+    opinion TEXT NOT NULL,
+    rating INTEGER NOT NULL,
+    
+    -- 3. Restricción CHECK
+    CONSTRAINT chk_opinion_rating CHECK (rating >= 1 AND rating <= 10),
+    
+    -- 4. Claves foráneas (SQLite las maneja de forma diferente, pero la sintaxis es similar)
+    FOREIGN KEY (id_trayecto) REFERENCES trayectos(id),
+    FOREIGN KEY (username_commentator) REFERENCES users(username),
+    FOREIGN KEY (username_trayect) REFERENCES users(username),
+    
+    -- 5. Restricción UNIQUE (el nombre se elimina o se simplifica, se puede omitir el "KEY")
+    UNIQUE (id_trayecto, username_commentator)
+);
+`);
+await db.execute(`
+CREATE TABLE IF NOT EXISTS events (
+  -- 1. Clave primaria con TEXT
+  event_id TEXT PRIMARY KEY NOT NULL,
+  
+  -- 2. JSON se convierte a TEXT
+  data TEXT NOT NULL,
+  
+  -- 3. Cadenas de texto
+  source TEXT NOT NULL,
+  processing_error TEXT NULL,
+  status TEXT NOT NULL
+  
+  -- Nota: Las restricciones UNIQUE en la clave primaria son redundantes en SQLite
+);
+
+`);
+
+
+
 //funcionalidades de la aplicacion
 app.get("/api/test",authorization.isLoged, async (req, res) => {
     res.status(200).send({status: "Success", message: "API is working correctly"})
@@ -53,8 +121,7 @@ app.get("/api/test",authorization.isLoged, async (req, res) => {
 
 app.get("/api/users", authorization.isLoged, async (req, res) => {
     try {
-        const connection = await database.getConnection();
-        const resultado = await connection.query("SELECT * FROM users");
+        const resultado = await db.execute("SELECT * FROM users");
         return res.status(200).json(resultado[0]); // El resultado es un array, así que devolvemos el primer elemento
     } catch (error) {
         console.error("Error fetching users:", error);
@@ -66,9 +133,11 @@ app.get("/api/users/info", authorization.isLoged, (req, res) => user.getMyUserIn
 app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
     const { id } = req.params;
     try {
-        const connection = await database.getConnection();
-        const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [id]);
-        if (resultado[0].length === 0) {
+        const resultado = await db.execute({
+            sql: "SELECT * FROM users WHERE username = ?",
+            args: [id]
+        });
+        if (resultado.rows.length === 0) {
             return res.status(404).json({ status: "Error", message: "User not found" });
         }
         return res.status(200).json(resultado[0][0]);

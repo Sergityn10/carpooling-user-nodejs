@@ -4,6 +4,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+
     "dev": "nodemon --exec node app/index.js",
     "runDocker": "docker run --rm -it -p 4000:4000 carpooling-user",
     "buildDocker": "docker build -t carpooling-user .",
@@ -14,6 +15,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@libsql/client": "^0.15.15",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -22,7 +24,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.1",
     "promise-mysql": "^5.2.0",
-    "stripe": "^19.1.0",
+    "stripe": "^19.3.0",
     "zod": "4.0.5"
   },
   "devDependencies": {

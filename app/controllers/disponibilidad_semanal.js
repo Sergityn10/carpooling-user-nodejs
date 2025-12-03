@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { database } from "../database.js";
+import database from "../database.js";
 import {DisponibilidadSemanaSchemas} from "../schemas/disponibilidad_semana.js"
 
 dotenv.config();

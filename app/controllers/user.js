@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import { UserSchemas } from '../schemas/user.js';
 import { authorization } from '../middlewares/authorization.js';
-import { database } from '../database.js';
+import database from '../database.js';
 import {methods as utils} from '../utils/hashing.js';
 async function updateUserPatch(req, res) {
     const result = UserSchemas.validateUserSchemaPartial(req.body);
@@ -17,19 +17,31 @@ async function updateUserPatch(req, res) {
         return res.status(401).send({status: "Error", message: "Unauthorized"});
     }
 
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
-    const user = resultado[0][0];
+    const {rows} = await database.execute({
+        sql: "SELECT * FROM users WHERE username = ?", 
+        args: [username]
+    });
+    console.log(rows)
+    const user = rows[0];
     if(!user){
         return res.status(404).send({status: "Error", message: "User not found"});
     }
 
-    if(result.data.password){
+    if(result.data.password){   
         result.data.password = await utils.hashValue(10, result.data.password);
     }
 
-    const updateUserQuery = await connection.query("UPDATE users SET ? WHERE username = ?", [result.data, username]);
-    if(updateUserQuery[0].affectedRows === 0){
+    const keys = Object.keys(result.data);
+    if (keys.length === 0) {
+        return res.status(400).send({status: "Error", message: "No fields to update"});
+    }
+    const setClause = keys.map(k => `${k} = ?`).join(', ');
+    const args = [...keys.map(k => result.data[k]), username];
+    const updateUserQuery = await database.execute({
+        sql: `UPDATE users SET ${setClause} WHERE username = ?`,
+        args
+    });
+    if(updateUserQuery.rowsAffected === 0){
         return res.status(500).send({status: "Error", message: "Failed to update user"});
     }
     return res.status(200).send({status: "Success", message: "User updated successfully"});
@@ -43,10 +55,13 @@ async function updateMyUserPatch(req, res) {
     
     //Comprobar si el usuario existe y es el mismo que está logueado
     const findUser = req.user;
-    console.log(result);
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [findUser.username]);
-    const user = resultado[0][0];
+    console.log(`Actualizando a ${findUser.username}`)
+    const resultado = await database.execute({
+        sql: "SELECT * FROM users WHERE username = ?", 
+        args: [findUser.username]
+    });
+    console.log(resultado)
+    const user = resultado.rows[0];
     if(!user){
         return res.status(404).send({status: "Error", message: "User not found"});
     }
@@ -55,8 +70,17 @@ async function updateMyUserPatch(req, res) {
         result.data.password = await utils.hashValue(10, result.data.password);
     }
 
-    const updateUserQuery = await connection.query("UPDATE users SET ? WHERE username = ?", [result.data, findUser.username]);
-    if(updateUserQuery[0].affectedRows === 0){
+    const keys = Object.keys(result.data);
+    if (keys.length === 0) {
+        return res.status(400).send({status: "Error", message: "No fields to update"});
+    }
+    const setClause = keys.map(k => `${k} = ?`).join(', ');
+    const args = [...keys.map(k => result.data[k]), findUser.username];
+    const updateUserQuery = await database.execute({
+        sql: `UPDATE users SET ${setClause} WHERE username = ?`,
+        args
+    });
+    if(updateUserQuery.rowsAffected === 0){
         return res.status(500).send({status: "Error", message: "Failed to update user"});
     }
     return res.status(200).send({status: "Success", message: "User updated successfully"});
@@ -71,15 +95,20 @@ async function removeUser(req, res) {
          return res.status(401).send({status: "Error", message: "Unauthorized"});
      }
 
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
-    const user = resultado[0][0];
+    const { rows: userRows } = await database.execute({
+        sql: "SELECT * FROM users WHERE username = ?",
+        args: [username]
+    });
+    const user = userRows[0];
     if(!user){
         return res.status(404).send({status: "Error", message: "User not found"});
     }
 
-    const deleteUserQuery = await connection.query("DELETE FROM users WHERE username = ?", [username]);
-    if(deleteUserQuery[0].affectedRows === 0){
+    const deleteUserQuery = await database.execute({
+        sql: "DELETE FROM users WHERE username = ?",
+        args: [username]
+    });
+    if(deleteUserQuery.rowsAffected === 0){
         return res.status(500).send({status: "Error", message: "Failed to delete user"});
     }
     return res.status(200).send({status: "Success", message: "User deleted successfully"});
@@ -87,16 +116,20 @@ async function removeUser(req, res) {
 
 async function getUserInfo(req, res){
     const { username } = req.params;
-    const connection = await database.getConnection();
-
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
-    const user = resultado[0][0];
+    const { rows: userRows } = await database.execute({
+        sql: "SELECT * FROM users WHERE username = ?",
+        args: [username]
+    });
+    const user = userRows[0];
     if(!user){
         return res.status(404).send({status: "Error", message: "User not found"});
     }
 
-    let ListOpinions = await connection.query("SELECT * FROM comments WHERE username_trayect = ?", [username]);
-    ListOpinions = ListOpinions[0];
+    const opinionsQuery = await database.execute({
+        sql: "SELECT * FROM comments WHERE username_trayect = ?",
+        args: [username]
+    });
+    let ListOpinions = opinionsQuery.rows;
     const numOpinions = ListOpinions.length;
     let averageRating;
     if(numOpinions === 0){
@@ -124,10 +157,11 @@ async function getUserInfo(req, res){
 }
 async function getMyUserInfo(req, res){
     const findUser = req.user;
-    const connection = await database.getConnection();
-
-    let ListOpinions = await connection.query("SELECT * FROM comments WHERE username_trayect = ?", [findUser.username]);
-    ListOpinions = ListOpinions[0];
+    const opinionsQuery = await database.execute({
+        sql: "SELECT * FROM comments WHERE username_trayect = ?",
+        args: [findUser.username]
+    });
+    let ListOpinions = opinionsQuery.rows;
     const numOpinions = ListOpinions.length;
     let averageRating;
     if(numOpinions === 0){

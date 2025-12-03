@@ -1,6 +1,6 @@
 USE carpooling;
 
-CREATE TABLE IF NOT EXISTS `cars` (
+CREATE TABLE `cars` (
   `id_coche` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `matricula` CHAR(7) NOT NULL,
   `marca` VARCHAR(50) NOT NULL,
@@ -23,6 +23,5 @@ CREATE TABLE IF NOT EXISTS `cars` (
   CONSTRAINT `chk_marca_length` CHECK (CHAR_LENGTH(`marca`) BETWEEN 3 AND 50),
   CONSTRAINT `chk_modelo_length` CHECK (CHAR_LENGTH(`modelo`) BETWEEN 3 AND 50),
   CONSTRAINT `chk_color_length` CHECK (`color` IS NULL OR CHAR_LENGTH(`color`) BETWEEN 3 AND 50)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
+);
 ALTER TABLE `cars` ADD `year` YEAR NOT NULL;

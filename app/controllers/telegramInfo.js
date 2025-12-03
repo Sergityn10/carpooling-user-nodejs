@@ -1,4 +1,4 @@
-import { database } from "../database.js";
+import database from "../database.js";
 import { TelegramInfo } from "../schemas/Telegram/telegramInfo.js";
 
 // Helper: map DB row -> API schema shape
