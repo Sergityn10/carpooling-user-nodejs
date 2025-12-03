@@ -1,6 +1,6 @@
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
-import { database } from "../database.js";
+import database from "../database.js";
 dotenv.config()
 
 async function isLoged(req, res, next) {
@@ -55,9 +55,14 @@ async function reviseCookie(req){
     const decodificado = jsonwebtoken.verify(cookieJWT, process.env.JWT_SECRET_KEY);
 
 
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [decodificado.username]);
-    const findUser = resultado[0][0]; 
+    const resultado = await database.execute( {
+        sql: "SELECT * FROM users WHERE username = ?",
+        args: [decodificado.username]
+    });
+    console.log("Autenticando token")
+    
+    const findUser = resultado.rows[0]; 
+    console.log(findUser)
     if(!findUser) {
         res.clearCookie("access_token");
         return false;

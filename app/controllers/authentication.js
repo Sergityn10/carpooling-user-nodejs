@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt'
 import jsonwebtoken from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import { database } from '../database.js';
+import database from '../database.js';
 import { schemas } from '../schemas.js';
 import { UserSchemas } from '../schemas/user.js';
 import { TelegramInfo } from '../schemas/Telegram/telegramInfo.js';
@@ -20,9 +20,12 @@ async function login(req, res) {
     
     const { email, password } = result.data;
 
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
-    const comprobarUser = resultado[0][0]; 
+    const { rows } = await database.execute({
+        sql: "SELECT * FROM users WHERE email = ?",
+        args: [email]
+    });
+    console.log(rows)
+    const comprobarUser = rows[0]; 
 
     if(!comprobarUser){
         return res.status(404).send({status: "Error",message: "Login failed"})
@@ -57,9 +60,13 @@ async function register(req, res) {
 
 
     const { username, email, password, name } = result.data;
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE username = ?", [username]);
-    const comprobarUser = resultado[0][0]; 
+
+    const { rows: userRows } = await database.execute({
+        sql: "SELECT * FROM users WHERE username = ?",
+        args: [username]
+    });
+    console.log(userRows)
+    const comprobarUser = userRows[0]; 
 
     if(comprobarUser){
         return res.status(404).send({status: "Error",message: "User already created"})
@@ -67,8 +74,11 @@ async function register(req, res) {
     
     const hash = await utils.hashValue(10, password);
 
-    const emailExists = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
-    if (emailExists[0].length > 0) {
+    const { rows: emailRows } = await database.execute({
+        sql: "SELECT * FROM users WHERE email = ?",
+        args: [email]
+    });
+    if (emailRows.length > 0) {
         return res.status(400).send({status: "Error", message: "Email already exists"});
     }
     const customer_account = await stripe.customers.create({
@@ -80,10 +90,14 @@ async function register(req, res) {
         }
     });
 
-    const newUserQuery = await connection.query("INSERT INTO users (username, email, password, name, stripe_customer_account) VALUES (?, ?, ?, ?, ?)", [username, email, hash, name, customer_account.id]);
+
+    const insertResult = await database.execute({
+        sql: "INSERT INTO users (username, email, password, name, stripe_customer_account) VALUES (?, ?, ?, ?, ?)",
+        args: [username, email, hash, name, customer_account.id]
+    });
 
     
-    if(newUserQuery[0].affectedRows === 0) {
+    if(insertResult.rowsAffected === 0) {
         return res.status(500).send({status: "Error", message: "Failed to register user"});
     }
 
@@ -128,6 +142,7 @@ async function validate(req, res){
             username: findUser.username,
             email: findUser.email,
             img_perfil: findUser.img_perfil,
+            ciudad: findUser.ciudad,
             onboarding_ended: findUser.onboarding_ended,
             role: findUser.role
         }
@@ -140,9 +155,11 @@ async function validate(req, res){
 
 async function existEmail(req, res){
     const { email } = req.query;
-    const connection = await database.getConnection();
-    const resultado = await connection.query("SELECT * FROM users WHERE email = ?", [email]);
-    const comprobarUser = resultado[0][0]; 
+    const { rows: emailCheckRows } = await db.execute({
+        sql: "SELECT * FROM users WHERE email = ?",
+        args: [email]
+    });
+    const comprobarUser = emailCheckRows[0]; 
     if(comprobarUser){
         return res.status(404).send({status: "Error",message: "Email already exists"})
     }

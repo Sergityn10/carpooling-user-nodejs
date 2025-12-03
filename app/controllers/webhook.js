@@ -1,4 +1,4 @@
-import { database } from "../database.js";
+import database  from "../database.js";
 export const status = {
     1: "pending",
     2: "succeeded",
@@ -18,21 +18,26 @@ async function createEvent(req, res){
     data = JSON.stringify(req.body);
 
 
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "INSERT INTO events (event_id, data, source, status) VALUES (?, ?, ?, ?)",
-        [req.body.id,data, source, status[1]]
-    );
+    const result = await database.execute({
+        sql: "INSERT INTO events (event_id, data, source, status) VALUES (?, ?, ?, ?)",
+        args: [req.body.id, data, source, status[1]]
+    });
 
     try {
         if(source === "stripe"){
             await handleStripeEvent(req, res);
         }
     } catch (error) {
-        const [err] = await connection.query("UPDATE events SET status = ?, processing_errors = ? WHERE event_id = ?", [status[3], error.message, req.body.id]);
+        await database.execute({
+            sql: "UPDATE events SET status = ?, processing_errors = ? WHERE event_id = ?",
+            args: [status[3], error.message, req.body.id]
+        });
     }
     finally{
-        const [re] = await connection.query("UPDATE events SET status = ? WHERE event_id = ?", [status[2], req.body.id]);
+        await database.execute({
+            sql: "UPDATE events SET status = ? WHERE event_id = ?",
+            args: [status[2], req.body.id]
+        });
     }
     
     return res.status(200).send({status: "Success", message: "Event created successfully"});
@@ -95,24 +100,22 @@ async function handlePaymentIntentCreated(jsonData){
     console.log("Entro en el payment intent created")
     let payment_id = paymentIntent.id;
     console.log(payment_id)
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "INSERT INTO payment_intents (amount, currency, destination_account, state,description,  sender_account, payment_id) VALUES (?, ?, ?, ?, ?, ?,?)",
-        [paymentIntent.amount, paymentIntent.currency, paymentIntent.transfer_data.destination, paymentIntent.status,paymentIntent.description,paymentIntent.customer, payment_id]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "INSERT INTO payment_intents (amount, currency, destination_account, state, description, sender_account, payment_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        args: [paymentIntent.amount, paymentIntent.currency, paymentIntent.transfer_data.destination, paymentIntent.status, paymentIntent.description, paymentIntent.customer, payment_id]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
 }
 async function handlePaymentIntentUpdated(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        [paymentIntent.status, paymentIntent.id]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
 
@@ -120,12 +123,11 @@ async function handlePaymentIntentUpdated(jsonData){
 async function handlePaymentIntentSucceeded(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        [paymentIntent.status, paymentIntent.id]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
     
@@ -133,12 +135,11 @@ async function handlePaymentIntentSucceeded(jsonData){
 async function handlePaymentIntentFailed(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        [paymentIntent.status, paymentIntent.id]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
     
@@ -146,36 +147,33 @@ async function handlePaymentIntentFailed(jsonData){
 async function handlePaymentIntentCanceled(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        [paymentIntent.status, paymentIntent.id]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
     
 }
 async function handleCustomerUpdated(jsonData){
     const customer = jsonData.object;
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
-        [customer.id, customer.metadata.username]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
+        args: [customer.id, customer.metadata.username]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
 }
 async function handleCustomerCreated(jsonData){
     console.log("entre en el customer created")
     const customer = jsonData.object;
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-        "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
-        [customer.id, customer.metadata.username]
-    );
-    if(result.affectedRows === 0){
+    const result = await database.execute({
+        sql: "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
+        args: [customer.id, customer.metadata.username]
+    });
+    if(result.rowsAffected === 0){
         return 
     }
 }
@@ -184,67 +182,73 @@ async function handleCheckoutSessionUpdated(jsonData){
 }
 async function handleCheckoutSessionCompleted(jsonData){
     let checkout_session = jsonData.object;
-    const connection = await database.getConnection();
-    let reserva = await connection.query("SELECT id_reserva FROM reservas WHERE stripe_checkout_session_id = ?", [checkout_session.id]);
-    if(reserva[0].length === 0){
+    const reservaQuery = await database.execute({
+        sql: "SELECT id_reserva FROM reservas WHERE stripe_checkout_session_id = ?",
+        args: [checkout_session.id]
+    });
+    if(reservaQuery.rows.length === 0){
         return 
     }
-    reserva = reserva[0][0];
+    let reserva = reservaQuery.rows[0];
 
-    const [result] = await connection.query(
-        "UPDATE reservas SET status = ?, stripe_payment_intent_id = ?, stripe_payment_intent_status = ? WHERE id_reserva = ?",
-        [status[8], checkout_session.payment_intent, checkout_session.payment_status, reserva.id_reserva]
-    );
+    await database.execute({
+        sql: "UPDATE reservas SET status = ?, stripe_payment_intent_id = ?, stripe_payment_intent_status = ? WHERE id_reserva = ?",
+        args: [status[8], checkout_session.payment_intent, checkout_session.payment_status, reserva.id_reserva]
+    });
 
 }
 
 async function handleCheckoutSessionExpired(jsonData){
         let checkout_session = jsonData.object;
-    const connection = await database.getConnection();
-    let reserva = await connection.query("SELECT id_reserva, id_trayecto FROM reservas WHERE stripe_checkout_session_id = ?", [checkout_session.id]);
-    if(reserva[0].length === 0){
+    const reservaQuery = await database.execute({
+        sql: "SELECT id_reserva, id_trayecto FROM reservas WHERE stripe_checkout_session_id = ?",
+        args: [checkout_session.id]
+    });
+    if(reservaQuery.rows.length === 0){
         return 
     }
-    reserva = reserva[0][0];
+    let reserva = reservaQuery.rows[0];
 
-    const [result] = await connection.query(
-        "DELETE FROM reservas WHERE id_reserva = ?",
-        [reserva.id_reserva]
-    );
+    await database.execute({
+        sql: "DELETE FROM reservas WHERE id_reserva = ?",
+        args: [reserva.id_reserva]
+    });
 
-    const [result2] = await connection.query(
-        "SELECT disponible FROM trayectos WHERE id = ?",
-        [reserva.id_trayecto]
-    );
-    const disponible = result2[0][0].disponible;
+    const disponibleQuery = await database.execute({
+        sql: "SELECT disponible FROM trayectos WHERE id = ?",
+        args: [reserva.id_trayecto]
+    });
+    const disponible = disponibleQuery.rows[0].disponible;
     disponible++;
 
-    const [trayecto] = await connection.query(
-        "UPDATE trayectos SET disponible = ? WHERE id = ?",
-        [disponible, reserva.id_trayecto]
-    );
+    await database.execute({
+        sql: "UPDATE trayectos SET disponible = ? WHERE id = ?",
+        args: [disponible, reserva.id_trayecto]
+    });
 
 }
 async function handleAccountUpdated(jsonData){
 
-    const connection = await database.getConnection();
-    let account = await connection.query("SELECT * FROM accounts WHERE stripe_account_id = ?", [jsonData.object.id]);
+    const accountQuery = await database.execute({
+        sql: "SELECT * FROM accounts WHERE stripe_account_id = ?",
+        args: [jsonData.object.id]
+    });
 
-    if(account[0].length === 0){
+    if(accountQuery.rows.length === 0){
         return 
     }
-    account = account[0][0];
+    let account = accountQuery.rows[0];
 
     //ACTUALIZAR LA Cuenta
-    const [result] = await connection.query(
-        "UPDATE accounts SET charges_enabled = ?, transfers_enabled = ?, details_submitted = ? WHERE stripe_account_id = ?",
-        [jsonData.object.charges_enabled, jsonData.object.payouts_enabled, jsonData.object.details_submitted, jsonData.object.id]
-    );
+    await database.execute({
+        sql: "UPDATE accounts SET charges_enabled = ?, transfers_enabled = ?, details_submitted = ? WHERE stripe_account_id = ?",
+        args: [jsonData.object.charges_enabled, jsonData.object.payouts_enabled, jsonData.object.details_submitted, jsonData.object.id]
+    });
 
-    const [updatedUser] = await connection.query(
-        "UPDATE users SET onboarding_ended = ? WHERE stripe_account = ?",
-        [true, account.stripe_account_id]
-    );
+    await database.execute({
+        sql: "UPDATE users SET onboarding_ended = ? WHERE stripe_account = ?",
+        args: [true, account.stripe_account_id]
+    });
 
     
 }

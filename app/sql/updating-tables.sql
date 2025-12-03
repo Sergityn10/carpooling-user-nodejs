@@ -8,12 +8,12 @@ ADD COLUMN img_perfil MEDIUMTEXT NULL AFTER password;
   ADD COLUMN  name VARCHAR(100) NULL BEFORE username;
 
 ALTER TABLE `users`
-  ADD COLUMN IF NOT EXISTS name VARCHAR(100) NULL,
-  ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NULL,
-  ADD COLUMN IF NOT EXISTS fecha_nacimiento DATE NOT NULL,
-  ADD COLUMN IF NOT EXISTS DNI CHAR(9) NOT NULL,
-  ADD COLUMN IF NOT EXISTS genero ENUM('Masculino','Femenino','Otro') NOT NULL,
-  ADD COLUMN IF NOT EXISTS stripe_account VARCHAR(255) NULL;
+  ADD COLUMN name VARCHAR(100) NULL,
+  ADD COLUMN phone VARCHAR(20) NULL,
+  ADD COLUMN fecha_nacimiento DATE NOT NULL DEFAULT '1970-01-01',
+  ADD COLUMN DNI CHAR(9) NOT NULL,
+  ADD COLUMN genero ENUM('Masculino','Femenino','Otro') NOT NULL,
+  ADD COLUMN stripe_account VARCHAR(255) NULL;
 
 
 -- 2) Forzar tipos y tamaños finales (puede fallar si hay datos incompatibles)
@@ -30,23 +30,25 @@ ALTER TABLE `users`
 USE `carpooling`;
 
 -- 0) Crear la tabla base si no existe con la estructura final deseada
-CREATE TABLE IF NOT EXISTS `users` (
+CREATE TABLE `users` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `username` VARCHAR(50) NOT NULL,
   `email` VARCHAR(50) NOT NULL,
   `password` VARCHAR(255) NOT NULL,
+  `img_perfil` MEDIUMTEXT NULL,
   `name` VARCHAR(100) NULL,
   `phone` VARCHAR(20) NULL,
-  `telefono` VARCHAR(20) NOT NULL,
-  `img_perfil` MEDIUMTEXT NULL,
   `fecha_nacimiento` DATE NOT NULL,
+  `DNI` CHAR(9) NOT NULL,
+  `genero` ENUM('Masculino','Femenino','Otro') NOT NULL,
+  `stripe_account` VARCHAR(255) NULL,
+  `stripe_customer_account` VARCHAR(255) NULL,
   `ciudad` VARCHAR(100) NOT NULL,
   `provincia` VARCHAR(100) NOT NULL,
   `codigo_postal` VARCHAR(10) NOT NULL,
   `direccion` VARCHAR(255) NOT NULL,
-  `dni` CHAR(9) NOT NULL,
-  `genero` ENUM('Masculino','Femenino','Otro') NOT NULL,
-  `stripe_account` VARCHAR(255) NULL,
+  `onboarding_ended` BOOLEAN NOT NULL DEFAULT FALSE,
+  `about_me` VARCHAR(255) NULL,
   `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -131,7 +133,7 @@ ALTER TABLE carpooling.events
 ADD PRIMARY KEY (event_id);
 
 ALTER TABLE users
-  ADD COLUMN IF NOT EXISTS onboarding_end TIMESTAMP NULL;
+  ADD COLUMN IF NOT EXISTS onboarding_ended TIMESTAMP NULL;
 
 UPDATE users
 SET onboarding_end = NOW()
