@@ -4,7 +4,6 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-
     "dev": "nodemon --exec node app/index.js",
     "runDocker": "docker run --rm -it -p 4000:4000 carpooling-user",
     "buildDocker": "docker build -t carpooling-user .",
@@ -21,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.1.0",
     "express": "^5.1.0",
+    "google-auth-library": "^10.5.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.1",
     "promise-mysql": "^5.2.0",
