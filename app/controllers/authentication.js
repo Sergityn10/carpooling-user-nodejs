@@ -7,7 +7,7 @@ import { UserSchemas } from '../schemas/user.js';
 import { TelegramInfo } from '../schemas/Telegram/telegramInfo.js';
 import { TelegramInfoServices } from './telegramInfo.js';
 import { authorization } from '../middlewares/authorization.js';
-import {methods as utils} from '../utils/hashing.js';
+import { methods as utils } from '../utils/hashing.js';
 import Stripe from 'stripe';
 import { OAuth2Client } from 'google-auth-library';
 dotenv.config();
@@ -18,9 +18,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 async function login(req, res) {
     const result = UserSchemas.validateLogin(req.body);
     if (!result.success) {
-        return res.status(400).send({status: "Error", message: JSON.parse(result.error.message)});
+        return res.status(400).send({ status: "Error", message: JSON.parse(result.error.message) });
     }
-    
+
     const { email, password } = result.data;
 
     const { rows } = await database.execute({
@@ -28,22 +28,22 @@ async function login(req, res) {
         args: [email]
     });
     console.log(rows)
-    const comprobarUser = rows[0]; 
+    const comprobarUser = rows[0];
 
-    if(!comprobarUser){
-        return res.status(404).send({status: "Error",message: "Login failed"})
+    if (!comprobarUser) {
+        return res.status(404).send({ status: "Error", message: "Login failed" })
     }
 
-    const isPasswordValid = await bcrypt.compare(password, comprobarUser.password) 
+    const isPasswordValid = await bcrypt.compare(password, comprobarUser.password)
     console.log(isPasswordValid)
-    if(!isPasswordValid) {
-        return res.status(404).send({status: "Error",message: "Login failed"})
+    if (!isPasswordValid) {
+        return res.status(404).send({ status: "Error", message: "Login failed" })
     }
 
-    const token = jsonwebtoken.sign({username: comprobarUser.username, email}, process.env.JWT_SECRET_KEY, {expiresIn: process.env.EXPIRATION_TIME});
+    const token = jsonwebtoken.sign({ username: comprobarUser.username, email }, process.env.JWT_SECRET_KEY, { expiresIn: process.env.EXPIRATION_TIME });
 
     const cookiesOptions = {
-        expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+        expires: new Date(Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
@@ -52,13 +52,13 @@ async function login(req, res) {
     };
 
     res.cookie("access_token", token, cookiesOptions);
-    return res.status(200).send({status: "Success", message: `Login successful`, username: comprobarUser.username, token, img_perfil: comprobarUser.img_perfil, onboarding_ended: comprobarUser.onboarding_ended});
+    return res.status(200).send({ status: "Success", message: `Login successful`, username: comprobarUser.username, token, img_perfil: comprobarUser.img_perfil, onboarding_ended: comprobarUser.onboarding_ended });
 }
 
 async function register(req, res) {
     const result = UserSchemas.validateRegisterSchema(req.body);
     if (!result.success) {
-        return res.status(400).send({status: "Error", message: JSON.parse(result.error.message)});
+        return res.status(400).send({ status: "Error", message: JSON.parse(result.error.message) });
     }
 
 
@@ -69,12 +69,12 @@ async function register(req, res) {
         args: [email]
     });
     console.log(userRows)
-    const comprobarUser = userRows[0]; 
+    const comprobarUser = userRows[0];
 
-    if(comprobarUser){
-        return res.status(404).send({status: "Error",message: "User already created"})
+    if (comprobarUser) {
+        return res.status(404).send({ status: "Error", message: "User already created" })
     }
-    
+
     const hash = await utils.hashValue(10, password);
 
     const { rows: emailRows } = await database.execute({
@@ -82,7 +82,7 @@ async function register(req, res) {
         args: [email]
     });
     if (emailRows.length > 0) {
-        return res.status(400).send({status: "Error", message: "Email already exists"});
+        return res.status(400).send({ status: "Error", message: "Email already exists" });
     }
     const customer_account = await stripe.customers.create({
         name: name,
@@ -99,17 +99,17 @@ async function register(req, res) {
         args: [username, email, hash, name, customer_account.id]
     });
 
-    
-    if(insertResult.rowsAffected === 0) {
-        return res.status(500).send({status: "Error", message: "Failed to register user"});
+
+    if (insertResult.rowsAffected === 0) {
+        return res.status(500).send({ status: "Error", message: "Failed to register user" });
     }
 
 
 
-        const token = jsonwebtoken.sign({username: username}, process.env.JWT_SECRET_KEY, {expiresIn: process.env.EXPIRATION_TIME});
+    const token = jsonwebtoken.sign({ username: username }, process.env.JWT_SECRET_KEY, { expiresIn: process.env.EXPIRATION_TIME });
 
     const cookiesOptions = {
-        expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+        expires: new Date(Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
@@ -118,13 +118,26 @@ async function register(req, res) {
     };
 
     res.cookie("access_token", token, cookiesOptions);
-    return res.status(201).send({status: "Success", message: `User registered successfully ${username}`, token});
+    return res.status(201).send({ status: "Success", message: `User registered successfully ${username}`, token });
 
 }
-async function oauthGoogle(req, res){
+
+async function oauthGoogle(req, res) {
     res.header("Access-Control-Allow-origin", "http://localhost:5173")
     res.header("Referrer-Policy", "no-referrer-when-downgrade")
-    const redirectUrl = 'http://localhost:4000/api/auth/oauth/userInfo'
+    const method = req.query.method;
+    let redirectUrl
+    console.log(method)
+    switch (method) {
+        case "login":
+            redirectUrl = 'http://localhost:4000/api/auth/oauth/login'
+            break;
+        case "register":
+            redirectUrl = 'http://localhost:4000/api/auth/oauth/register'
+            break;
+        default:
+            return res.status(400).send({ status: "Error", message: "Invalid method" });
+    }
     const oauth2Client = new OAuth2Client(
         client_id,
         secret_id,
@@ -136,26 +149,26 @@ async function oauthGoogle(req, res){
         scope: 'profile openid email',
         prompt: 'consent'
     })
-    res.status(200).json({url: authorizeUrl})
+    res.status(200).json({ url: authorizeUrl })
 
 }
 
-async function logout(req, res){
+async function logout(req, res) {
     res.clearCookie("access_token");
-    return res.status(200).send({status: "Success", message: "Logout successful"});
+    return res.status(200).send({ status: "Success", message: "Logout successful" });
 }
 
-async function validate(req, res){
+async function validate(req, res) {
     try {
 
-    const token = req.cookies.access_token
+        const token = req.cookies.access_token
 
-    if(!token){
-        return res.status(401).send({status: "Error", message: "No token provided"});
-    }
+        if (!token) {
+            return res.status(401).send({ status: "Error", message: "No token provided" });
+        }
         const findUser = await authorization.reviseCookie(req);
-        if(!findUser){
-            return res.status(401).send({status: "Error", message: "Invalid token"});
+        if (!findUser) {
+            return res.status(401).send({ status: "Error", message: "Invalid token" });
         }
 
 
@@ -167,24 +180,24 @@ async function validate(req, res){
             onboarding_ended: findUser.onboarding_ended,
             role: findUser.role
         }
-        return res.status(200).send({status: "Success", message: "Token is valid",token, data: user});
+        return res.status(200).send({ status: "Success", message: "Token is valid", token, data: user });
     } catch (error) {
         res.clearCookie("access_token");
-        return res.status(401).send({status: "Error", message: "Invalid token"});
+        return res.status(401).send({ status: "Error", message: "Invalid token" });
     }
 }
 
-async function existEmail(req, res){
+async function existEmail(req, res) {
     const { email } = req.query;
     const { rows: emailCheckRows } = await db.execute({
         sql: "SELECT * FROM users WHERE email = ?",
         args: [email]
     });
-    const comprobarUser = emailCheckRows[0]; 
-    if(comprobarUser){
-        return res.status(404).send({status: "Error",message: "Email already exists"})
+    const comprobarUser = emailCheckRows[0];
+    if (comprobarUser) {
+        return res.status(404).send({ status: "Error", message: "Email already exists" })
     }
-    return res.status(200).send({status: "Success", message: "Email not exists"});
+    return res.status(200).send({ status: "Success", message: "Email not exists" });
 }
 
 
