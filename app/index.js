@@ -7,14 +7,14 @@ import morgan from "morgan"
 import cors from "cors"
 import { authorization } from "./middlewares/authorization.js"
 import { fileURLToPath } from "url"
-import {methods as authentication} from "./controllers/authentication.js"
+import { methods as authentication } from "./controllers/authentication.js"
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js"
 import db from "./database.js"
-import {methods as user} from "./controllers/user.js"
-import {methods as webhook} from "./controllers/webhook.js"
-import {methods as disponibilidad_semanal} from "./controllers/disponibilidad_semanal.js"
+import { methods as user } from "./controllers/user.js"
+import { methods as webhook } from "./controllers/webhook.js"
+import { methods as disponibilidad_semanal } from "./controllers/disponibilidad_semanal.js"
 import { methods as payment } from "./controllers/payment.js"
-import {methods as cars} from "./controllers/cars.js"
+import { methods as cars } from "./controllers/cars.js"
 import { OAuth2Client } from "google-auth-library"
 import { getUserData } from "./providers/google-auth.js"
 import jsonwebtoken from "jsonwebtoken"
@@ -25,7 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const origin = process.env.ORIGIN
 const app = express()
 app.disable("x-powered-by") // Desactiva el encabezado x-powered-by
-app.set("port",4000)
+app.set("port", 4000)
 app.listen(app.get("port"), () => {
     console.log("Servidor iniciado en el puerto " + app.get("port"))
 })
@@ -52,7 +52,7 @@ app.use(cors({
 //     next();
 // });
 
- await db.execute(`
+await db.execute(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
@@ -149,8 +149,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 
 //funcionalidades de la aplicacion
-app.get("/api/test",authorization.isLoged, async (req, res) => {
-    res.status(200).send({status: "Success", message: "API is working correctly"})
+app.get("/api/test", authorization.isLoged, async (req, res) => {
+    res.status(200).send({ status: "Success", message: "API is working correctly" })
 })
 
 app.get("/api/users", authorization.isLoged, async (req, res) => {
@@ -188,54 +188,55 @@ app.patch("/api/users", authorization.isLoged, (req, res) => user.updateMyUserPa
 
 app.delete("/api/users/:username", authorization.isLoged, (req, res) => user.removeUser(req, res))
 
-app.get("/",(req, res)=> res.sendFile(__dirname + "/pages/login.html"))
-app.post("/api/auth/login",(req, res)=> authentication.login(req, res))
+app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"))
+app.post("/api/auth/login", (req, res) => authentication.login(req, res))
 app.get("/api/auth/register/email/:email", (req, res) => authentication.existEmail(req, res))
-app.post("/api/auth/register",(req, res)=> authentication.register(req, res))
-app.get("/api/auth/logout",(req, res)=> authentication.logout(req, res))
-app.post("/api/auth/refresh",(req, res)=> authentication.refresh(req, res))
-app.get("/api/auth/validate",(req, res)=> authentication.validate(req, res))
+app.post("/api/auth/register", (req, res) => authentication.register(req, res))
+app.get("/api/auth/logout", (req, res) => authentication.logout(req, res))
+app.post("/api/auth/refresh", (req, res) => authentication.refresh(req, res))
+app.get("/api/auth/validate", (req, res) => authentication.validate(req, res))
 app.post("/api/auth/oauth", (req, res) => authentication.oauthGoogle(req, res))
 
-app.get('/api/auth/oauth/userInfo', async (req, res) => {
+app.get('/api/auth/oauth/register', async (req, res) => {
     const code = req.query.code;
-    const backendRedirectUrl = 'http://localhost:4000/api/auth/oauth/userInfo'; // URL usada en el paso 1
-    
+    const backendRedirectUrl = 'http://localhost:4000/api/auth/oauth/register'; // URL usada en el paso 1
     // 1. URL de tu frontend (ajusta según tu configuración)
-    const frontendUrl = "http://localhost:5173/oauth-callback"; 
-
-    try{
+    const successUrl = "http://localhost:5173/oauth-callback";
+    const frontendUrl = "http://localhost:5173/register";
+    try {
         const oauth2Client = new OAuth2Client(
             client_id,
             secret_id,
             backendRedirectUrl // Importante para el intercambio de código
         );
-        
+
         // 2. Intercambio de código por tokens
         const result = await oauth2Client.getToken(code);
         const { tokens } = result;
         await oauth2Client.setCredentials(tokens);
         // 3. Obtener la información del usuario de Google
         const googleUserData = await getUserData(tokens.access_token);
-        
+
         // 4. (Opcional) Buscar o crear el usuario en tu base de datos
         // ... Lógica para verificar si el usuario existe y obtener 'comprobarUser'
         console.log(googleUserData)
         const comprobarUser = await dbUtils.existUser(googleUserData.email);
 
-        if(comprobarUser){
-            return res.status(400).send({status: "Error", message: "User already exists"});
+        if (comprobarUser) {
+            res.redirect(`${frontendUrl}?error=user_exists`);
+            return;
         }
+
         const username = dbUtils.createUsername(googleUserData.name)
         const userResult = await dbUtils.createUser({
-                 username,
-                 email: googleUserData.email,
-                 password: '',
-                 name: googleUserData.name
-             }, 'google', googleUserData.sub);
-        
+            username,
+            email: googleUserData.email,
+            password: '',
+            name: googleUserData.name
+        }, 'google', googleUserData.sub);
+
         // 5. Generar un Token JWT para la sesión
-        
+
         const payload = {
             username: googleUserData.name, // O el nombre de usuario de tu DB
             email: googleUserData.email
@@ -248,7 +249,7 @@ app.get('/api/auth/oauth/userInfo', async (req, res) => {
         const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
         // 7. Redirigir al frontend
         res.cookie("access_token", jwtToken, {
-            expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+            expires: new Date(Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
             httpOnly: true,
             secure: process.env.NODE_ENV === "production",
             sameSite: "lax",
@@ -258,9 +259,75 @@ app.get('/api/auth/oauth/userInfo', async (req, res) => {
         res.redirect(finalRedirectUrl);
 
     }
-    catch(error){
+    catch (error) {
         console.error("Error en el flujo OAuth:", error);
-        
+
+        // En caso de error, redirige al frontend con un mensaje de error
+        const errorRedirectUrl = `${frontendUrl}?error=auth_failed`;
+        res.redirect(errorRedirectUrl);
+    }
+});
+
+app.get('/api/auth/oauth/login', async (req, res) => {
+    const code = req.query.code;
+    const backendRedirectUrl = 'http://localhost:4000/api/auth/oauth/login'; // URL usada en el paso 1
+    // 1. URL de tu frontend (ajusta según tu configuración)
+    const successUrl = "http://localhost:5173";
+    const frontendUrl = "http://localhost:5173/login";
+    try {
+        const oauth2Client = new OAuth2Client(
+            client_id,
+            secret_id,
+            backendRedirectUrl // Importante para el intercambio de código
+        );
+
+        // 2. Intercambio de código por tokens
+        const result = await oauth2Client.getToken(code);
+        const { tokens } = result;
+        await oauth2Client.setCredentials(tokens);
+        // 3. Obtener la información del usuario de Google
+        const googleUserData = await getUserData(tokens.access_token);
+
+        // 4. (Opcional) Buscar o crear el usuario en tu base de datos
+        // ... Lógica para verificar si el usuario existe y obtener 'comprobarUser'
+        const comprobarUser = await dbUtils.getUser(googleUserData.email);
+
+        if (!comprobarUser) {
+            res.redirect(`${frontendUrl}?error=user_no_exists`);
+            return;
+        }
+        if (comprobarUser.auth_method !== "google") {
+            res.redirect(`${frontendUrl}?error=auth_method_not_google`);
+            return;
+        }
+
+        // 5. Generar un Token JWT para la sesión
+
+        const payload = {
+            username: comprobarUser.username, // O el nombre de usuario de tu DB
+            email: comprobarUser.email
+        };
+        const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
+            expiresIn: process.env.EXPIRATION_TIME
+        });
+
+        // 6. Construir la URL de Redirección con parámetros
+        const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
+        // 7. Redirigir al frontend
+        res.cookie("access_token", jwtToken, {
+            expires: new Date(Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/",
+            maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
+        });
+        res.redirect(finalRedirectUrl);
+
+    }
+    catch (error) {
+        console.error("Error en el flujo OAuth:", error);
+
         // En caso de error, redirige al frontend con un mensaje de error
         const errorRedirectUrl = `${frontendUrl}?error=auth_failed`;
         res.redirect(errorRedirectUrl);
