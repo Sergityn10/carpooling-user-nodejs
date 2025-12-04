@@ -9,7 +9,10 @@ import { TelegramInfoServices } from './telegramInfo.js';
 import { authorization } from '../middlewares/authorization.js';
 import {methods as utils} from '../utils/hashing.js';
 import Stripe from 'stripe';
+import { OAuth2Client } from 'google-auth-library';
 dotenv.config();
+const client_id = process.env.GOOGLE_CLIENT_ID
+const secret_id = process.env.GOOGLE_OAUTH
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 async function login(req, res) {
@@ -37,7 +40,7 @@ async function login(req, res) {
         return res.status(404).send({status: "Error",message: "Login failed"})
     }
 
-    const token = jsonwebtoken.sign({username: comprobarUser.username}, process.env.JWT_SECRET_KEY, {expiresIn: process.env.EXPIRATION_TIME});
+    const token = jsonwebtoken.sign({username: comprobarUser.username, email}, process.env.JWT_SECRET_KEY, {expiresIn: process.env.EXPIRATION_TIME});
 
     const cookiesOptions = {
         expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
@@ -62,8 +65,8 @@ async function register(req, res) {
     const { username, email, password, name } = result.data;
 
     const { rows: userRows } = await database.execute({
-        sql: "SELECT * FROM users WHERE username = ?",
-        args: [username]
+        sql: "SELECT * FROM users WHERE email = ?",
+        args: [email]
     });
     console.log(userRows)
     const comprobarUser = userRows[0]; 
@@ -118,6 +121,24 @@ async function register(req, res) {
     return res.status(201).send({status: "Success", message: `User registered successfully ${username}`, token});
 
 }
+async function oauthGoogle(req, res){
+    res.header("Access-Control-Allow-origin", "http://localhost:5173")
+    res.header("Referrer-Policy", "no-referrer-when-downgrade")
+    const redirectUrl = 'http://localhost:4000/api/auth/oauth/userInfo'
+    const oauth2Client = new OAuth2Client(
+        client_id,
+        secret_id,
+        redirectUrl
+    )
+
+    const authorizeUrl = oauth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: 'profile openid email',
+        prompt: 'consent'
+    })
+    res.status(200).json({url: authorizeUrl})
+
+}
 
 async function logout(req, res){
     res.clearCookie("access_token");
@@ -170,6 +191,7 @@ async function existEmail(req, res){
 export const methods = {
     login,
     register,
+    oauthGoogle,
     logout,
     validate,
     existEmail

@@ -15,6 +15,10 @@ import {methods as webhook} from "./controllers/webhook.js"
 import {methods as disponibilidad_semanal} from "./controllers/disponibilidad_semanal.js"
 import { methods as payment } from "./controllers/payment.js"
 import {methods as cars} from "./controllers/cars.js"
+import { OAuth2Client } from "google-auth-library"
+import { getUserData } from "./providers/google-auth.js"
+import jsonwebtoken from "jsonwebtoken"
+import { methods as dbUtils } from "./utils/db.js"
 dotenv.config()
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -26,6 +30,8 @@ app.listen(app.get("port"), () => {
     console.log("Servidor iniciado en el puerto " + app.get("port"))
 })
 
+const client_id = process.env.GOOGLE_CLIENT_ID
+const secret_id = process.env.GOOGLE_OAUTH
 
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(__dirname + "\\public"))
@@ -51,7 +57,7 @@ app.use(cors({
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
-    password TEXT NOT NULL,
+    password TEXT NULL,
     img_perfil TEXT,
     name TEXT,
     phone TEXT,
@@ -66,6 +72,8 @@ app.use(cors({
     direccion TEXT NULL ,
     onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
     about_me TEXT,
+    auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
+    google_id TEXT NULL,
     created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
   );
@@ -112,6 +120,32 @@ CREATE TABLE IF NOT EXISTS events (
 
 `);
 
+await db.execute(`
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password TEXT NULL,
+    img_perfil TEXT,
+    name TEXT,
+    phone TEXT,
+    fecha_nacimiento TEXT NULL, -- store as ISO string (YYYY-MM-DD)
+    dni TEXT NULL UNIQUE,
+    genero TEXT NULL CHECK (genero IN ('Masculino','Femenino','Otro')),
+    stripe_account TEXT,
+    stripe_customer_account TEXT,
+    ciudad TEXT NULL,
+    provincia TEXT NULL,
+    codigo_postal TEXT NULL,
+    direccion TEXT NULL ,
+    onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
+    about_me TEXT,
+    auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
+    google_id TEXT NULL,
+    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+    updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+  );
+  `)
 
 
 //funcionalidades de la aplicacion
@@ -161,6 +195,77 @@ app.post("/api/auth/register",(req, res)=> authentication.register(req, res))
 app.get("/api/auth/logout",(req, res)=> authentication.logout(req, res))
 app.post("/api/auth/refresh",(req, res)=> authentication.refresh(req, res))
 app.get("/api/auth/validate",(req, res)=> authentication.validate(req, res))
+app.post("/api/auth/oauth", (req, res) => authentication.oauthGoogle(req, res))
+
+app.get('/api/auth/oauth/userInfo', async (req, res) => {
+    const code = req.query.code;
+    const backendRedirectUrl = 'http://localhost:4000/api/auth/oauth/userInfo'; // URL usada en el paso 1
+    
+    // 1. URL de tu frontend (ajusta según tu configuración)
+    const frontendUrl = "http://localhost:5173/oauth-callback"; 
+
+    try{
+        const oauth2Client = new OAuth2Client(
+            client_id,
+            secret_id,
+            backendRedirectUrl // Importante para el intercambio de código
+        );
+        
+        // 2. Intercambio de código por tokens
+        const result = await oauth2Client.getToken(code);
+        const { tokens } = result;
+        await oauth2Client.setCredentials(tokens);
+        // 3. Obtener la información del usuario de Google
+        const googleUserData = await getUserData(tokens.access_token);
+        
+        // 4. (Opcional) Buscar o crear el usuario en tu base de datos
+        // ... Lógica para verificar si el usuario existe y obtener 'comprobarUser'
+        console.log(googleUserData)
+        const comprobarUser = await dbUtils.existUser(googleUserData.email);
+
+        if(comprobarUser){
+            return res.status(400).send({status: "Error", message: "User already exists"});
+        }
+        const username = dbUtils.createUsername(googleUserData.name)
+        const userResult = await dbUtils.createUser({
+                 username,
+                 email: googleUserData.email,
+                 password: '',
+                 name: googleUserData.name
+             }, 'google', googleUserData.sub);
+        
+        // 5. Generar un Token JWT para la sesión
+        
+        const payload = {
+            username: googleUserData.name, // O el nombre de usuario de tu DB
+            email: googleUserData.email
+        };
+        const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
+            expiresIn: process.env.EXPIRATION_TIME
+        });
+
+        // 6. Construir la URL de Redirección con parámetros
+        const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
+        // 7. Redirigir al frontend
+        res.cookie("access_token", jwtToken, {
+            expires: new Date(Date.now() +  process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/",
+            maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
+        });
+        res.redirect(finalRedirectUrl);
+
+    }
+    catch(error){
+        console.error("Error en el flujo OAuth:", error);
+        
+        // En caso de error, redirige al frontend con un mensaje de error
+        const errorRedirectUrl = `${frontendUrl}?error=auth_failed`;
+        res.redirect(errorRedirectUrl);
+    }
+});
 
 app.get("/api/telegram-info", authorization.isLoged, (req, res) => telegramInfo.getAll(req, res))
 app.get("/api/telegram-info/:id", authorization.isLoged, (req, res) => telegramInfo.getById(req, res))
