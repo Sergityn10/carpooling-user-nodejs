@@ -56,8 +56,8 @@ async function reviseCookie(req){
 
 
     const resultado = await database.execute( {
-        sql: "SELECT * FROM users WHERE username = ?",
-        args: [decodificado.username]
+        sql: "SELECT * FROM users WHERE email = ?",
+        args: [decodificado.email]
     });
     console.log("Autenticando token")
     
