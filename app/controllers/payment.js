@@ -62,11 +62,11 @@ async function createCheckoutPaymentIntent(req, res){
 async function createStripeConnectAccount(req, res){
     const {email, country, name} = req.body;
     const user = req.user
+    console.log("Creando cuaenta de stripe a ", user.username)
     const Useraccount = await database.execute({
         sql: "SELECT * FROM accounts WHERE username= ?",
         args: [user.username]
     })
-    console.log(Useraccount.rows)
     if(Useraccount.rows.length > 0){
         return res.status(400).send({status: "Error", message: "You already have an account"})
     }
@@ -101,14 +101,6 @@ async function createStripeConnectAccount(req, res){
 }
 });
 
-    const result = await database.execute({
-        sql: "UPDATE users SET stripe_account = ? WHERE username = ?",
-        args: [account.id, user.username]
-    });
-    if(result.rowsAffected === 0){
-        return res.status(500).send({status: "Error", message: "Failed to create stripe account"});
-    }
-
     const insertAccount = await database.execute({
         sql: "INSERT INTO accounts (stripe_account_id, username) VALUES (?, ?)",
         args: [account.id, user.username]
@@ -116,6 +108,14 @@ async function createStripeConnectAccount(req, res){
 
     if(insertAccount.rowsAffected === 0) {
         return res.status(500).send({status: "Error", message: "Failed to register user"});
+    }
+    const result = await database.execute({
+        sql: "UPDATE users SET stripe_account = ? WHERE username = ?",
+        args: [account.id, user.username]
+    });
+    
+    if(result.rowsAffected === 0){
+        return res.status(500).send({status: "Error", message: "Failed to create stripe account"});
     }
 
   const accountLink = await stripe.accountLinks.create({

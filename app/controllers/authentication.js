@@ -10,6 +10,7 @@ import { authorization } from '../middlewares/authorization.js';
 import { methods as utils } from '../utils/hashing.js';
 import Stripe from 'stripe';
 import { OAuth2Client } from 'google-auth-library';
+import { authMethods } from '../schemas/auth_methods.js';
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID
 const secret_id = process.env.GOOGLE_OAUTH
@@ -32,6 +33,10 @@ async function login(req, res) {
 
     if (!comprobarUser) {
         return res.status(404).send({ status: "Error", message: "Login failed" })
+    }
+
+    if(comprobarUser.auth_method !== authMethods.PASSWORD){
+        return res.status(404).send({status: "Error", message: "Authentication method no valid"})
     }
 
     const isPasswordValid = await bcrypt.compare(password, comprobarUser.password)
@@ -95,8 +100,8 @@ async function register(req, res) {
 
 
     const insertResult = await database.execute({
-        sql: "INSERT INTO users (username, email, password, name, stripe_customer_account) VALUES (?, ?, ?, ?, ?)",
-        args: [username, email, hash, name, customer_account.id]
+        sql: "INSERT INTO users (username, email, password, name, auth_method, stripe_customer_account) VALUES (?, ?, ?, ?, ?, ?)",
+        args: [username, email, hash, name,authMethods.PASSWORD, customer_account.id]
     });
 
 

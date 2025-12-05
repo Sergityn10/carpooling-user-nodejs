@@ -119,7 +119,17 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 `);
-
+await db.execute(`
+CREATE TABLE IF NOT EXISTS accounts (
+  stripe_account_id TEXT PRIMARY KEY NOT NULL,
+  default_account INTEGER DEFAULT 0,
+  username TEXT NOT NULL,
+  charges_enabled INTEGER NOT NULL DEFAULT 0,
+  transfers_enabled INTEGER NOT NULL DEFAULT 0,
+  details_submitted INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
 await db.execute(`
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +248,7 @@ app.get('/api/auth/oauth/register', async (req, res) => {
         // 5. Generar un Token JWT para la sesión
 
         const payload = {
-            username: googleUserData.name, // O el nombre de usuario de tu DB
+            username, // O el nombre de usuario de tu DB
             email: googleUserData.email
         };
         const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
