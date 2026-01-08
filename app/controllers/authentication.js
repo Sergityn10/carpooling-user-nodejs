@@ -125,7 +125,7 @@ async function register(req, res) {
 }
 
 async function oauthGoogle(req, res) {
-    res.header("Access-Control-Allow-origin", `${procces.env.ORIGIN}`)
+    res.header("Access-Control-Allow-origin", `${process.env.ORIGIN}`)
     res.header("Referrer-Policy", "no-referrer-when-downgrade")
     const method = req.query.method;
     let redirectUrl
