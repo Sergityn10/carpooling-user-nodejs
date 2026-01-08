@@ -62,7 +62,6 @@ async function reviseCookie(req){
     console.log("Autenticando token")
     
     const findUser = resultado.rows[0]; 
-    console.log(findUser)
     if(!findUser) {
         res.clearCookie("access_token");
         return false;

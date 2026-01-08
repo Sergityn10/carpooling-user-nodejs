@@ -3,6 +3,7 @@ async function getUserData(access_token){
     const data = await response.json()
     return data
 }
+
 export {
     getUserData
 }

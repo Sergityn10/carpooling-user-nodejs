@@ -61,7 +61,7 @@ async function createUser({ username, email, password, name }, auth_method='pass
     switch(auth_method){
         case 'password':
             const insertResult = await database.execute({
-                sql: "INSERT INTO users (username, email, password, name, stripe_customer_account,auth_method) VALUES (?, ?, ?, ?, ?)",
+                sql: "INSERT INTO users (username, email, password, name, stripe_customer_account,auth_method) VALUES (?, ?, ?, ?, ?, ?)",
                 args: [username, email, hash, name, customer_account.id, auth_method]
             });
 
