@@ -431,7 +431,7 @@ app.get('/api/auth/oauth/register', async (req, res) => {
 
 app.get('/api/auth/oauth/login', async (req, res) => {
     const code = req.query.code;
-    const backendRedirectUrl = `${process.env.MY_ORIGIN}/api/auth/oauth/login`; // URL usada en el paso 1
+    const backendRedirectUrl = `${process.env.MY_ORIGIN}api/auth/oauth/login`; // URL usada en el paso 1
     // 1. URL de tu frontend (ajusta según tu configuración)
     const successUrl = origin;
     const frontendUrl = `${origin}`;
