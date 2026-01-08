@@ -129,12 +129,13 @@ async function oauthGoogle(req, res) {
     res.header("Referrer-Policy", "no-referrer-when-downgrade")
     const method = req.query.method;
     let redirectUrl
+    let origin = process.env.MY_ORIGIN
     switch (method) {
         case "login":
-            redirectUrl = 'http://localhost:4000/api/auth/oauth/login'
+            redirectUrl = `${origin}api/auth/oauth/login`
             break;
         case "register":
-            redirectUrl = 'http://localhost:4000/api/auth/oauth/register'
+            redirectUrl = `${origin}api/auth/oauth/register`
             break;
         default:
             return res.status(400).send({ status: "Error", message: "Invalid method" });
