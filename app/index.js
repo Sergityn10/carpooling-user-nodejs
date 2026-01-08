@@ -29,16 +29,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const origin = process.env.ORIGIN
 const app = express()
 app.disable("x-powered-by") // Desactiva el encabezado x-powered-by
-app.set("port", 4000)
-app.listen(app.get("port"), () => {
-    console.log("Servidor iniciado en el puerto " + app.get("port"))
-})
+app.set("port", process.env.PORT ?? 4000)
+if (process.env.VERCEL !== "1") {
+    app.listen(app.get("port"), () => {
+        console.log("Servidor iniciado en el puerto " + app.get("port"))
+    })
+}
 
 const client_id = process.env.GOOGLE_CLIENT_ID
 const secret_id = process.env.GOOGLE_OAUTH
 
 //Configuracion de la carpeta de archivos estaticos
-app.use(express.static(__dirname + "\\public"))
+app.use(express.static(path.join(__dirname, "public")))
 app.use(morgan("dev")) // Middleware para registrar las peticiones HTTP en la consola
 app.use(express.json())
 app.use(cookieParser())
@@ -545,4 +547,6 @@ app.get("/api/routines/username/:username/finalidad/:finalidad", authorization.i
 app.use((req, res) => {
     res.status(404).sendFile(__dirname + "/pages/404.html");
 })
+
+export default app
 
