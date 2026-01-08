@@ -15,6 +15,10 @@ import { methods as webhook } from "./controllers/webhook.js"
 import { methods as disponibilidad_semanal } from "./controllers/disponibilidad_semanal.js"
 import { methods as payment } from "./controllers/payment.js"
 import { methods as cars } from "./controllers/cars.js"
+import { enterpriseAuthorization } from "./middlewares/enterpriseAuthorization.js"
+import { methods as enterpriseAuthentication } from "./controllers/enterprise_authentication.js"
+import { methods as enterprise } from "./controllers/enterprise.js"
+import { methods as enterpriseServiceEvents } from "./controllers/enterprise_service_events.js"
 import { OAuth2Client } from "google-auth-library"
 import { getUserData } from "./providers/google-auth.js"
 import jsonwebtoken from "jsonwebtoken"
@@ -43,7 +47,6 @@ app.use(cors({
     methods: "GET,POST,PUT,PATCH,DELETE",
     credentials: true // Permite el uso de cookies
 }))
-
 
 // Middleware
 // app.use((req, res, next) => {
@@ -120,6 +123,58 @@ CREATE TABLE IF NOT EXISTS events (
 
 `);
 await db.execute(`
+CREATE TABLE IF NOT EXISTS enterprises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL,
+  phone TEXT NULL,
+  cif TEXT NULL UNIQUE,
+  website TEXT NULL,
+  address_line1 TEXT NULL,
+  address_line2 TEXT NULL,
+  city TEXT NULL,
+  province TEXT NULL,
+  postal_code TEXT NULL,
+  country TEXT NOT NULL DEFAULT 'ES',
+  verified INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+);
+`);
+await db.execute({
+  sql: "ALTER TABLE service_events ADD COLUMN enterprise_id INTEGER",
+  args: []
+}).catch(() => {});
+await db.execute(`
+CREATE TABLE IF NOT EXISTS service_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  enterprise_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NULL,
+  start_at TEXT NOT NULL,
+  end_at TEXT NULL,
+  status TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('draft','requested','approved','rejected','canceled','completed')),
+  venue_name TEXT NULL,
+  address_line1 TEXT NOT NULL,
+  address_line2 TEXT NULL,
+  city TEXT NOT NULL,
+  province TEXT NULL,
+  postal_code TEXT NULL,
+  country TEXT NOT NULL DEFAULT 'ES',
+  latitude REAL NULL,
+  longitude REAL NULL,
+  contact_name TEXT NULL,
+  contact_email TEXT NULL,
+  contact_phone TEXT NULL,
+  attendees_estimate INTEGER NULL CHECK (attendees_estimate IS NULL OR attendees_estimate >= 0),
+  notes TEXT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (enterprise_id) REFERENCES enterprises(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
+await db.execute(`
 CREATE TABLE IF NOT EXISTS accounts (
   stripe_account_id TEXT PRIMARY KEY NOT NULL,
   default_account INTEGER DEFAULT 0,
@@ -156,6 +211,87 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
   );
   `)
+await db.execute(`
+CREATE TABLE IF NOT EXISTS wallet_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'eur',
+  balance INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','blocked')),
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  UNIQUE (user_id, currency)
+);
+  `)
+await db.execute(`
+CREATE TABLE IF NOT EXISTS wallet_recharges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  description TEXT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','canceled','expired')),
+  stripe_checkout_session_id TEXT NOT NULL,
+  stripe_payment_intent_id TEXT NULL,
+  stripe_event_id TEXT NULL,
+  stripe_payment_status TEXT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  UNIQUE (stripe_checkout_session_id),
+  UNIQUE (stripe_event_id)
+);
+  `)
+await db.execute(`
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_account_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('recharge','debit','credit','refund','adjustment')),
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','canceled','expired')),
+  balance_before INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  description TEXT NULL,
+  stripe_checkout_session_id TEXT NULL,
+  stripe_payment_intent_id TEXT NULL,
+  stripe_event_id TEXT NULL,
+  stripe_payment_status TEXT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  UNIQUE (stripe_checkout_session_id),
+  UNIQUE (stripe_event_id)
+);
+  `)
+await db.execute(`
+CREATE TABLE IF NOT EXISTS wallet_payouts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_account_id INTEGER NOT NULL,
+  wallet_transaction_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','succeeded','failed','canceled')),
+  method TEXT NOT NULL DEFAULT 'standard' CHECK (method IN ('standard','instant')),
+  idempotency_key TEXT NOT NULL,
+  stripe_payout_id TEXT NULL,
+  stripe_payout_status TEXT NULL,
+  stripe_event_id TEXT NULL,
+  failure_reason TEXT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (wallet_transaction_id) REFERENCES wallet_transactions(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  UNIQUE (idempotency_key),
+  UNIQUE (stripe_payout_id),
+  UNIQUE (stripe_event_id)
+);
+  `)
 
 
 //funcionalidades de la aplicacion
@@ -184,15 +320,14 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
         if (resultado.rows.length === 0) {
             return res.status(404).json({ status: "Error", message: "User not found" });
         }
-        return res.status(200).json(resultado[0][0]);
+        console.log(resultado)
+        return res.status(200).json(resultado.rows[0]);
     } catch (error) {
         console.error("Error fetching user:", error);
         return res.status(500).json({ status: "Error", message: "Failed to fetch user" });
     }
 });
 app.get("/api/users/:username/info", (req, res) => user.getUserInfo(req, res))
-
-
 app.patch("/api/users/:username", authorization.isLoged, (req, res) => user.updateUserPatch(req, res))
 app.patch("/api/users", authorization.isLoged, (req, res) => user.updateMyUserPatch(req, res))
 
@@ -206,6 +341,20 @@ app.get("/api/auth/logout", (req, res) => authentication.logout(req, res))
 app.post("/api/auth/refresh", (req, res) => authentication.refresh(req, res))
 app.get("/api/auth/validate", (req, res) => authentication.validate(req, res))
 app.post("/api/auth/oauth", (req, res) => authentication.oauthGoogle(req, res))
+
+app.post("/api/enterprise/auth/register", (req, res) => enterpriseAuthentication.register(req, res))
+app.post("/api/enterprise/auth/login", (req, res) => enterpriseAuthentication.login(req, res))
+app.get("/api/enterprise/auth/logout", (req, res) => enterpriseAuthentication.logout(req, res))
+app.get("/api/enterprise/auth/validate", (req, res) => enterpriseAuthentication.validate(req, res))
+
+app.get("/api/enterprise/me", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterprise.getMe(req, res))
+app.patch("/api/enterprise/me", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterprise.patchMe(req, res))
+
+app.post("/api/enterprise/service-events", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterpriseServiceEvents.create(req, res))
+app.get("/api/enterprise/service-events", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterpriseServiceEvents.list(req, res))
+app.get("/api/enterprise/service-events/:id", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterpriseServiceEvents.getById(req, res))
+app.patch("/api/enterprise/service-events/:id", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterpriseServiceEvents.patch(req, res))
+app.delete("/api/enterprise/service-events/:id", enterpriseAuthorization.isEnterpriseLoged, (req, res) => enterpriseServiceEvents.remove(req, res))
 
 app.get('/api/auth/oauth/register', async (req, res) => {
     const code = req.query.code;
@@ -366,10 +515,15 @@ app.post("/api/payment/stripe-transfer", authorization.isLoged, (req, res) => pa
 app.post("/api/payment/stripe-login-link", authorization.isLoged, (req, res) => payment.createLoginLink(req, res))
 app.get("/api/payment/stripe-billing-portal", authorization.isLoged, (req, res) => payment.createBillingPortal(req, res))
 app.get("/api/payment/cash-balance", authorization.isLoged, (req, res) => payment.getCashBalance(req, res))
+app.get("/api/payment/wallet-balance", authorization.isLoged, (req, res) => payment.getWalletBalance(req, res))
+app.get("/api/payment/wallet-transactions", authorization.isLoged, (req, res) => payment.getWalletTransactions(req, res))
+app.post("/api/payment/wallet-payout", authorization.isLoged, (req, res) => payment.createWalletPayout(req, res))
+app.get("/api/payment/wallet-payouts", authorization.isLoged, (req, res) => payment.getWalletPayouts(req, res))
 app.post("/api/payment/payment-intent", authorization.isLoged, (req, res) => payment.createPaymentIntent(req, res))
 app.post("/api/payment/payment-intent/checkout", authorization.isLoged, (req, res) => payment.createCheckoutPaymentIntent(req, res))
 app.get("/api/payment/payment-intent/capture/:paymentIntentId", authorization.isLoged, (req, res) => payment.capturePaymentIntent(req, res))
 app.post("/api/payment/payout", authorization.isLoged, (req, res) => payment.createPayout(req, res))
+app.post("/api/payment/recharge", authorization.isLoged, (req, res) => payment.rechargeWalletUser(req, res))
 app.post("/api/payment/bank_account", authorization.isLoged, (req, res) => payment.createBankAccount(req, res))
 
 //CARS METHOD

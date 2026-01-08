@@ -28,7 +28,6 @@ async function login(req, res) {
         sql: "SELECT * FROM users WHERE email = ?",
         args: [email]
     });
-    console.log(rows)
     const comprobarUser = rows[0];
 
     if (!comprobarUser) {
@@ -40,7 +39,6 @@ async function login(req, res) {
     }
 
     const isPasswordValid = await bcrypt.compare(password, comprobarUser.password)
-    console.log(isPasswordValid)
     if (!isPasswordValid) {
         return res.status(404).send({ status: "Error", message: "Login failed" })
     }
@@ -73,7 +71,6 @@ async function register(req, res) {
         sql: "SELECT * FROM users WHERE email = ?",
         args: [email]
     });
-    console.log(userRows)
     const comprobarUser = userRows[0];
 
     if (comprobarUser) {
@@ -132,7 +129,6 @@ async function oauthGoogle(req, res) {
     res.header("Referrer-Policy", "no-referrer-when-downgrade")
     const method = req.query.method;
     let redirectUrl
-    console.log(method)
     switch (method) {
         case "login":
             redirectUrl = 'http://localhost:4000/api/auth/oauth/login'
