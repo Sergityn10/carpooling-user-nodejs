@@ -165,15 +165,27 @@ async function logout(req, res) {
 async function validate(req, res) {
     try {
 
-        const token = req.cookies.access_token
+        const rawHeader = req?.headers?.authorization || req?.headers?.authentication;
+        let bearerToken = null;
+        if (rawHeader && typeof rawHeader === "string") {
+            const [scheme, tokenFromHeader] = rawHeader.split(" ");
+            if (scheme?.toLowerCase() === "bearer" && tokenFromHeader) {
+                bearerToken = tokenFromHeader;
+            }
+        }
 
-        if (!token) {
+        const cookieToken = req?.cookies?.access_token;
+
+        if (!bearerToken && !cookieToken) {
             return res.status(401).send({ status: "Error", message: "No token provided" });
         }
-        const findUser = await authorization.reviseCookie(req);
+
+        const findUser = (await authorization.reviseBearer(req)) || (await authorization.reviseCookie(req));
         if (!findUser) {
             return res.status(401).send({ status: "Error", message: "Invalid token" });
         }
+
+        const token = bearerToken || cookieToken;
 
 
         const user = {
@@ -186,7 +198,11 @@ async function validate(req, res) {
         }
         return res.status(200).send({ status: "Success", message: "Token is valid", token, data: user });
     } catch (error) {
-        res.clearCookie("access_token");
+        const rawHeader = req?.headers?.authorization || req?.headers?.authentication;
+        const hasBearer = !!(rawHeader && typeof rawHeader === "string" && rawHeader.toLowerCase().startsWith("bearer "));
+        if (!hasBearer) {
+            res.clearCookie("access_token");
+        }
         return res.status(401).send({ status: "Error", message: "Invalid token" });
     }
 }
