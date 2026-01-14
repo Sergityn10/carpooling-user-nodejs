@@ -27,6 +27,8 @@ dotenv.config()
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const origin = process.env.ORIGIN
+const trayectos_origin = process.env.TRAYECTOS_ORIGIN
+const messsages_origin = process.env.MESSSAGES_ORIGIN
 const app = express()
 app.disable("x-powered-by") // Desactiva el encabezado x-powered-by
 app.set("port", process.env.PORT ?? 4000)
@@ -44,8 +46,9 @@ app.use(express.static(path.join(__dirname, "public")))
 app.use(morgan("dev")) // Middleware para registrar las peticiones HTTP en la consola
 app.use(express.json())
 app.use(cookieParser())
+
 app.use(cors({
-    origin: ["http://localhost:5173", "http://192.168.0.36:5173", origin, "*"], // Cambia esto a la URL de tu frontend
+    origin: ["http://localhost:5173", "http://localhost:4001", origin, trayectos_origin,messsages_origin ], // Cambia esto a la URL de tu frontend
     methods: "GET,POST,PUT,PATCH,DELETE",
     credentials: true // Permite el uso de cookies
 }))

@@ -145,12 +145,14 @@ async function oauthGoogle(req, res) {
         secret_id,
         redirectUrl
     )
+    console.log(oauth2Client)
 
     const authorizeUrl = oauth2Client.generateAuthUrl({
         access_type: 'offline',
         scope: 'profile openid email',
         prompt: 'consent'
     })
+    console.log(authorizeUrl)
     res.status(200).json({ url: authorizeUrl })
 
 }
