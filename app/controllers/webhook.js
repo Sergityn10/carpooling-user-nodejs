@@ -572,28 +572,80 @@ async function handleCheckoutSessionExpired(jsonData){
 }
 async function handleAccountUpdated(jsonData){
 
-    const accountQuery = await database.execute({
-        sql: "SELECT * FROM accounts WHERE stripe_account_id = ?",
-        args: [jsonData.object.id]
-    });
-
-    if(accountQuery.rows.length === 0){
-        return 
+    const stripeAccount = jsonData?.object;
+    if(!stripeAccount?.id){
+        return;
     }
-    let account = accountQuery.rows[0];
 
-    //ACTUALIZAR LA Cuenta
-    await database.execute({
-        sql: "UPDATE accounts SET charges_enabled = ?, transfers_enabled = ?, details_submitted = ? WHERE stripe_account_id = ?",
-        args: [jsonData.object.charges_enabled, jsonData.object.payouts_enabled, jsonData.object.details_submitted, jsonData.object.id]
-    });
+    const stripeAccountId = stripeAccount.id;
+    const username = stripeAccount?.metadata?.username ?? null;
 
-    await database.execute({
-        sql: "UPDATE users SET onboarding_ended = ? WHERE stripe_account = ?",
-        args: [true, account.stripe_account_id]
-    });
+    const chargesEnabled = Boolean(stripeAccount.charges_enabled);
+    const payoutsEnabled = Boolean(stripeAccount.payouts_enabled);
+    const detailsSubmitted = Boolean(stripeAccount.details_submitted);
 
-    
+    const onboardingComplete = (detailsSubmitted && chargesEnabled && payoutsEnabled);
+
+    try{
+        await database.execute({ sql: "BEGIN IMMEDIATE", args: [] });
+
+        const existing = await database.execute({
+            sql: "SELECT stripe_account_id FROM accounts WHERE stripe_account_id = ?",
+            args: [stripeAccountId]
+        });
+
+        if(existing.rows.length === 0 && !onboardingComplete){
+            await database.execute({ sql: "COMMIT", args: [] });
+            return;
+        }
+
+        if(!username){
+            // Sin username no podemos asociar la cuenta al usuario de la BD
+            await database.execute({ sql: "COMMIT", args: [] });
+            return;
+        }
+
+        await database.execute({
+            sql: `INSERT INTO accounts (
+                    stripe_account_id,
+                    username,
+                    charges_enabled,
+                    transfers_enabled,
+                    details_submitted
+                  ) VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT(stripe_account_id) DO UPDATE SET
+                    username = excluded.username,
+                    charges_enabled = excluded.charges_enabled,
+                    transfers_enabled = excluded.transfers_enabled,
+                    details_submitted = excluded.details_submitted`,
+            args: [
+                stripeAccountId,
+                username,
+                chargesEnabled ? 1 : 0,
+                payoutsEnabled ? 1 : 0,
+                detailsSubmitted ? 1 : 0
+            ]
+        });
+
+        if(onboardingComplete){
+            await database.execute({
+                sql: `UPDATE users
+                      SET stripe_account = CASE
+                            WHEN stripe_account IS NULL OR stripe_account = ? THEN ?
+                            ELSE stripe_account
+                          END,
+                          onboarding_ended = 1
+                      WHERE username = ?`,
+                args: [stripeAccountId, stripeAccountId, username]
+            });
+        }
+
+        await database.execute({ sql: "COMMIT", args: [] });
+    }
+    catch(error){
+        try{ await database.execute({ sql: "ROLLBACK", args: [] }); } catch(_){ }
+        throw error;
+    }
 }
 export const methods = {
     createEvent
