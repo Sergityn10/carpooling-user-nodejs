@@ -103,12 +103,27 @@ async function createStripeConnectAccount(req, res){
     const {email, country, name} = req.body;
     const user = req.user
     console.log("Creando cuaenta de stripe a ", user.username)
-    const Useraccount = await database.execute({
-        sql: "SELECT * FROM accounts WHERE username= ?",
+    const existingUser = await database.execute({
+        sql: "SELECT stripe_account, onboarding_ended FROM users WHERE username = ?",
         args: [user.username]
-    })
-    if(Useraccount.rows.length > 0){
-        return res.status(400).send({status: "Error", message: "You already have an account"})
+    });
+    const existingStripeAccount = existingUser.rows?.[0]?.stripe_account;
+    const onboardingEnded = Boolean(existingUser.rows?.[0]?.onboarding_ended);
+
+    if(existingStripeAccount){
+        if(onboardingEnded){
+            return res.status(400).send({status: "Error", message: "You already have an account"})
+        }
+
+        const accountLink = await stripe.accountLinks.create({
+            account: existingStripeAccount,
+            refresh_url: process.env.ORIGIN,
+            return_url: process.env.ORIGIN,
+            type: 'account_onboarding',
+            collect: "eventually_due"
+        });
+
+        return res.status(200).send({status: "Success", message: "Stripe onboarding link created successfully", accountLink})
     }
   const account = await stripe.accounts.create({
     type: 'express',
@@ -119,8 +134,6 @@ async function createStripeConnectAccount(req, res){
         email: user.email,
         id: user.id
     },
-    
-    
     business_type: 'individual',
     business_profile: {
       mcc: '5812',
@@ -130,40 +143,27 @@ async function createStripeConnectAccount(req, res){
       url: 'https://carpooling.com'
     },
     capabilities: {
-        
-      card_payments: {
-        requested: true,
-      },
-      transfers: {
-        requested: true,
-      },
+        card_payments: {
+          requested: true,
+        },
+        transfers: {
+          requested: true,
+        },
     },
     tos_acceptance: {
       service_agreement: "full"
 }
 });
 
-    const insertAccount = await database.execute({
-        sql: "INSERT INTO accounts (stripe_account_id, username) VALUES (?, ?)",
+    await database.execute({
+        sql: "UPDATE users SET stripe_account = ?, onboarding_ended = 0 WHERE username = ?",
         args: [account.id, user.username]
     });
-
-    if(insertAccount.rowsAffected === 0) {
-        return res.status(500).send({status: "Error", message: "Failed to register user"});
-    }
-    const result = await database.execute({
-        sql: "UPDATE users SET stripe_account = ? WHERE username = ?",
-        args: [account.id, user.username]
-    });
-    
-    if(result.rowsAffected === 0){
-        return res.status(500).send({status: "Error", message: "Failed to create stripe account"});
-    }
 
   const accountLink = await stripe.accountLinks.create({
     account: account.id,
-    refresh_url: 'http://localhost:5173',
-    return_url: 'http://localhost:5173',
+    refresh_url: process.env.ORIGIN,
+    return_url: process.env.ORIGIN,
     type: 'account_onboarding',
     collect: "eventually_due"
   });
@@ -315,7 +315,7 @@ const createBillingPortal = async (req, res) => {
     const user = req.user
     const billingPortal = await stripe.billingPortal.sessions.create({
         customer: req.user.stripe_customer_account,
-        return_url: 'http://localhost:5173',
+        return_url: process.env.ORIGIN,
     });
     return res.status(200).send({status: "Success", message: "Stripe billing portal created successfully", billingPortal})
 }
