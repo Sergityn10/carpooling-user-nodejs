@@ -10,39 +10,65 @@ export const status = {
     8: "completed"
 }
 
+function isNoSuchTableError(error, tableName){
+    const expected = `no such table: ${String(tableName ?? "").toLowerCase()}`;
+    const msg = String(
+        error?.message ??
+        error?.cause?.message ??
+        error?.cause?.proto?.message ??
+        ""
+    ).toLowerCase();
+
+    return msg.includes(expected);
+}
+
 async function createEvent(req, res){
     const {source} = req.params;
     
     let data;
 
     data = JSON.stringify(req.body);
+    const eventId = req.body?.id ?? null;
+    const eventType = String(req.body?.type ?? "unknown");
+    const stripeObj = req.body?.data?.object;
+    const paymentIntentId = (
+        stripeObj?.object === "payment_intent" ? stripeObj?.id :
+        stripeObj?.object === "checkout.session" ? stripeObj?.payment_intent :
+        stripeObj?.payment_intent ?? null
+    ) ?? null;
 
     try {
         await database.execute({
-            sql: `INSERT INTO events (event_id, data, source, status)
-                  VALUES (?, ?, ?, ?)
+            sql: `INSERT INTO events (event_id, event_type, payment_intent_id, data, source, status)
+                  VALUES (?, ?, ?, ?, ?, ?)
                   ON CONFLICT(event_id) DO UPDATE SET
+                    event_type = excluded.event_type,
+                    payment_intent_id = COALESCE(excluded.payment_intent_id, events.payment_intent_id),
                     data = excluded.data,
                     source = excluded.source,
-                    status = excluded.status`,
-            args: [req.body.id, data, source, status[1]]
+                    status = excluded.status,
+                    updated_at = CURRENT_TIMESTAMP`,
+            args: [eventId, eventType, paymentIntentId, data, source, status[1]]
         });
 
         if(source === "stripe"){
             await handleStripeEvent(req, res);
         }
     } catch (error) {
-        await database.execute({
-            sql: "UPDATE events SET status = ?, processing_error = ? WHERE event_id = ?",
-            args: [status[3], error?.message ?? String(error), req.body.id]
-        });
+        console.error("Webhook processing error:", error);
+        try{
+            await database.execute({
+                sql: "UPDATE events SET status = ?, processing_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ?",
+                args: [status[3], error?.message ?? String(error), eventId]
+            });
+        } catch(_e){}
 
         return res.status(200).send({status: "Success", message: "Event received (processing failed)"});
     }
 
     await database.execute({
         sql: "UPDATE events SET status = ? WHERE event_id = ?",
-        args: [status[2], req.body.id]
+        args: [status[2], eventId]
     });
     
     return res.status(200).send({status: "Success", message: "Event created successfully"});
@@ -53,7 +79,7 @@ async function handleStripeEvent(req, res){
     const jsonData = req.body
     const data = JSON.stringify(req.body);
     
-    if(jsonData.type === "account.updated"){
+    if(jsonData.type === "account.created" || jsonData.type === "account.updated"){
         await handleAccountUpdated(jsonData.data)
     }
     if(jsonData.type === "checkout.session.completed"){
@@ -64,9 +90,6 @@ async function handleStripeEvent(req, res){
     }
     if(jsonData.type === "checkout.session.updated"){
         await handleCheckoutSessionUpdated(jsonData.data)
-    }
-    if(jsonData.type === "payment_intent.created"){
-        await handlePaymentIntentCreated(jsonData.data)
     }
     if(jsonData.type === "payment_intent.updated"){
         await handlePaymentIntentUpdated(jsonData.data)
@@ -134,21 +157,22 @@ async function handlePayoutEvent(stripeEvent){
         return;
     }
 
+    let tx;
     try{
-        await database.execute({ sql: "BEGIN IMMEDIATE", args: [] });
+        tx = await database.transaction("write");
 
         if(stripeEventId){
-            const already = await database.execute({
+            const already = await tx.execute({
                 sql: "SELECT id FROM wallet_payouts WHERE stripe_event_id = ?",
                 args: [stripeEventId]
             });
             if(already.rows.length > 0){
-                await database.execute({ sql: "COMMIT", args: [] });
+                try{ await tx.rollback(); } catch(_){ }
                 return;
             }
         }
 
-        let payoutRes = await database.execute({
+        let payoutRes = await tx.execute({
             sql: `SELECT id, wallet_account_id, wallet_transaction_id, user_id, currency, amount, status, stripe_payout_status
                   FROM wallet_payouts
                   WHERE stripe_payout_id = ?
@@ -161,7 +185,7 @@ async function handlePayoutEvent(stripeEvent){
             const walletPayoutId = walletPayoutIdRaw != null ? Number(walletPayoutIdRaw) : null;
 
             if(Number.isFinite(walletPayoutId)){
-                payoutRes = await database.execute({
+                payoutRes = await tx.execute({
                     sql: `SELECT id, wallet_account_id, wallet_transaction_id, user_id, currency, amount, status, stripe_payout_status
                           FROM wallet_payouts
                           WHERE id = ?
@@ -170,7 +194,7 @@ async function handlePayoutEvent(stripeEvent){
                 });
 
                 if(payoutRes.rows.length > 0){
-                    await database.execute({
+                    await tx.execute({
                         sql: `UPDATE wallet_payouts
                               SET stripe_payout_id = COALESCE(?, stripe_payout_id), updated_at = CURRENT_TIMESTAMP
                               WHERE id = ?`,
@@ -181,7 +205,7 @@ async function handlePayoutEvent(stripeEvent){
         }
 
         if(payoutRes.rows.length === 0){
-            await database.execute({ sql: "COMMIT", args: [] });
+            try{ await tx.rollback(); } catch(_){ }
             return;
         }
 
@@ -189,11 +213,11 @@ async function handlePayoutEvent(stripeEvent){
         const prevStatus = String(walletPayout.status ?? "");
         const isFinal = (prevStatus === "succeeded" || prevStatus === "failed" || prevStatus === "canceled");
         if(isFinal){
-            await database.execute({ sql: "COMMIT", args: [] });
+            try{ await tx.rollback(); } catch(_){ }
             return;
         }
 
-        await database.execute({
+        await tx.execute({
             sql: `UPDATE wallet_payouts
                   SET stripe_payout_status = ?, status = ?, stripe_event_id = COALESCE(?, stripe_event_id), failure_reason = COALESCE(?, failure_reason), updated_at = CURRENT_TIMESTAMP
                   WHERE id = ?`,
@@ -201,24 +225,24 @@ async function handlePayoutEvent(stripeEvent){
         });
 
         if(localStatus === "succeeded"){
-            await database.execute({
+            await tx.execute({
                 sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
                 args: ["succeeded", walletPayout.wallet_transaction_id]
             });
 
-            await database.execute({ sql: "COMMIT", args: [] });
+            await tx.commit();
             return;
         }
 
         if(localStatus === "failed" || localStatus === "canceled"){
             const txStatus = (localStatus === "canceled") ? "canceled" : "failed";
-            await database.execute({
+            await tx.execute({
                 sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
                 args: [txStatus, walletPayout.wallet_transaction_id]
             });
 
             const amount = Number(walletPayout.amount ?? 0);
-            const accountRes = await database.execute({
+            const accountRes = await tx.execute({
                 sql: "SELECT id, balance FROM wallet_accounts WHERE id = ?",
                 args: [walletPayout.wallet_account_id]
             });
@@ -226,7 +250,7 @@ async function handlePayoutEvent(stripeEvent){
             if(accountRes.rows.length > 0 && Number.isFinite(amount) && amount > 0){
                 const acc = accountRes.rows[0];
                 const balanceBefore = Number(acc.balance ?? 0);
-                const upd = await database.execute({
+                const upd = await tx.execute({
                     sql: `UPDATE wallet_accounts
                           SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
                           WHERE id = ?
@@ -235,7 +259,7 @@ async function handlePayoutEvent(stripeEvent){
                 });
                 const balanceAfter = Number(upd.rows?.[0]?.balance ?? (balanceBefore + amount));
 
-                await database.execute({
+                await tx.execute({
                     sql: `INSERT INTO wallet_transactions (
                             wallet_account_id,
                             user_id,
@@ -266,19 +290,21 @@ async function handlePayoutEvent(stripeEvent){
                 });
             }
 
-            await database.execute({ sql: "COMMIT", args: [] });
+            await tx.commit();
             return;
         }
 
-        await database.execute({
+        await tx.execute({
             sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
             args: ["pending", walletPayout.wallet_transaction_id]
         });
 
-        await database.execute({ sql: "COMMIT", args: [] });
+        await tx.commit();
     }
     catch(error){
-        try{ await database.execute({ sql: "ROLLBACK", args: [] }); } catch(_){ }
+        if(tx){
+            try{ await tx.rollback(); } catch(_){ }
+        }
         throw error;
     }
 }
@@ -288,68 +314,98 @@ async function handlePaymentIntentCreated(jsonData){
     console.log("Entro en el payment intent created")
     let payment_id = paymentIntent.id;
     console.log(payment_id)
-    const result = await database.execute({
-        sql: "INSERT INTO payment_intents (amount, currency, destination_account, state, description, sender_account, payment_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        args: [
-            paymentIntent.amount,
-            paymentIntent.currency,
-            paymentIntent.transfer_data?.destination ?? null,
-            paymentIntent.status,
-            paymentIntent.description ?? null,
-            paymentIntent.customer ?? null,
-            payment_id
-        ]
-    });
-    if(result.rowsAffected === 0){
-        return 
-    }
+    return;
 }
 async function handlePaymentIntentUpdated(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const result = await database.execute({
-        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+
+    await database.execute({
+        sql: "UPDATE reservas SET stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
         args: [paymentIntent.status, paymentIntent.id]
     });
-    if(result.rowsAffected === 0){
-        return 
-    }
+
+    await database.execute({
+        sql: "UPDATE wallet_recharges SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
+
+    await database.execute({
+        sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [paymentIntent.status, paymentIntent.id]
+    });
 
 }
 async function handlePaymentIntentSucceeded(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const result = await database.execute({
-        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        args: [paymentIntent.status, paymentIntent.id]
-    });
-    if(result.rowsAffected === 0){
-        return 
+    const id_reserva = paymentIntent.metadata.id_reserva;
+    if(!id_reserva){
+        let paymentIntentRes = await database.execute({
+            sql: "SELECT * FROM payment_intents WHERE stripe_payment_id = ?",
+            args: [paymentIntent.id]
+        });
+        id_reserva = paymentIntentRes.rows[0].id_reserva;
     }
+    await database.execute({
+        sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
+        args: [status[8], id_reserva]
+    });
+
+    // await database.execute({
+    //     sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+    //     args: [status[2], paymentIntent.status, paymentIntent.id]
+    // });
+
+    // await database.execute({
+    //     sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+    //     args: [status[2], paymentIntent.status, paymentIntent.id]
+    // });
     
 }
 async function handlePaymentIntentFailed(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const result = await database.execute({
-        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
-        args: [paymentIntent.status, paymentIntent.id]
+
+    await database.execute({
+        sql: "UPDATE reservas SET status = ?, stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[3], paymentIntent.status, paymentIntent.id]
     });
-    if(result.rowsAffected === 0){
-        return 
-    }
+
+    await database.execute({
+        sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[3], paymentIntent.status, paymentIntent.id]
+    });
+
+    await database.execute({
+        sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[3], paymentIntent.status, paymentIntent.id]
+    });
     
 }
 async function handlePaymentIntentCanceled(jsonData){
     const paymentIntent = jsonData.object;
     console.log(paymentIntent)
-    const result = await database.execute({
-        sql: "UPDATE payment_intents SET state = ? WHERE payment_id = ?",
+
+    await database.execute({
+        sql: "UPDATE payment_intents SET state = ? WHERE stripe_payment_id = ?",
         args: [paymentIntent.status, paymentIntent.id]
     });
-    if(result.rowsAffected === 0){
-        return 
-    }
+
+    await database.execute({
+        sql: "UPDATE reservas SET status = ?, stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[4], paymentIntent.status, paymentIntent.id]
+    });
+
+    await database.execute({
+        sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[4], paymentIntent.status, paymentIntent.id]
+    });
+
+    await database.execute({
+        sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+        args: [status[4], paymentIntent.status, paymentIntent.id]
+    });
     
 }
 async function handleCustomerUpdated(jsonData){
@@ -382,162 +438,382 @@ async function handleCheckoutSessionCompleted(stripeEvent){
         return;
     }
 
-    const rechargeType = checkout_session?.metadata?.type ?? checkout_session?.metadata?.typo;
-    console.log(rechargeType)
-    if(rechargeType === "recharge"){
-        console.log("entro en el if")
-
+    const type = checkout_session?.metadata?.type ?? checkout_session?.metadata?.typo;
+    console.log(type)
+    if(type === "recharge"){
         const userIdRaw = checkout_session?.metadata?.userId;
         const userId = userIdRaw != null ? Number(userIdRaw) : null;
 
-        if(Number.isFinite(userId)){
-            const amount = Number(checkout_session.amount_total ?? 0);
-            const currency = (checkout_session.currency ?? "eur").toLowerCase();
-            const description = checkout_session?.metadata?.description ?? null;
+        // if(Number.isFinite(userId)){
+        //     const amount = Number(checkout_session.amount_total ?? 0);
+        //     const currency = (checkout_session.currency ?? "eur").toLowerCase();
+        //     const description = checkout_session?.metadata?.description ?? null;
+        //     const typePaymente = checkout_session?.metadata?.type ?? null
 
-            const rechargeStatus = checkout_session.payment_status === "paid" ? "succeeded" : "pending";
+        //     const rechargeStatus = checkout_session.payment_status === "paid" ? "succeeded" : "pending";
+
+        //     await database.execute({
+        //         sql: `INSERT INTO wallet_recharges (
+        //                 user_id,
+        //                 amount,
+        //                 currency,
+        //                 description,
+        //                 status,
+        //                 stripe_checkout_session_id,
+        //                 stripe_payment_intent_id,
+        //                 stripe_event_id,
+        //                 stripe_payment_status
+        //             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        //             ON CONFLICT(stripe_checkout_session_id) DO UPDATE SET
+        //                 user_id = excluded.user_id,
+        //                 amount = excluded.amount,
+        //                 currency = excluded.currency,
+        //                 description = excluded.description,
+        //                 status = excluded.status,
+        //                 stripe_payment_intent_id = excluded.stripe_payment_intent_id,
+        //                 stripe_event_id = COALESCE(excluded.stripe_event_id, wallet_recharges.stripe_event_id),
+        //                 stripe_payment_status = excluded.stripe_payment_status,
+        //                 updated_at = CURRENT_TIMESTAMP`,
+        //         args: [
+        //             userId,
+        //             amount,
+        //             currency,
+        //             description,
+        //             rechargeStatus,
+        //             checkout_session.id,
+        //             checkout_session.payment_intent ?? null,
+        //             stripeEvent.id ?? null,
+        //             checkout_session.payment_status ?? null
+        //         ]
+        //     });
+
+        //     // Monedero (wallet_accounts + wallet_transactions)
+        //     // Solo aumentamos el saldo cuando el pago está realmente completado
+        //     if(rechargeStatus === "succeeded"){
+        //         let tx;
+        //         try{
+        //             tx = await database.transaction("write");
+
+        //             await tx.execute({
+        //                 sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
+        //                       VALUES (?, ?, 0)
+        //                       ON CONFLICT(user_id, currency) DO NOTHING`,
+        //                 args: [userId, currency]
+        //             });
+
+        //             const walletAccountRes = await tx.execute({
+        //                 sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ?",
+        //                 args: [userId, currency]
+        //             });
+
+        //             if(walletAccountRes.rows.length === 0){
+        //                 try{ await tx.rollback(); } catch(_){ }
+        //                 return;
+        //             }
+
+        //             const walletAccount = walletAccountRes.rows[0];
+        //             if(walletAccount.status === "blocked"){
+        //                 try{ await tx.rollback(); } catch(_){ }
+        //                 return;
+        //             }
+
+        //             const alreadyTx = await tx.execute({
+        //                 sql: "SELECT id FROM wallet_transactions WHERE stripe_checkout_session_id = ?",
+        //                 args: [checkout_session.id]
+        //             });
+        //             if(alreadyTx.rows.length > 0){
+        //                 try{ await tx.rollback(); } catch(_){ }
+        //                 return;
+        //             }
+
+        //             const balanceBefore = Number(walletAccount.balance ?? 0);
+
+        //             const updateBalanceRes = await tx.execute({
+        //                 sql: `UPDATE wallet_accounts
+        //                       SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
+        //                       WHERE id = ?
+        //                       RETURNING balance`,
+        //                 args: [amount, walletAccount.id]
+        //             });
+
+        //             const balanceAfter = Number(updateBalanceRes.rows?.[0]?.balance ?? (balanceBefore + amount));
+
+        //             await tx.execute({
+        //                 sql: `INSERT INTO wallet_transactions (
+        //                         wallet_account_id,
+        //                         user_id,
+        //                         currency,
+        //                         type,
+        //                         amount,
+        //                         status,
+        //                         balance_before,
+        //                         balance_after,
+        //                         description,
+        //                         stripe_checkout_session_id,
+        //                         stripe_payment_intent_id,
+        //                         stripe_event_id,
+        //                         stripe_payment_status
+        //                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        //                       ON CONFLICT(stripe_checkout_session_id) DO NOTHING`,
+        //                 args: [
+        //                     walletAccount.id,
+        //                     userId,
+        //                     currency,
+        //                     "recharge",
+        //                     amount,
+        //                     "succeeded",
+        //                     balanceBefore,
+        //                     balanceAfter,
+        //                     description,
+        //                     checkout_session.id,
+        //                     checkout_session.payment_intent ?? null,
+        //                     stripeEvent.id ?? null,
+        //                     checkout_session.payment_status ?? null
+        //                 ]
+        //             });
+
+        //             await tx.commit();
+        //         }
+        //         catch(error){
+        //             if(tx){
+        //                 try{ await tx.rollback(); } catch(_){ }
+        //             }
+        //             throw error;
+        //         }
+        //     }
+        // }
+
+        return;
+    }
+
+    if(type === "reserva"){
+        const id_user = checkout_session?.metadata?.id_user ?? null;
+        const id_reserva = checkout_session?.metadata?.id_reserva ?? null;
+        const trayectoIdRaw = checkout_session?.metadata?.id_trayecto;
+        const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
+
+        if(!id_user || !Number.isFinite(trayectoId)){
+            return;
+        }
+
+        const reservaStatus = checkout_session.payment_status === "paid" ? status[8] : status[1];
+
+        const runNoTx = async () => {
+            const userRes = await database.execute({
+                sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
+                args: [id_user]
+            });
+            if(userRes.rows.length === 0){
+                return;
+            }
+
+            const trayectoRes = await database.execute({
+                sql: "SELECT 1 FROM trayectos WHERE id = ? LIMIT 1",
+                args: [trayectoId]
+            });
+            if(trayectoRes.rows.length === 0){
+                return;
+            }
+
+            const existingReserva = await database.execute({
+                sql: "SELECT id_reserva FROM reservas WHERE id_reserva = ? LIMIT 1",
+                args: [id_reserva]
+            });
+            if(existingReserva.rows.length === 0){
+                return;
+            }
+
+            const availableRes = await database.execute({
+                sql: "SELECT disponible FROM trayectos WHERE id = ?",
+                args: [trayectoId]
+            });
+            const disponible = Number(availableRes.rows?.[0]?.disponible ?? 0);
+            if(!Number.isFinite(disponible) || disponible <= 0){
+                return;
+            }
+
+            const decRes = await database.execute({
+                sql: "UPDATE trayectos SET disponible = disponible - 1 WHERE id = ? AND disponible > 0",
+                args: [trayectoId]
+            });
+            if(Number(decRes.rowsAffected ?? 0) === 0){
+                return;
+            }
 
             await database.execute({
-                sql: `INSERT INTO wallet_recharges (
-                        user_id,
+                sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
+                args: [status[8], id_reserva]
+            });
+
+            const paymentIntentId = checkout_session.payment_intent ?? null;
+            const amount = Number(checkout_session.amount_total ?? 0) / 100;
+            const currency = checkout_session.currency;
+            const description = checkout_session?.metadata?.description ?? "";
+            const destination = checkout_session?.metadata?.destination_account ?? null;
+            const senderAccount = checkout_session?.metadata?.sender_account ?? null;
+
+            await database.execute({
+                sql: `INSERT INTO payment_intents (
+                        stripe_payment_id,
                         amount,
                         currency,
                         description,
-                        status,
-                        stripe_checkout_session_id,
-                        stripe_payment_intent_id,
-                        stripe_event_id,
-                        stripe_payment_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(stripe_checkout_session_id) DO UPDATE SET
-                        user_id = excluded.user_id,
-                        amount = excluded.amount,
-                        currency = excluded.currency,
-                        description = excluded.description,
-                        status = excluded.status,
-                        stripe_payment_intent_id = excluded.stripe_payment_intent_id,
-                        stripe_event_id = COALESCE(excluded.stripe_event_id, wallet_recharges.stripe_event_id),
-                        stripe_payment_status = excluded.stripe_payment_status,
+                        destination_account,
+                        sender_account,
+                        state,
+                        client_secret,
+                        checkout_session_id,
+                        id_reserva
+                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      ON CONFLICT(checkout_session_id) DO UPDATE SET
+                        stripe_payment_id = excluded.stripe_payment_id,
+                        state = excluded.state,
+                        client_secret = excluded.client_secret,
                         updated_at = CURRENT_TIMESTAMP`,
                 args: [
-                    userId,
+                    paymentIntentId,
                     amount,
                     currency,
                     description,
-                    rechargeStatus,
+                    destination,
+                    senderAccount,
+                    checkout_session.payment_status,
+                    checkout_session.client_secret ?? "",
                     checkout_session.id,
-                    checkout_session.payment_intent ?? null,
-                    stripeEvent.id ?? null,
-                    checkout_session.payment_status ?? null
+                    id_reserva
                 ]
             });
+        };
 
-            // Monedero (wallet_accounts + wallet_transactions)
-            // Solo aumentamos el saldo cuando el pago está realmente completado
-            if(rechargeStatus === "succeeded"){
-                try{
-                    await database.execute({ sql: "BEGIN IMMEDIATE", args: [] });
-
-                    await database.execute({
-                        sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
-                              VALUES (?, ?, 0)
-                              ON CONFLICT(user_id, currency) DO NOTHING`,
-                        args: [userId, currency]
-                    });
-
-                    const walletAccountRes = await database.execute({
-                        sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ?",
-                        args: [userId, currency]
-                    });
-
-                    if(walletAccountRes.rows.length === 0){
-                        await database.execute({ sql: "ROLLBACK", args: [] });
-                        return;
-                    }
-
-                    const walletAccount = walletAccountRes.rows[0];
-                    if(walletAccount.status === "blocked"){
-                        await database.execute({ sql: "ROLLBACK", args: [] });
-                        return;
-                    }
-
-                    const alreadyTx = await database.execute({
-                        sql: "SELECT id FROM wallet_transactions WHERE stripe_checkout_session_id = ?",
-                        args: [checkout_session.id]
-                    });
-                    if(alreadyTx.rows.length > 0){
-                        await database.execute({ sql: "COMMIT", args: [] });
-                        return;
-                    }
-
-                    const balanceBefore = Number(walletAccount.balance ?? 0);
-
-                    const updateBalanceRes = await database.execute({
-                        sql: `UPDATE wallet_accounts
-                              SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-                              WHERE id = ?
-                              RETURNING balance`,
-                        args: [amount, walletAccount.id]
-                    });
-
-                    const balanceAfter = Number(updateBalanceRes.rows?.[0]?.balance ?? (balanceBefore + amount));
-
-                    await database.execute({
-                        sql: `INSERT INTO wallet_transactions (
-                                wallet_account_id,
-                                user_id,
-                                currency,
-                                type,
-                                amount,
-                                status,
-                                balance_before,
-                                balance_after,
-                                description,
-                                stripe_checkout_session_id,
-                                stripe_payment_intent_id,
-                                stripe_event_id,
-                                stripe_payment_status
-                              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                              ON CONFLICT(stripe_checkout_session_id) DO NOTHING`,
-                        args: [
-                            walletAccount.id,
-                            userId,
-                            currency,
-                            "recharge",
-                            amount,
-                            "succeeded",
-                            balanceBefore,
-                            balanceAfter,
-                            description,
-                            checkout_session.id,
-                            checkout_session.payment_intent ?? null,
-                            stripeEvent.id ?? null,
-                            checkout_session.payment_status ?? null
-                        ]
-                    });
-
-                    await database.execute({ sql: "COMMIT", args: [] });
-                }
-                catch(error){
-                    try{ await database.execute({ sql: "ROLLBACK", args: [] }); } catch(_){}
-                    throw error;
-                }
+        let tx;
+        try{
+            try{
+                tx = await database.transaction("write");
             }
-        }
-    }
-    const reservaQuery = await database.execute({
-        sql: "SELECT id_reserva FROM reservas WHERE stripe_checkout_session_id = ?",
-        args: [checkout_session.id]
-    });
-    if(reservaQuery.rows.length === 0){
-        return 
-    }
-    let reserva = reservaQuery.rows[0];
+            catch(error){
+                const msg = String(error?.message ?? error?.cause?.message ?? error?.cause?.proto?.message ?? "");
+                if(msg.includes("HTTP status 404")){
+                    await runNoTx();
+                    return;
+                }
+                throw error;
+            }
 
-    await database.execute({
-        sql: "UPDATE reservas SET status = ?, stripe_payment_intent_id = ?, stripe_payment_intent_status = ? WHERE id_reserva = ?",
-        args: [status[8], checkout_session.payment_intent, checkout_session.payment_status, reserva.id_reserva]
+            const userRes = await tx.execute({
+                sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
+                args: [id_user]
+            });
+            if(userRes.rows.length === 0){
+                try{ await tx.rollback(); } catch(_){ }
+                return;
+            }
+
+            const trayectoRes = await tx.execute({
+                sql: "SELECT 1 FROM trayectos WHERE id = ? LIMIT 1",
+                args: [trayectoId]
+            });
+            if(trayectoRes.rows.length === 0){
+                try{ await tx.rollback(); } catch(_){ }
+                return;
+            }
+
+            const existingReserva = await tx.execute({
+                sql: "SELECT id_reserva FROM reservas WHERE id_reserva = ? LIMIT 1",
+                args: [id_reserva]
+            });
+
+            const existed = existingReserva.rows.length > 0;
+
+            if(!existed) return 
+            
+            const availableRes = await tx.execute({
+                sql: "SELECT disponible FROM trayectos WHERE id = ?",
+                args: [trayectoId]
+            });
+
+            const disponible = Number(availableRes.rows?.[0]?.disponible ?? 0);
+            if(!Number.isFinite(disponible) || disponible <= 0){
+                try{ await tx.rollback(); } catch(_){ }
+                return;
+            }
+
+            const decRes = await tx.execute({
+                sql: "UPDATE trayectos SET disponible = disponible - 1 WHERE id = ? AND disponible > 0",
+                args: [trayectoId]
+            });
+
+            if(Number(decRes.rowsAffected ?? 0) === 0){
+                try{ await tx.rollback(); } catch(_){ }
+                return;
+            }
+
+            let updatedRes = await database.execute({
+                sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
+                args: [status[8], id_reserva]
+            });
+            
+
+            const paymentIntentId = checkout_session.payment_intent ?? null;
+            const amount = Number(checkout_session.amount_total ?? 0)/100;
+            const currency = checkout_session.currency;
+            const description = checkout_session?.metadata?.description ?? "";
+            const destination = checkout_session?.metadata?.destination_account ?? null;
+            const senderAccount = checkout_session?.metadata?.sender_account ?? null;
+    console.log(paymentIntentId)
+            await tx.execute({
+        sql: `INSERT INTO payment_intents (
+            stripe_payment_id,
+            amount,
+            currency,
+            description,
+            destination_account,
+            sender_account,
+            state,
+            client_secret,
+            checkout_session_id,
+            id_reserva
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(checkout_session_id) DO UPDATE SET
+                    stripe_payment_id = excluded.stripe_payment_id,
+                    state = excluded.state,
+                    client_secret = excluded.client_secret,
+                    updated_at = CURRENT_TIMESTAMP`,
+        args: [
+            paymentIntentId,
+            amount,
+            currency,
+            description,
+            destination,
+            senderAccount,
+            checkout_session.payment_status,
+            checkout_session.client_secret??'',
+            checkout_session.id,
+            id_reserva
+        ]
     });
+            
+
+            await tx.commit();
+        }
+        catch(error){
+            if(tx){
+                try{ await tx.rollback(); } catch(_){ }
+            }
+            const msg = String(error?.message ?? error?.cause?.message ?? error?.cause?.proto?.message ?? "");
+            if(msg.includes("HTTP status 404")){
+                await runNoTx();
+                return;
+            }
+            throw error;
+        }
+
+
+
+
+        return;
+    }
+
+    
 
 }
 
@@ -561,7 +837,7 @@ async function handleCheckoutSessionExpired(jsonData){
         sql: "SELECT disponible FROM trayectos WHERE id = ?",
         args: [reserva.id_trayecto]
     });
-    const disponible = disponibleQuery.rows[0].disponible;
+    let disponible = disponibleQuery.rows[0].disponible;
     disponible++;
 
     await database.execute({
@@ -571,41 +847,41 @@ async function handleCheckoutSessionExpired(jsonData){
 
 }
 async function handleAccountUpdated(jsonData){
-
-    const stripeAccount = jsonData?.object;
-    if(!stripeAccount?.id){
-        return;
-    }
+ 
+     const stripeAccount = jsonData?.object;
+     if(!stripeAccount?.id){
+         return;
+     }
 
     const stripeAccountId = stripeAccount.id;
     const username = stripeAccount?.metadata?.username ?? null;
 
     const chargesEnabled = Boolean(stripeAccount.charges_enabled);
-    const payoutsEnabled = Boolean(stripeAccount.payouts_enabled);
+    const transfersEnabled = String(stripeAccount?.capabilities?.transfers ?? "").toLowerCase() === "active";
     const detailsSubmitted = Boolean(stripeAccount.details_submitted);
 
-    const onboardingComplete = (detailsSubmitted && chargesEnabled && payoutsEnabled);
+    const onboardingComplete = (detailsSubmitted && chargesEnabled && transfersEnabled);
 
+    let tx;
     try{
-        await database.execute({ sql: "BEGIN IMMEDIATE", args: [] });
-
-        const existing = await database.execute({
-            sql: "SELECT stripe_account_id FROM accounts WHERE stripe_account_id = ?",
-            args: [stripeAccountId]
-        });
-
-        if(existing.rows.length === 0 && !onboardingComplete){
-            await database.execute({ sql: "COMMIT", args: [] });
-            return;
-        }
+        tx = await database.transaction("write");
 
         if(!username){
             // Sin username no podemos asociar la cuenta al usuario de la BD
-            await database.execute({ sql: "COMMIT", args: [] });
+            try{ await tx.rollback(); } catch(_){ }
             return;
         }
 
-        await database.execute({
+        console.log("Stripe account webhook:", {
+            stripeAccountId,
+            username,
+            chargesEnabled,
+            transfersEnabled,
+            detailsSubmitted,
+            onboardingComplete
+        });
+
+        await tx.execute({
             sql: `INSERT INTO accounts (
                     stripe_account_id,
                     username,
@@ -622,13 +898,13 @@ async function handleAccountUpdated(jsonData){
                 stripeAccountId,
                 username,
                 chargesEnabled ? 1 : 0,
-                payoutsEnabled ? 1 : 0,
+                transfersEnabled ? 1 : 0,
                 detailsSubmitted ? 1 : 0
             ]
         });
 
         if(onboardingComplete){
-            await database.execute({
+            await tx.execute({
                 sql: `UPDATE users
                       SET stripe_account = CASE
                             WHEN stripe_account IS NULL OR stripe_account = ? THEN ?
@@ -639,14 +915,26 @@ async function handleAccountUpdated(jsonData){
                 args: [stripeAccountId, stripeAccountId, username]
             });
         }
+        else{
+            await tx.execute({
+                sql: `UPDATE users
+                      SET onboarding_ended = 0
+                      WHERE username = ? AND onboarding_ended != 1`,
+                args: [username]
+            });
+        }
 
-        await database.execute({ sql: "COMMIT", args: [] });
+        await tx.commit();
     }
     catch(error){
-        try{ await database.execute({ sql: "ROLLBACK", args: [] }); } catch(_){ }
-        throw error;
-    }
+        console.error("handleAccountUpdated error:", error);
+        if(tx){
+            try{ await tx.rollback(); } catch(_){ }
+        }
+       throw error;
+   }
 }
+
 export const methods = {
     createEvent
 }
