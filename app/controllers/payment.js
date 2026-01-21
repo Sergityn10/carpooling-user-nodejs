@@ -70,8 +70,16 @@ const rechargeWalletUser = async (req, res) =>{
 }
 
 async function createCheckoutPaymentIntent(req, res){
-    const {amount, description,destination, success_url, cancel_url, } = req.body;
+    console.log(req.body)
+    const {amount, id_reserva, description,destination, success_url, cancel_url, } = req.body;
     const user = req.user
+
+    const trayectoIdRaw = req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
+    const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
+    if(!Number.isFinite(trayectoId)){
+        return res.status(400).send({status: "Error", message: "Missing or invalid id_trayecto"});
+    }
+
     const checkout_session = await stripe.checkout.sessions.create({
         customer: user.stripe_customer_account,
         line_items: [{
@@ -91,12 +99,37 @@ async function createCheckoutPaymentIntent(req, res){
                 destination: destination
             },
         },
+        metadata: {
+            type: "reserva",
+            id_user: user.id,
+            id_reserva,
+            sender_account: user.stripe_account,
+            destination_account: destination,
+            id_trayecto: String(trayectoId)
+        },
         submit_type: 'pay',
         mode: 'payment',
         success_url: success_url,
         cancel_url: cancel_url,
     });
-    return  res.status(200).send({checkout_session})
+
+    const paymentIntentId = checkout_session.payment_intent;
+    console.log(checkout_session)
+    console.log(JSON.stringify({
+            paymentIntentId,
+            amount,
+            currency:'eur',
+            description,
+            destination,
+            sender_account: user.stripe_account,
+            state:checkout_session.payment_status,
+            client_secret:checkout_session.client_secret?? null,
+            checkout_session_id:checkout_session.id,
+            id_reserva
+    }))
+
+
+    return  res.status(200).send(checkout_session)
 }
 
 async function createStripeConnectAccount(req, res){
