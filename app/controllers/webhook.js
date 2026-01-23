@@ -338,30 +338,187 @@ async function handlePaymentIntentUpdated(jsonData){
 }
 async function handlePaymentIntentSucceeded(jsonData){
     const paymentIntent = jsonData.object;
-    console.log(paymentIntent)
-    const id_reserva = paymentIntent.metadata.id_reserva;
+    console.log("entro en payment intent suceeded",paymentIntent)
+    let id_reserva = paymentIntent?.metadata?.id_reserva;
     if(!id_reserva){
+        console.log("Entro en el if del payment intent suceededd.")
+        console.log("metadad del payment", paymentIntent.metadata)
         let paymentIntentRes = await database.execute({
             sql: "SELECT * FROM payment_intents WHERE stripe_payment_id = ?",
             args: [paymentIntent.id]
         });
         id_reserva = paymentIntentRes.rows[0].id_reserva;
     }
-    await database.execute({
-        sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
-        args: [status[8], id_reserva]
+    const stripePaymentIntentId = paymentIntent?.id ?? null;
+    const currency = String(paymentIntent?.currency ?? "eur").toLowerCase();
+    const grossAmountCents = Number(paymentIntent?.amount_received ?? paymentIntent?.amount ?? 0);
+
+    if(!stripePaymentIntentId || !Number.isFinite(grossAmountCents) || grossAmountCents <= 0){
+        return;
+    }
+
+    const paymentIntentRowRes = await database.execute({
+        sql: `SELECT sender_account, destination_account, description
+              FROM payment_intents
+              WHERE stripe_payment_id = ?
+              LIMIT 1`,
+        args: [stripePaymentIntentId]
+    });
+    const senderAccount = paymentIntentRowRes.rows?.[0]?.sender_account ?? null;
+    const destinationAccount = paymentIntentRowRes.rows?.[0]?.destination_account ?? null;
+    const paymentDescription = String(paymentIntentRowRes.rows?.[0]?.description ?? "");
+
+    if(!senderAccount || !destinationAccount){
+        return;
+    }
+
+    const payerRes = await database.execute({
+        sql: "SELECT id FROM users WHERE stripe_account = ? LIMIT 1",
+        args: [senderAccount]
+    });
+    const receiverRes = await database.execute({
+        sql: "SELECT id FROM users WHERE stripe_account = ? LIMIT 1",
+        args: [destinationAccount]
     });
 
-    // await database.execute({
-    //     sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    //     args: [status[2], paymentIntent.status, paymentIntent.id]
-    // });
+    const payerUserId = Number(payerRes.rows?.[0]?.id);
+    const receiverUserId = Number(receiverRes.rows?.[0]?.id);
 
-    // await database.execute({
-    //     sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    //     args: [status[2], paymentIntent.status, paymentIntent.id]
-    // });
-    
+    const platformUserIdRaw = process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? "";
+    const platformUserId = Number(platformUserIdRaw);
+
+    if(!Number.isFinite(payerUserId) || !Number.isFinite(receiverUserId) || !Number.isFinite(platformUserId)){
+        throw new Error("Missing payer/receiver/platform user id for wallet transactions");
+    }
+
+    const commissionAmountCents = Math.round(grossAmountCents * 0.15);
+    const netAmountCents = grossAmountCents - commissionAmountCents;
+
+    if(netAmountCents < 0){
+        throw new Error("Invalid commission calculation (net < 0)");
+    }
+
+    let tx;
+    try{
+        tx = await database.transaction("write");
+
+        await tx.execute({
+            sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
+            args: [status[8], id_reserva]
+        });
+
+        const ensureWalletAccount = async (userId) => {
+            await tx.execute({
+                sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
+                      VALUES (?, ?, 0)
+                      ON CONFLICT(user_id, currency) DO NOTHING`,
+                args: [userId, currency]
+            });
+
+            const res = await tx.execute({
+                sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ? LIMIT 1",
+                args: [userId, currency]
+            });
+
+            if(res.rows.length === 0){
+                throw new Error("Wallet account not found");
+            }
+
+            const acc = res.rows[0];
+            if(String(acc.status ?? "active") === "blocked"){
+                throw new Error("Wallet blocked");
+            }
+
+            return {
+                id: Number(acc.id),
+                balance: Number(acc.balance ?? 0)
+            };
+        };
+
+        const applyWalletTx = async ({ userId, type, amount, description }) => {
+            const already = await tx.execute({
+                sql: `SELECT id
+                      FROM wallet_transactions
+                      WHERE stripe_payment_intent_id = ? AND id_reserva = ? AND type = ?
+                      LIMIT 1`,
+                args: [stripePaymentIntentId, id_reserva, type]
+            });
+            if(already.rows.length > 0){
+                return;
+            }
+
+            const acc = await ensureWalletAccount(userId);
+            const balanceBefore = Number(acc.balance ?? 0);
+
+            const upd = await tx.execute({
+                sql: `UPDATE wallet_accounts
+                      SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
+                      WHERE id = ?
+                      RETURNING balance`,
+                args: [amount, acc.id]
+            });
+
+            const balanceAfter = Number(upd.rows?.[0]?.balance ?? (balanceBefore + amount));
+
+            await tx.execute({
+                sql: `INSERT INTO wallet_transactions (
+                        wallet_account_id,
+                        user_id,
+                        currency,
+                        id_reserva,
+                        type,
+                        amount,
+                        balance_before,
+                        balance_after,
+                        description,
+                        stripe_payment_intent_id
+                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                args: [
+                    acc.id,
+                    userId,
+                    currency,
+                    id_reserva,
+                    type,
+                    amount,
+                    balanceBefore,
+                    balanceAfter,
+                    description,
+                    stripePaymentIntentId
+                ]
+            });
+        };
+
+        const baseDesc = paymentDescription ? `Reserva: ${paymentDescription}` : "Reserva";
+
+        await applyWalletTx({
+            userId: payerUserId,
+            type: "reservation_payment",
+            amount: -grossAmountCents,
+            description: `${baseDesc} (pago)`
+        });
+
+        await applyWalletTx({
+            userId: receiverUserId,
+            type: "reservation_revenue",
+            amount: netAmountCents,
+            description: `${baseDesc} (ingreso)`
+        });
+
+        await applyWalletTx({
+            userId: platformUserId,
+            type: "commision",
+            amount: commissionAmountCents,
+            description: `${baseDesc} (comisión 15%)`
+        });
+
+        await tx.commit();
+    }
+    catch(error){
+        if(tx){
+            try{ await tx.rollback(); } catch(_){ }
+        }
+        throw error;
+    }
 }
 async function handlePaymentIntentFailed(jsonData){
     const paymentIntent = jsonData.object;

@@ -263,22 +263,19 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
   wallet_account_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   currency TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('recharge','debit','credit','refund','adjustment')),
+  id_reserva TEXT NULL,
+  type TEXT NOT NULL CHECK (type IN ('deposit','reservation_payment','reservation_revenue','commision','refund','refund_reversal', 'adjustment')),
   amount INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','canceled','expired')),
   balance_before INTEGER NOT NULL,
   balance_after INTEGER NOT NULL,
   description TEXT NULL,
-  stripe_checkout_session_id TEXT NULL,
   stripe_payment_intent_id TEXT NULL,
-  stripe_event_id TEXT NULL,
-  stripe_payment_status TEXT NULL,
   created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
   updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
   FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  UNIQUE (stripe_checkout_session_id),
-  UNIQUE (stripe_event_id)
+  FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (stripe_payment_intent_id) REFERENCES payment_intents(payment_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
   `)
 await db.execute(`
