@@ -112,21 +112,30 @@ CREATE TABLE IF NOT EXISTS comments (
 `);
 await db.execute(`
 CREATE TABLE IF NOT EXISTS events (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
   -- 1. Clave primaria con TEXT
-  event_id TEXT PRIMARY KEY NOT NULL,
-  
+  event_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payment_intent_id TEXT NULL,
   -- 2. JSON se convierte a TEXT
   data TEXT NOT NULL,
   
   -- 3. Cadenas de texto
   source TEXT NOT NULL,
   processing_error TEXT NULL,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
   
   -- Nota: Las restricciones UNIQUE en la clave primaria son redundantes en SQLite
 );
 
 `);
+
+try{ await db.execute("ALTER TABLE events ADD COLUMN event_type TEXT"); } catch(_e){}
+try{ await db.execute("ALTER TABLE events ADD COLUMN payment_intent_id TEXT"); } catch(_e){}
+try{ await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id)"); } catch(_e){}
+
 await db.execute(`
 CREATE TABLE IF NOT EXISTS enterprises (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,22 +263,19 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
   wallet_account_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   currency TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('recharge','debit','credit','refund','adjustment')),
+  id_reserva TEXT NULL,
+  type TEXT NOT NULL CHECK (type IN ('deposit','reservation_payment','reservation_revenue','commision','refund','refund_reversal', 'adjustment')),
   amount INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','canceled','expired')),
   balance_before INTEGER NOT NULL,
   balance_after INTEGER NOT NULL,
   description TEXT NULL,
-  stripe_checkout_session_id TEXT NULL,
   stripe_payment_intent_id TEXT NULL,
-  stripe_event_id TEXT NULL,
-  stripe_payment_status TEXT NULL,
   created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
   updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
   FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  UNIQUE (stripe_checkout_session_id),
-  UNIQUE (stripe_event_id)
+  FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (stripe_payment_intent_id) REFERENCES payment_intents(payment_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
   `)
 await db.execute(`
@@ -297,6 +303,37 @@ CREATE TABLE IF NOT EXISTS wallet_payouts (
   UNIQUE (stripe_event_id)
 );
   `)
+await db.execute(`
+CREATE TABLE IF NOT EXISTS payment_intents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stripe_payment_id TEXT NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'eur' CHECK (currency IN ('eur', 'usd', 'gbp', 'jpy', 'aud')),
+    description TEXT NULL,
+    destination_account TEXT NULL,
+    sender_account TEXT NULL,
+    state TEXT NOT NULL,
+    client_secret TEXT NULL,
+    checkout_session_id TEXT NULL,
+    id_reserva TEXT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva)
+    
+);
+  `)
+
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN currency TEXT NOT NULL DEFAULT 'eur'"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN description TEXT NULL"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN destination_account TEXT NULL"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN sender_account TEXT NULL"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN client_secret TEXT NULL"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN checkout_session_id TEXT NULL"); } catch(_e){}
+try{ await db.execute("ALTER TABLE payment_intents ADD COLUMN id_reserva TEXT NULL"); } catch(_e){}
+
+try{ await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_checkout_session_id ON payment_intents(checkout_session_id)"); } catch(_e){}
+try{ await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_stripe_payment_id ON payment_intents(stripe_payment_id)"); } catch(_e){}
 
 
 //funcionalidades de la aplicacion
@@ -387,7 +424,7 @@ app.get('/api/auth/oauth/register', async (req, res) => {
         const comprobarUser = await dbUtils.existUser(googleUserData.email);
 
         if (comprobarUser) {
-            res.redirect(`${frontendUrl}?error=user_exists`);
+            res.redirect(`${frontendUrl}register?error=user_exists`);
             return;
         }
 
@@ -410,7 +447,7 @@ app.get('/api/auth/oauth/register', async (req, res) => {
         });
 
         // 6. Construir la URL de Redirección con parámetros
-        const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
+        const finalRedirectUrl = `${frontendUrl}register/personal-info?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
         // 7. Redirigir al frontend
         res.cookie("access_token", jwtToken, {
             expires: new Date(Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000), // 1 day
@@ -427,7 +464,7 @@ app.get('/api/auth/oauth/register', async (req, res) => {
         console.error("Error en el flujo OAuth:", error);
 
         // En caso de error, redirige al frontend con un mensaje de error
-        const errorRedirectUrl = `${frontendUrl}?error=auth_failed`;
+        const errorRedirectUrl = `${frontendUrl}register?error=auth_failed`;
         res.redirect(errorRedirectUrl);
     }
 });
