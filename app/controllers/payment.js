@@ -70,8 +70,16 @@ const rechargeWalletUser = async (req, res) =>{
 }
 
 async function createCheckoutPaymentIntent(req, res){
-    const {amount, description,destination, success_url, cancel_url, } = req.body;
+    console.log(req.body)
+    const {amount, id_reserva, description,destination, success_url, cancel_url, } = req.body;
     const user = req.user
+
+    const trayectoIdRaw = req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
+    const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
+    if(!Number.isFinite(trayectoId)){
+        return res.status(400).send({status: "Error", message: "Missing or invalid id_trayecto"});
+    }
+
     const checkout_session = await stripe.checkout.sessions.create({
         customer: user.stripe_customer_account,
         line_items: [{
@@ -86,29 +94,69 @@ async function createCheckoutPaymentIntent(req, res){
             quantity: 1,
         }],
         payment_intent_data: {
-            application_fee_amount: amount * 0.1,
+            application_fee_amount: amount * 0.15,
             transfer_data: {
                 destination: destination
             },
+        },
+        metadata: {
+            type: "reserva",
+            id_user: user.id,
+            id_reserva,
+            sender_account: user.stripe_account,
+            destination_account: destination,
+            id_trayecto: String(trayectoId)
         },
         submit_type: 'pay',
         mode: 'payment',
         success_url: success_url,
         cancel_url: cancel_url,
     });
-    return  res.status(200).send({checkout_session})
+
+    const paymentIntentId = checkout_session.payment_intent;
+    console.log(checkout_session)
+    console.log(JSON.stringify({
+            paymentIntentId,
+            amount,
+            currency:'eur',
+            description,
+            destination,
+            sender_account: user.stripe_account,
+            state:checkout_session.payment_status,
+            client_secret:checkout_session.client_secret?? null,
+            checkout_session_id:checkout_session.id,
+            id_reserva
+    }))
+
+
+    return  res.status(200).send(checkout_session)
 }
 
 async function createStripeConnectAccount(req, res){
     const {email, country, name} = req.body;
     const user = req.user
     console.log("Creando cuaenta de stripe a ", user.username)
-    const Useraccount = await database.execute({
-        sql: "SELECT * FROM accounts WHERE username= ?",
+    const existingUser = await database.execute({
+        sql: "SELECT stripe_account, onboarding_ended FROM users WHERE username = ?",
         args: [user.username]
-    })
-    if(Useraccount.rows.length > 0){
-        return res.status(400).send({status: "Error", message: "You already have an account"})
+    });
+    const existingStripeAccount = existingUser.rows?.[0]?.stripe_account;
+    const onboardingEnded = Boolean(existingUser.rows?.[0]?.onboarding_ended);
+
+    if(existingStripeAccount){
+        if(onboardingEnded){
+            return res.status(400).send({status: "Error", message: "You already have an account"})
+        }
+
+        const accountLink = await stripe.accountLinks.create({
+            account: existingStripeAccount,
+            refresh_url: process.env.ORIGIN,
+            return_url: process.env.ORIGIN,
+            type: 'account_onboarding',
+            collect: "eventually_due"
+        });
+
+        return res.status(200).send({status: "Success", message: "Stripe onboarding link created successfully", accountLink})
     }
   const account = await stripe.accounts.create({
     type: 'express',
@@ -119,8 +167,6 @@ async function createStripeConnectAccount(req, res){
         email: user.email,
         id: user.id
     },
-    
-    
     business_type: 'individual',
     business_profile: {
       mcc: '5812',
@@ -130,40 +176,27 @@ async function createStripeConnectAccount(req, res){
       url: 'https://carpooling.com'
     },
     capabilities: {
-        
-      card_payments: {
-        requested: true,
-      },
-      transfers: {
-        requested: true,
-      },
+        card_payments: {
+          requested: true,
+        },
+        transfers: {
+          requested: true,
+        },
     },
     tos_acceptance: {
       service_agreement: "full"
 }
 });
 
-    const insertAccount = await database.execute({
-        sql: "INSERT INTO accounts (stripe_account_id, username) VALUES (?, ?)",
+    await database.execute({
+        sql: "UPDATE users SET stripe_account = ?, onboarding_ended = 0 WHERE username = ?",
         args: [account.id, user.username]
     });
-
-    if(insertAccount.rowsAffected === 0) {
-        return res.status(500).send({status: "Error", message: "Failed to register user"});
-    }
-    const result = await database.execute({
-        sql: "UPDATE users SET stripe_account = ? WHERE username = ?",
-        args: [account.id, user.username]
-    });
-    
-    if(result.rowsAffected === 0){
-        return res.status(500).send({status: "Error", message: "Failed to create stripe account"});
-    }
 
   const accountLink = await stripe.accountLinks.create({
     account: account.id,
-    refresh_url: 'http://localhost:5173',
-    return_url: 'http://localhost:5173',
+    refresh_url: process.env.ORIGIN,
+    return_url: process.env.ORIGIN,
     type: 'account_onboarding',
     collect: "eventually_due"
   });
@@ -182,7 +215,7 @@ const getMyStripeConnectAccount = async (req, res) => {
     if(!rows[0]?.stripe_account){
         return res.status(404).send({status: "Error", message: "You dont have an account"})
     }
-    const stripe_account_id = rows[0].stripe_account;
+    const stripe_account_id = req.user.stripe_account;
     const account = await stripe.accounts.retrieve(stripe_account_id);
     return res.status(200).send({status: "Success", message: "Stripe account created successfully", account})
 }
@@ -315,7 +348,7 @@ const createBillingPortal = async (req, res) => {
     const user = req.user
     const billingPortal = await stripe.billingPortal.sessions.create({
         customer: req.user.stripe_customer_account,
-        return_url: 'http://localhost:5173',
+        return_url: process.env.ORIGIN,
     });
     return res.status(200).send({status: "Success", message: "Stripe billing portal created successfully", billingPortal})
 }
@@ -328,6 +361,7 @@ async function getCashBalance(req, res){
     const cashBalance = await stripe.balance.retrieve({
         stripeAccount: stripe_account
     });
+    console.log(cashBalance)
     const availableEuros = cashBalance.available.find(b => b.currency === 'eur');
     const pendingEuros = cashBalance.pending.find(b => b.currency === 'eur');
 
@@ -427,7 +461,9 @@ async function createSetupIntent(req, res){
 }
 async function createPayout(req, res){
     const {amount, currency} = req.body;
-    const payout = await stripe.payouts.create({
+    let payout
+    try{
+         payout = await stripe.payouts.create({
         amount: amount,
         currency: currency,
         method: 'standard',
@@ -435,6 +471,15 @@ async function createPayout(req, res){
             username: req.user.username
         }
     });
+    }
+    catch(error){
+        if(error.code === "balance_insufficient"){
+
+            return res.status(400).send({status: "Error", message: "No tienes suficiente dinero para retirar"})
+        }
+        return res.status(400).send({status: "Error", message: "Payout creation failed", error})
+    }
+    console.log(payout)
     return res.status(200).send({status: "Success", message: "Payout created successfully", payout})
 }
 async function createBankAccount(req, res){
