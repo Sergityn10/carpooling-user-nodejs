@@ -94,7 +94,7 @@ async function createCheckoutPaymentIntent(req, res){
             quantity: 1,
         }],
         payment_intent_data: {
-            application_fee_amount: amount * 0.1,
+            application_fee_amount: amount * 0.15,
             transfer_data: {
                 destination: destination
             },
@@ -215,7 +215,7 @@ const getMyStripeConnectAccount = async (req, res) => {
     if(!rows[0]?.stripe_account){
         return res.status(404).send({status: "Error", message: "You dont have an account"})
     }
-    const stripe_account_id = rows[0].stripe_account;
+    const stripe_account_id = req.user.stripe_account;
     const account = await stripe.accounts.retrieve(stripe_account_id);
     return res.status(200).send({status: "Success", message: "Stripe account created successfully", account})
 }
@@ -361,6 +361,7 @@ async function getCashBalance(req, res){
     const cashBalance = await stripe.balance.retrieve({
         stripeAccount: stripe_account
     });
+    console.log(cashBalance)
     const availableEuros = cashBalance.available.find(b => b.currency === 'eur');
     const pendingEuros = cashBalance.pending.find(b => b.currency === 'eur');
 
@@ -460,7 +461,9 @@ async function createSetupIntent(req, res){
 }
 async function createPayout(req, res){
     const {amount, currency} = req.body;
-    const payout = await stripe.payouts.create({
+    let payout
+    try{
+         payout = await stripe.payouts.create({
         amount: amount,
         currency: currency,
         method: 'standard',
@@ -468,6 +471,15 @@ async function createPayout(req, res){
             username: req.user.username
         }
     });
+    }
+    catch(error){
+        if(error.code === "balance_insufficient"){
+
+            return res.status(400).send({status: "Error", message: "No tienes suficiente dinero para retirar"})
+        }
+        return res.status(400).send({status: "Error", message: "Payout creation failed", error})
+    }
+    console.log(payout)
     return res.status(200).send({status: "Success", message: "Payout created successfully", payout})
 }
 async function createBankAccount(req, res){
