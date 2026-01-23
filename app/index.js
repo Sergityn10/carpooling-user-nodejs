@@ -26,7 +26,9 @@ import { methods as dbUtils } from "./utils/db.js"
 dotenv.config()
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const origin = process.env.ORIGIN
+let origin = process.env.ORIGIN
+origin = origin[origin.length - 1] !== '/'? origin + '/' : origin
+console.log(origin)
 const trayectos_origin = process.env.TRAYECTOS_ORIGIN
 const messsages_origin = process.env.MESSSAGES_ORIGIN
 const app = express()
