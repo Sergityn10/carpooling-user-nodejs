@@ -1,5 +1,22 @@
-USE carpooling;
-
+CREATE TABLE IF NOT EXISTS enterprises (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   name TEXT NOT NULL,
+   email TEXT NOT NULL UNIQUE,
+   password TEXT NOT NULL,
+   phone TEXT NULL,
+   cif TEXT NULL UNIQUE,
+   website TEXT NULL,
+   address_line1 TEXT NULL,
+   address_line2 TEXT NULL,
+   city TEXT NULL,
+   province TEXT NULL,
+   postal_code TEXT NULL,
+   country TEXT NOT NULL DEFAULT 'ES',
+   verified INTEGER NOT NULL DEFAULT 0,
+   created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+   updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+);
+-- MYSQL
 CREATE TABLE `enterprises` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(255) NOT NULL,

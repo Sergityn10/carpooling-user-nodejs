@@ -28,6 +28,7 @@ dotenv.config()
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let origin = process.env.ORIGIN
 origin = origin[origin.length - 1] !== '/'? origin + '/' : origin
+let origin_without = origin[origin.length - 1] === '/'? origin.slice(0, -1) : origin  
 console.log(origin)
 const trayectos_origin = process.env.TRAYECTOS_ORIGIN
 const messsages_origin = process.env.MESSSAGES_ORIGIN
@@ -50,7 +51,7 @@ app.use(express.json())
 app.use(cookieParser())
 
 app.use(cors({
-    origin: ["http://localhost:5173", "http://localhost:4001", origin, trayectos_origin,messsages_origin ], // Cambia esto a la URL de tu frontend
+    origin: ["http://localhost:5173", "http://localhost:4001", origin,origin_without, trayectos_origin,messsages_origin ], // Cambia esto a la URL de tu frontend
     methods: "GET,POST,PUT,PATCH,DELETE",
     credentials: true // Permite el uso de cookies
 }))
