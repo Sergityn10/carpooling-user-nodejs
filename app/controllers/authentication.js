@@ -158,7 +158,11 @@ async function oauthGoogle(req, res) {
 }
 
 async function logout(req, res) {
-    res.clearCookie("access_token");
+    res.clearCookie("access_token", {
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "none",
+        path: "/",
+    });
     return res.status(200).send({ status: "Success", message: "Logout successful" });
 }
 
