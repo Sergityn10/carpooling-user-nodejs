@@ -1,14 +1,51 @@
 -- Users table based on user.js schema
 CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    -- Constraints based on Zod schema
-    CONSTRAINT chk_username_length CHECK (CHAR_LENGTH(username) >= 3 AND CHAR_LENGTH(username) <= 50),
-    CONSTRAINT chk_password_length CHECK (CHAR_LENGTH(password) >= 6 AND CHAR_LENGTH(password) <= 100),
-    CONSTRAINT chk_email_format CHECK (email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   username TEXT NOT NULL UNIQUE,
+   email TEXT NOT NULL UNIQUE,
+   password TEXT NULL,
+   img_perfil TEXT,
+   name TEXT,
+   phone TEXT,
+   fecha_nacimiento TEXT NULL,
+   dni TEXT NULL UNIQUE,
+   genero TEXT NULL CHECK (genero IN ('Masculino','Femenino','Otro')),
+   stripe_account TEXT,
+   stripe_customer_account TEXT,
+   ciudad TEXT NULL,
+   provincia TEXT NULL,
+   codigo_postal TEXT NULL,
+   direccion TEXT NULL,
+   onboarding_ended INTEGER NOT NULL DEFAULT 0,
+   about_me TEXT,
+   auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
+   google_id TEXT NULL,
+   created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+   updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
 );
+
+--mysql
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    email VARCHAR(150) NOT NULL UNIQUE,
+    password VARCHAR(255) NULL,
+    img_perfil VARCHAR(255),
+    name VARCHAR(150),
+    phone VARCHAR(20),
+    fecha_nacimiento DATE NULL,
+    dni VARCHAR(20) NULL UNIQUE,
+    genero ENUM('Masculino', 'Femenino', 'Otro') NULL,
+    stripe_account VARCHAR(255),
+    stripe_customer_account VARCHAR(255),
+    ciudad VARCHAR(100) NULL,
+    provincia VARCHAR(100) NULL,
+    codigo_postal VARCHAR(20) NULL,
+    direccion VARCHAR(255) NULL,
+    onboarding_ended TINYINT(1) NOT NULL DEFAULT 0,
+    about_me TEXT,
+    auth_method ENUM('password', 'google', 'other') NOT NULL DEFAULT 'password',
+    google_id VARCHAR(255) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
