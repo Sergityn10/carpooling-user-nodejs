@@ -73,7 +73,6 @@ app.use(
 
 //     next();
 // });
-app.options("*", cors(corsOptions));
 await db.execute(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
