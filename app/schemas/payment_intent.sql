@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS payment_intents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    stripe_payment_id TEXT NULL,
+    stripe_payment_id TEXT NULL UNIQUE,
     amount INTEGER NOT NULL,
     currency TEXT NOT NULL DEFAULT 'eur' CHECK (currency IN ('eur', 'usd', 'gbp', 'jpy', 'aud')),
     description TEXT NULL,
@@ -22,7 +22,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_stripe_payment_id ON payme
 --MYSQL
 CREATE TABLE IF NOT EXISTS payment_intents (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    stripe_payment_id VARCHAR(255) NULL,
+    stripe_payment_id VARCHAR(255) NULL UNIQUE,
     amount INT NOT NULL,
     currency ENUM('eur', 'usd', 'gbp', 'jpy', 'aud') NOT NULL DEFAULT 'eur',
     description TEXT NULL,
