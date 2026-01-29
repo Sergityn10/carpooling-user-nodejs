@@ -281,6 +281,24 @@ CREATE TABLE IF NOT EXISTS wallet_recharges (
 );
   `);
 await db.execute(`
+CREATE TABLE IF NOT EXISTS payment_intents (
+    stripe_payment_id TEXT UNIQUE PRIMARY KEY,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'eur' CHECK (currency IN ('eur', 'usd', 'gbp', 'jpy', 'aud')),
+    description TEXT NULL,
+    destination_account TEXT NULL,
+    sender_account TEXT NULL,
+    state TEXT NOT NULL,
+    client_secret TEXT NULL,
+    checkout_session_id TEXT NULL,
+    id_reserva TEXT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva),
+    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id)
+);
+  `);
+await db.execute(`
 CREATE TABLE IF NOT EXISTS wallet_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   wallet_account_id INTEGER NOT NULL,
@@ -298,7 +316,7 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
   FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
   FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (stripe_payment_intent_id) REFERENCES payment_intents(payment_id) ON DELETE CASCADE ON UPDATE CASCADE
+  FOREIGN KEY (stripe_payment_intent_id) REFERENCES payment_intents(stripe_payment_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
   `);
 await db.execute(`
@@ -326,66 +344,6 @@ CREATE TABLE IF NOT EXISTS wallet_payouts (
   UNIQUE (stripe_event_id)
 );
   `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS payment_intents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    stripe_payment_id TEXT NULL,
-    amount INTEGER NOT NULL,
-    currency TEXT NOT NULL DEFAULT 'eur' CHECK (currency IN ('eur', 'usd', 'gbp', 'jpy', 'aud')),
-    description TEXT NULL,
-    destination_account TEXT NULL,
-    sender_account TEXT NULL,
-    state TEXT NOT NULL,
-    client_secret TEXT NULL,
-    checkout_session_id TEXT NULL,
-    id_reserva TEXT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva)
-    
-);
-  `);
-
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN currency TEXT NOT NULL DEFAULT 'eur'",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN description TEXT NULL",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN destination_account TEXT NULL",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN sender_account TEXT NULL",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN client_secret TEXT NULL",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN checkout_session_id TEXT NULL",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "ALTER TABLE payment_intents ADD COLUMN id_reserva TEXT NULL",
-  );
-} catch (_e) {}
 
 try {
   await db.execute(
@@ -685,6 +643,9 @@ app.post("/api/webhook/:source", (req, res) => webhook.createEvent(req, res));
 app.post("/api/payment/session", (req, res) => payment.createSession(req, res));
 app.post("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
   payment.createStripeConnectAccount(req, res),
+);
+app.get("/api/payment/stripe-connect-link", authorization.isLoged, (req, res) =>
+  payment.createAccountLink(req, res),
 );
 app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
   payment.getMyStripeConnectAccount(req, res),
