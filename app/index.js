@@ -73,6 +73,10 @@ app.use(
 
 //     next();
 // });
+
+try {
+  await db.execute("PRAGMA foreign_keys = ON");
+} catch (_e) {}
 await db.execute(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,9 +119,9 @@ CREATE TABLE IF NOT EXISTS comments (
     CONSTRAINT chk_opinion_rating CHECK (rating >= 1 AND rating <= 10),
     
     -- 4. Claves foráneas (SQLite las maneja de forma diferente, pero la sintaxis es similar)
-    FOREIGN KEY (id_trayecto) REFERENCES trayectos(id),
-    FOREIGN KEY (username_commentator) REFERENCES users(username),
-    FOREIGN KEY (username_trayect) REFERENCES users(username),
+    FOREIGN KEY (id_trayecto) REFERENCES trayectos(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (username_commentator) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (username_trayect) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
     
     -- 5. Restricción UNIQUE (el nombre se elimina o se simplifica, se puede omitir el "KEY")
     UNIQUE (id_trayecto, username_commentator)
@@ -294,8 +298,8 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     id_reserva TEXT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva),
-    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id)
+    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE SET NULL ON UPDATE CASCADE,
+    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
   `);
 await db.execute(`
@@ -694,10 +698,15 @@ app.post(
   authorization.isLoged,
   (req, res) => payment.createCheckoutPaymentIntent(req, res),
 );
-app.get(
-  "/api/payment/payment-intent/capture/:paymentIntentId",
+app.post(
+  "/api/payment/payment-intent/capture",
   authorization.isLoged,
   (req, res) => payment.capturePaymentIntent(req, res),
+);
+app.post(
+  "/api/payment/payment-intent/cancel",
+  authorization.isLoged,
+  (req, res) => payment.cancelPaymentIntent(req, res),
 );
 app.post("/api/payment/payout", authorization.isLoged, (req, res) =>
   payment.createPayout(req, res),

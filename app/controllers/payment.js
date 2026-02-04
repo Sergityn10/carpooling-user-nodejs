@@ -54,6 +54,12 @@ const rechargeWalletUser = async (req, res) => {
       transfer_data: {
         destination: destination,
       },
+      metadata: {
+        userId: String(user.id),
+        type: "recharge",
+        typo: "recharge",
+        description: String(description ?? ""),
+      },
     },
     metadata: {
       userId: user.id,
@@ -110,6 +116,14 @@ async function createCheckoutPaymentIntent(req, res) {
       capture_method: "manual", // <--- ESTO ACTIVA LA RETENCIÓN (AUTH)
       transfer_data: {
         destination: destination,
+      },
+      metadata: {
+        type: "reserva",
+        id_user: String(user.id),
+        id_reserva: String(id_reserva),
+        sender_account: String(user.stripe_account ?? ""),
+        destination_account: String(destination ?? ""),
+        id_trayecto: String(trayectoId),
       },
     },
     metadata: {
@@ -525,12 +539,107 @@ async function getWalletTransactions(req, res) {
 }
 
 async function capturePaymentIntent(req, res) {
-  const { paymentIntentId } = req.params;
-  const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
+  const { paymentIntentId } = req.body;
+  console.log(paymentIntentId);
+  if (!paymentIntentId) {
+    return res.status(400).send({
+      status: "Error",
+      message: "Payment intent id is required",
+    });
+  }
+  let paymentIntent;
+  try {
+    paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
+  } catch (error) {
+    return res.status(400).send({
+      status: "Error",
+      message: "Payment intent captured failed",
+      error,
+    });
+  }
   return res.status(200).send({
     status: "Success",
     message: "Payment intent captured successfully",
     paymentIntent,
+  });
+}
+
+async function cancelPaymentIntent(req, res) {
+  const paymentIntentId =
+    req.body?.paymentIntentId ??
+    req.body?.payment_intent_id ??
+    req.body?.stripe_payment_intent_id;
+  const cancellationReason = req.body?.cancellation_reason;
+
+  if (!paymentIntentId) {
+    return res.status(400).send({
+      status: "Error",
+      message: "Payment intent id is required",
+    });
+  }
+
+  let current;
+  try {
+    current = await stripe.paymentIntents.retrieve(paymentIntentId);
+  } catch (error) {
+    return res.status(404).send({
+      status: "Error",
+      message: "Payment intent not found",
+      error: error?.message ?? String(error),
+    });
+  }
+
+  const currentStatus = String(current?.status ?? "");
+  if (currentStatus === "canceled") {
+    try {
+      await database.execute({
+        sql: "UPDATE payment_intents SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_id = ?",
+        args: ["canceled", paymentIntentId],
+      });
+    } catch (_) {}
+
+    return res.status(200).send({
+      status: "Success",
+      message: "Payment intent already canceled",
+      paymentIntent: current,
+    });
+  }
+
+  if (currentStatus === "succeeded") {
+    return res.status(409).send({
+      status: "Error",
+      message: "Payment intent already succeeded and cannot be canceled",
+      paymentIntent: current,
+    });
+  }
+
+  let canceled;
+  try {
+    canceled = await stripe.paymentIntents.cancel(paymentIntentId, {
+      ...(cancellationReason
+        ? { cancellation_reason: cancellationReason }
+        : {}),
+    });
+  } catch (error) {
+    return res.status(400).send({
+      status: "Error",
+      message: "Payment intent cancel failed",
+      error: error?.message ?? String(error),
+    });
+  }
+
+  try {
+    await database.execute({
+      sql: "UPDATE payment_intents SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_id = ?",
+      args: [String(canceled?.status ?? "canceled"), paymentIntentId],
+    });
+  } catch (_) {}
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Payment intent canceled successfully",
+    paymentIntent: canceled,
+    note: "Webhook payment_intent.canceled will confirm the final state in DB",
   });
 }
 
@@ -1023,6 +1132,7 @@ export const methods = {
   getWalletTransactions,
   createPaymentIntent,
   capturePaymentIntent,
+  cancelPaymentIntent,
   createSetupIntent,
   createPayout,
   createWalletPayout,

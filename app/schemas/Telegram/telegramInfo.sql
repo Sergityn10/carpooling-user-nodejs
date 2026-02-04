@@ -6,5 +6,5 @@ CREATE TABLE telegram_info (
     last_name VARCHAR(255),
     chat_id BIGINT,
     PRIMARY KEY (id),
-    FOREIGN KEY (username) REFERENCES users(username)
+    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE
 );

@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     id_reserva TEXT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva),
-    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id)
+    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE SET NULL ON UPDATE CASCADE,
+    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_checkout_session_id ON payment_intents(checkout_session_id);
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS payment_intents (
 
     -- Relaciones
     CONSTRAINT fk_reserva_payment 
-        FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva),
+        FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_sender_account 
-        FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id)
+        FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB;
