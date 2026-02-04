@@ -1,6 +1,7 @@
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
 import database from "../database.js";
+import { methods as cryptoUtils } from "../utils/crypto.js";
 dotenv.config();
 
 async function isLoged(req, res, next) {
@@ -95,7 +96,10 @@ async function reviseBearer(req) {
       return false;
     }
 
-    return findUser;
+    return cryptoUtils.decryptFields(
+      findUser,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
   } catch (error) {
     console.error("Error al verificar el bearer token:", error);
     return false;
@@ -123,16 +127,21 @@ async function reviseCookie(req) {
 
     const findUser = resultado.rows[0];
     if (!findUser) {
-      res.clearCookie("access_token", {
-        httpOnly: true,
-        secure: true,
-        sameSite: "none",
-        path: "/",
-        domain: process.env.ORIGIN,
-      });
+      if (typeof req?.res?.clearCookie === "function") {
+        req.res.clearCookie("access_token", {
+          httpOnly: true,
+          secure: true,
+          sameSite: "none",
+          path: "/",
+          domain: process.env.ORIGIN,
+        });
+      }
       return false;
     } else {
-      return findUser;
+      return cryptoUtils.decryptFields(
+        findUser,
+        cryptoUtils.USER_SENSITIVE_FIELDS,
+      );
     }
   } catch (error) {
     console.error("Error al verificar la cookie:", error);

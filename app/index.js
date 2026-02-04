@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import morgan from "morgan";
 import cors from "cors";
 import { authorization } from "./middlewares/authorization.js";
+import { methods as cryptoUtils } from "./utils/crypto.js";
 import { fileURLToPath } from "url";
 import { methods as authentication } from "./controllers/authentication.js";
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js";
@@ -30,7 +31,6 @@ let origin = process.env.ORIGIN;
 origin = origin[origin.length - 1] !== "/" ? origin + "/" : origin;
 let origin_without =
   origin[origin.length - 1] === "/" ? origin.slice(0, -1) : origin;
-console.log(origin);
 const trayectos_origin = process.env.TRAYECTOS_ORIGIN;
 const messsages_origin = process.env.MESSSAGES_ORIGIN;
 const app = express();
@@ -370,7 +370,11 @@ app.get("/api/test", authorization.isLoged, async (req, res) => {
 app.get("/api/users", authorization.isLoged, async (req, res) => {
   try {
     const resultado = await db.execute("SELECT * FROM users");
-    return res.status(200).json(resultado[0]); // El resultado es un array, así que devolvemos el primer elemento
+    const rows = Array.isArray(resultado?.[0]) ? resultado[0] : resultado?.rows;
+    const decryptedRows = (rows ?? []).map((r) =>
+      cryptoUtils.decryptFields(r, cryptoUtils.USER_SENSITIVE_FIELDS),
+    );
+    return res.status(200).json(decryptedRows); // El resultado es un array, así que devolvemos el primer elemento
   } catch (error) {
     console.error("Error fetching users:", error);
     return res
@@ -394,8 +398,11 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
         .status(404)
         .json({ status: "Error", message: "User not found" });
     }
-    console.log(resultado);
-    return res.status(200).json(resultado.rows[0]);
+    const user = cryptoUtils.decryptFields(
+      resultado.rows[0],
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
+    return res.status(200).json(user);
   } catch (error) {
     console.error("Error fetching user:", error);
     return res
@@ -498,7 +505,6 @@ app.get("/api/auth/oauth/register", async (req, res) => {
 
     // 4. (Opcional) Buscar o crear el usuario en tu base de datos
     // ... Lógica para verificar si el usuario existe y obtener 'comprobarUser'
-    console.log(googleUserData);
     const comprobarUser = await dbUtils.existUser(googleUserData.email);
 
     if (comprobarUser) {

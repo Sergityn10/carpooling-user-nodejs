@@ -4,6 +4,7 @@ import { UserSchemas } from "../schemas/user.js";
 import { authorization } from "../middlewares/authorization.js";
 import database from "../database.js";
 import { methods as utils } from "../utils/hashing.js";
+import { methods as cryptoUtils } from "../utils/crypto.js";
 
 function isNoSuchTableError(error, tableName) {
   const expected = `no such table: ${String(tableName ?? "").toLowerCase()}`;
@@ -79,57 +80,69 @@ async function countUserViajes(username) {
 }
 
 async function deleteAllRowsReferencingUser(tx, username, userId) {
-  const tablesResult = await tx.execute({
-    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-    args: [],
-  });
+  const maxPasses = 6;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const tablesResult = await tx.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+      args: [],
+    });
 
-  for (const row of tablesResult.rows ?? []) {
-    const tableName = row.name;
-    if (!tableName || String(tableName).toLowerCase() === "users") continue;
+    let deletedSomething = false;
 
-    const quotedTable = escapeSqliteIdentifier(tableName);
-    let fkRows;
-    try {
-      const fkResult = await tx.execute({
-        sql: `PRAGMA foreign_key_list(${quotedTable})`,
-        args: [],
-      });
-      fkRows = fkResult.rows ?? [];
-    } catch (_e) {
-      continue;
-    }
+    for (const row of tablesResult.rows ?? []) {
+      const tableName = row.name;
+      if (!tableName || String(tableName).toLowerCase() === "users") continue;
 
-    const conditions = [];
-    const args = [];
+      const quotedTable = escapeSqliteIdentifier(tableName);
+      let fkRows;
+      try {
+        const fkResult = await tx.execute({
+          sql: `PRAGMA foreign_key_list(${quotedTable})`,
+          args: [],
+        });
+        fkRows = fkResult.rows ?? [];
+      } catch (_e) {
+        continue;
+      }
 
-    for (const fk of fkRows) {
-      if (String(fk.table ?? "").toLowerCase() !== "users") continue;
+      const conditions = [];
+      const args = [];
 
-      const fromCol = fk.from;
-      const toCol = fk.to;
-      if (!fromCol || !toCol) continue;
+      for (const fk of fkRows) {
+        if (String(fk.table ?? "").toLowerCase() !== "users") continue;
 
-      if (String(toCol).toLowerCase() === "username") {
-        conditions.push(`${escapeSqliteIdentifier(fromCol)} = ?`);
-        args.push(username);
-      } else if (String(toCol).toLowerCase() === "id") {
-        if (userId !== undefined && userId !== null) {
+        const fromCol = fk.from;
+        const toCol = fk.to;
+        if (!fromCol || !toCol) continue;
+
+        if (String(toCol).toLowerCase() === "username") {
           conditions.push(`${escapeSqliteIdentifier(fromCol)} = ?`);
-          args.push(userId);
+          args.push(username);
+        } else if (String(toCol).toLowerCase() === "id") {
+          if (userId !== undefined && userId !== null) {
+            conditions.push(`${escapeSqliteIdentifier(fromCol)} = ?`);
+            args.push(userId);
+          }
         }
+      }
+
+      if (conditions.length === 0) continue;
+
+      try {
+        const delRes = await tx.execute({
+          sql: `DELETE FROM ${quotedTable} WHERE ${conditions.join(" OR ")}`,
+          args,
+        });
+        if ((delRes?.rowsAffected ?? 0) > 0) {
+          deletedSomething = true;
+        }
+      } catch (_e) {
+        // Best-effort cleanup; do not fail the whole deletion here.
       }
     }
 
-    if (conditions.length === 0) continue;
-
-    try {
-      await tx.execute({
-        sql: `DELETE FROM ${quotedTable} WHERE ${conditions.join(" OR ")}`,
-        args,
-      });
-    } catch (_e) {
-      // Best-effort cleanup; do not fail the whole deletion here.
+    if (!deletedSomething) {
+      break;
     }
   }
 }
@@ -163,6 +176,30 @@ async function updateUserPatch(req, res) {
   if (result.data.password) {
     result.data.password = await utils.hashValue(10, result.data.password);
   }
+
+  if (result.data.dni) {
+    const dniCandidate = String(result.data.dni);
+    const { rows: allRows } = await database.execute({
+      sql: "SELECT username, dni FROM users",
+      args: [],
+    });
+    const collision = (allRows ?? []).find((r) => {
+      if (!r?.dni) return false;
+      const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
+      return plain === dniCandidate && String(r.username) !== String(username);
+    });
+    if (collision) {
+      return res
+        .status(409)
+        .send({ status: "Error", message: "DNI already exists" });
+    }
+  }
+
+  const updatesEncrypted = cryptoUtils.encryptFields(
+    result.data,
+    cryptoUtils.USER_SENSITIVE_FIELDS,
+  );
+  result.data = updatesEncrypted;
 
   const keys = Object.keys(result.data);
   if (keys.length === 0) {
@@ -210,6 +247,33 @@ async function updateMyUserPatch(req, res) {
   if (result.data.password) {
     result.data.password = await utils.hashValue(10, result.data.password);
   }
+
+  if (result.data.dni) {
+    const dniCandidate = String(result.data.dni);
+    const { rows: allRows } = await database.execute({
+      sql: "SELECT username, dni FROM users",
+      args: [],
+    });
+    const collision = (allRows ?? []).find((r) => {
+      if (!r?.dni) return false;
+      const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
+      return (
+        plain === dniCandidate &&
+        String(r.username) !== String(findUser.username)
+      );
+    });
+    if (collision) {
+      return res
+        .status(409)
+        .send({ status: "Error", message: "DNI already exists" });
+    }
+  }
+
+  const updatesEncrypted = cryptoUtils.encryptFields(
+    result.data,
+    cryptoUtils.USER_SENSITIVE_FIELDS,
+  );
+  result.data = updatesEncrypted;
 
   const keys = Object.keys(result.data);
   if (keys.length === 0) {
@@ -389,6 +453,8 @@ async function removeUser(req, res) {
       }
     }
 
+    await deleteAllRowsReferencingUser(tx, username, userId);
+
     const deleteUserQuery = await tx.execute({
       sql: "DELETE FROM users WHERE username = ?",
       args: [username],
@@ -498,6 +564,11 @@ async function removeUser(req, res) {
           console.error("Delete user blocked by FK references:", pending);
         }
       } catch (_e) {}
+
+      return res.status(409).send({
+        status: "Error",
+        message: "User deletion blocked by related records",
+      });
     }
     console.error(error);
     return res
@@ -512,7 +583,10 @@ async function getUserInfo(req, res) {
     sql: "SELECT * FROM users WHERE username = ?",
     args: [username],
   });
-  const user = userRows[0];
+  const user = cryptoUtils.decryptFields(
+    userRows[0],
+    cryptoUtils.USER_SENSITIVE_FIELDS,
+  );
   if (!user) {
     return res.status(404).send({ status: "Error", message: "User not found" });
   }

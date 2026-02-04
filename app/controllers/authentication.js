@@ -8,6 +8,7 @@ import { TelegramInfo } from "../schemas/Telegram/telegramInfo.js";
 import { TelegramInfoServices } from "./telegramInfo.js";
 import { authorization } from "../middlewares/authorization.js";
 import { methods as utils } from "../utils/hashing.js";
+import { methods as cryptoUtils } from "../utils/crypto.js";
 import Stripe from "stripe";
 import { OAuth2Client } from "google-auth-library";
 import { authMethods } from "../schemas/auth_methods.js";
@@ -30,7 +31,12 @@ async function login(req, res) {
     sql: "SELECT * FROM users WHERE email = ?",
     args: [email],
   });
-  const comprobarUser = rows[0];
+  console.log(rows);
+  const comprobarUser = cryptoUtils.decryptFields(
+    rows[0],
+    cryptoUtils.USER_SENSITIVE_FIELDS,
+  );
+  console.log(comprobarUser);
 
   if (!comprobarUser) {
     return res.status(404).send({ status: "Error", message: "Login failed" });
@@ -103,6 +109,11 @@ async function register(req, res) {
 
   const hash = await utils.hashValue(10, password);
 
+  const encryptedUserFields = cryptoUtils.encryptFields(
+    { name },
+    cryptoUtils.USER_SENSITIVE_FIELDS,
+  );
+
   const { rows: emailRows } = await database.execute({
     sql: "SELECT * FROM users WHERE email = ?",
     args: [email],
@@ -127,7 +138,7 @@ async function register(req, res) {
       username,
       email,
       hash,
-      name,
+      encryptedUserFields.name,
       authMethods.PASSWORD,
       customer_account.id,
     ],
@@ -184,14 +195,12 @@ async function oauthGoogle(req, res) {
         .send({ status: "Error", message: "Invalid method" });
   }
   const oauth2Client = new OAuth2Client(client_id, secret_id, redirectUrl);
-  console.log(oauth2Client);
 
   const authorizeUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
     scope: "profile openid email",
     prompt: "consent",
   });
-  console.log(authorizeUrl);
   res.status(200).json({ url: authorizeUrl });
 }
 

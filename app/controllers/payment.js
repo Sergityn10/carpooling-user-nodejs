@@ -170,6 +170,29 @@ async function createStripeConnectAccount(req, res) {
   });
   const existingStripeAccount = existingUser.rows?.[0]?.stripe_account;
   const onboardingEnded = Boolean(existingUser.rows?.[0]?.onboarding_ended);
+  const normalizeOriginUrl = (originRaw) => {
+    const raw = String(originRaw ?? "").trim();
+    const withProto = /^https?:\/\//i.test(raw)
+      ? raw
+      : `${process.env.NODE_ENV === "production" ? "https" : "http"}://${raw}`;
+    const url = new URL(withProto);
+    url.hash = "";
+    url.search = "";
+    return url;
+  };
+
+  let originUrl;
+  try {
+    originUrl = normalizeOriginUrl(process.env.ORIGIN);
+  } catch (_e) {
+    return res.status(500).send({
+      status: "Error",
+      message: "Invalid ORIGIN URL configuration",
+    });
+  }
+
+  const refreshReturnUrl = originUrl.toString();
+  const businessProfileUrl = new URL("/show", originUrl).toString();
 
   if (existingStripeAccount) {
     if (onboardingEnded) {
@@ -180,8 +203,8 @@ async function createStripeConnectAccount(req, res) {
 
     const accountLink = await stripe.accountLinks.create({
       account: existingStripeAccount,
-      refresh_url: process.env.ORIGIN,
-      return_url: process.env.ORIGIN,
+      refresh_url: refreshReturnUrl,
+      return_url: refreshReturnUrl,
       type: "account_onboarding",
       collect: "eventually_due",
     });
@@ -192,34 +215,77 @@ async function createStripeConnectAccount(req, res) {
       accountLink,
     });
   }
+  // const account = await stripe.accounts.create({
+  //   type: "express",
+  //   country: country,
+  //   email: email,
+  //   metadata: {
+  //     username: user.username,
+  //     email: user.email,
+  //     id: user.id,
+  //   },
+  //   business_type: "individual",
+  //   business_profile: {
+  //     mcc: "5812",
+  //     name: name,
+  //     product_description: "Servicio de carpooling",
+  //     support_email: email,
+  //     url: "https://carpooling.com",
+  //   },
+  //   capabilities: {
+  //     card_payments: {
+  //       requested: true,
+  //     },
+  //     transfers: {
+  //       requested: true,
+  //     },
+  //   },
+  //   tos_acceptance: {
+  //     service_agreement: "full",
+  //   },
+  // });
   const account = await stripe.accounts.create({
     type: "express",
-    country: country,
+    country: country, // Asegúrate que sea 'ES' (o el país del usuario)
     email: email,
+
+    // 1. Esto le dice a Stripe que NO es una S.L. o Inc.
+    business_type: "individual",
+
+    // 2. Pre-llenamos datos de la persona para forzar el flujo individual
+    individual: {
+      email: user.email,
+      first_name: name.split(" ")[0], // Asumiendo que tienes estos datos
+      last_name: name.split(" ")[1],
+    },
+
     metadata: {
       username: user.username,
       email: user.email,
       id: user.id,
     },
-    business_type: "individual",
     business_profile: {
-      mcc: "5812",
-      name: name,
-      product_description: "Servicio de carpooling",
+      mcc: "4121",
+
+      name: name, // Nombre completo del conductor
+      product_description: "Servicio de transporte compartido (Carpooling)",
       support_email: email,
+      // Si el usuario no tiene web, pon la URL de su perfil en tu app
       url: "https://carpooling.com",
     },
+
     capabilities: {
-      card_payments: {
-        requested: true,
-      },
-      transfers: {
-        requested: true,
-      },
+      card_payments: { requested: true },
+      transfers: { requested: true },
     },
-    tos_acceptance: {
+
+    // 4. En cuentas Express, normalmente no necesitas forzar el TOS aquí
+    // porque el usuario lo acepta en la web de Stripe.
+    // Si te da error, prueba a quitar este bloque.
+    /* tos_acceptance: {
       service_agreement: "full",
-    },
+    }, 
+    */
   });
 
   await database.execute({
@@ -229,8 +295,8 @@ async function createStripeConnectAccount(req, res) {
 
   const accountLink = await stripe.accountLinks.create({
     account: account.id,
-    refresh_url: process.env.ORIGIN,
-    return_url: process.env.ORIGIN,
+    refresh_url: refreshReturnUrl,
+    return_url: refreshReturnUrl,
     type: "account_onboarding",
     collect: "eventually_due",
   });
