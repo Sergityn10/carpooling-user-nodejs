@@ -32,6 +32,31 @@ function escapeSqliteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
+async function findFirstExistingColumn(tx, tableName, preferredLowerNames) {
+  let tableInfo;
+  try {
+    tableInfo = await tx.execute({
+      sql: `PRAGMA table_info(${escapeSqliteIdentifier(tableName)})`,
+      args: [],
+    });
+  } catch (error) {
+    if (isNoSuchTableError(error, tableName)) return null;
+    throw error;
+  }
+
+  const cols = (tableInfo.rows ?? [])
+    .map((r) => ({
+      name: r?.name,
+      lower: String(r?.name ?? "").toLowerCase(),
+    }))
+    .filter((c) => c.lower.length > 0);
+
+  const selectedLower = (preferredLowerNames ?? []).find((p) =>
+    cols.some((c) => c.lower === p),
+  );
+  return cols.find((c) => c.lower === selectedLower)?.name ?? null;
+}
+
 async function countUserViajes(username) {
   if (!username) return 0;
 
@@ -310,6 +335,13 @@ async function removeUser(req, res) {
   try {
     tx = await database.transaction("write");
 
+    try {
+      await tx.execute({
+        sql: "PRAGMA foreign_keys = ON",
+        args: [],
+      });
+    } catch (_e) {}
+
     const { rows: userRows } = await tx.execute({
       sql: "SELECT * FROM users WHERE username = ?",
       args: [username],
@@ -347,11 +379,80 @@ async function removeUser(req, res) {
 
     try {
       await tx.execute({
+        sql: `DELETE FROM payment_intents
+                      WHERE id_reserva IN (SELECT id_reserva FROM reservas WHERE username = ?)`,
+        args: [username],
+      });
+    } catch (error) {
+      if (
+        !isNoSuchTableError(error, "payment_intents") &&
+        !isNoSuchTableError(error, "reservas") &&
+        !isNoSuchColumnError(error, "username")
+      ) {
+        throw error;
+      }
+      if (isNoSuchColumnError(error, "username")) {
+        await tx.execute({
+          sql: `DELETE FROM payment_intents
+                        WHERE id_reserva IN (SELECT id_reserva FROM reservas WHERE usuario = ?)`,
+          args: [username],
+        });
+      }
+    }
+
+    try {
+      const reservasCol = await findFirstExistingColumn(tx, "reservas", [
+        "username",
+        "user",
+        "usuario",
+        "username_user",
+      ]);
+
+      if (reservasCol) {
+        await tx.execute({
+          sql: `DELETE FROM reservas WHERE ${escapeSqliteIdentifier(reservasCol)} = ?`,
+          args: [username],
+        });
+      }
+    } catch (error) {
+      if (!isNoSuchTableError(error, "reservas")) {
+        throw error;
+      }
+    }
+
+    try {
+      await tx.execute({
         sql: "DELETE FROM comments WHERE username_commentator = ? OR username_trayect = ?",
         args: [username, username],
       });
     } catch (error) {
       if (!isNoSuchTableError(error, "comments")) {
+        throw error;
+      }
+    }
+
+    try {
+      const trayectosCol = await findFirstExistingColumn(tx, "trayectos", [
+        "conductor",
+        "driver",
+        "username",
+        "user",
+        "usuario",
+        "owner",
+        "creator",
+        "created_by",
+        "username_user",
+        "username_driver",
+      ]);
+
+      if (trayectosCol) {
+        await tx.execute({
+          sql: `DELETE FROM trayectos WHERE ${escapeSqliteIdentifier(trayectosCol)} = ?`,
+          args: [username],
+        });
+      }
+    } catch (error) {
+      if (!isNoSuchTableError(error, "trayectos")) {
         throw error;
       }
     }
