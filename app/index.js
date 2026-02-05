@@ -48,7 +48,13 @@ const secret_id = process.env.GOOGLE_OAUTH;
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(path.join(__dirname, "public")));
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "10mb" }));
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: process.env.JSON_BODY_LIMIT ?? "10mb",
+  }),
+);
 app.use(cookieParser());
 
 app.use(
@@ -564,6 +570,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
   // 1. URL de tu frontend (ajusta según tu configuración)
   const successUrl = origin;
   const frontendUrl = `${origin}`;
+  const errorUrl = `${origin}login`;
   try {
     const oauth2Client = new OAuth2Client(
       client_id,
@@ -583,11 +590,11 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     const comprobarUser = await dbUtils.getUser(googleUserData.email);
 
     if (!comprobarUser) {
-      res.redirect(`${frontendUrl}?error=user_no_exists`);
+      res.redirect(`${errorUrl}?error=user_no_exists`);
       return;
     }
     if (comprobarUser.auth_method !== "google") {
-      res.redirect(`${frontendUrl}?error=auth_method_not_google`);
+      res.redirect(`${errorUrl}?error=auth_method_not_google`);
       return;
     }
 
@@ -620,7 +627,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     console.error("Error en el flujo OAuth:", error);
 
     // En caso de error, redirige al frontend con un mensaje de error
-    const errorRedirectUrl = `${frontendUrl}?error=auth_failed`;
+    const errorRedirectUrl = `${errorUrl}?error=auth_failed`;
     res.redirect(errorRedirectUrl);
   }
 });
