@@ -73,10 +73,27 @@ function getBearerTokenFromReq(req) {
   return token;
 }
 
+function isValidJwtFormat(token) {
+  // JWT format: 3 base64url-encoded parts separated by dots
+  const jwtPattern = /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
+  return (
+    typeof token === "string" && jwtPattern.test(token) && token.length > 100
+  );
+}
+
 async function reviseBearer(req) {
   try {
     const bearerToken = getBearerTokenFromReq(req);
     if (!bearerToken) {
+      return false;
+    }
+
+    // Add format validation
+    if (!isValidJwtFormat(bearerToken)) {
+      console.error(
+        "Invalid JWT format in Bearer token:",
+        bearerToken?.substring(0, 20) + "...",
+      );
       return false;
     }
 
@@ -118,6 +135,15 @@ async function reviseCookie(req) {
     const cookieJWT = req.cookies.access_token;
 
     if (!cookieJWT) {
+      return false;
+    }
+
+    // Add format validation
+    if (!isValidJwtFormat(cookieJWT)) {
+      console.error(
+        "Invalid JWT format in Cookie token:",
+        cookieJWT?.substring(0, 20) + "...",
+      );
       return false;
     }
 
