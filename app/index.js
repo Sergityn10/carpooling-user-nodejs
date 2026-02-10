@@ -83,10 +83,37 @@ app.use(
 try {
   await db.execute("PRAGMA foreign_keys = ON");
 } catch (_e) {}
+
+if (process.env.RESET_DB === "1") {
+  try {
+    await db.execute("PRAGMA foreign_keys = OFF");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS telegram_info");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS disponibilidad_semanal");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS cars");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS comments");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS accounts");
+  } catch (_e) {}
+  try {
+    await db.execute("DROP TABLE IF EXISTS users");
+  } catch (_e) {}
+  try {
+    await db.execute("PRAGMA foreign_keys = ON");
+  } catch (_e) {}
+}
+
 await db.execute(`
-  CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     password TEXT NULL,
     img_perfil TEXT,
@@ -101,6 +128,7 @@ await db.execute(`
     provincia TEXT NULL,
     codigo_postal TEXT NULL,
     direccion TEXT NULL ,
+    pais TEXT NULL,
     onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
     about_me TEXT,
     auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
@@ -108,6 +136,17 @@ await db.execute(`
     created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
   );
+  `);
+await db.execute(`
+CREATE TABLE IF NOT EXISTS accounts (
+  stripe_account_id TEXT PRIMARY KEY NOT NULL,
+  default_account INTEGER DEFAULT 0,
+  user_id INTEGER NOT NULL,
+  charges_enabled INTEGER NOT NULL DEFAULT 0,
+  transfers_enabled INTEGER NOT NULL DEFAULT 0,
+  details_submitted INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
 `);
 await db.execute(`
 CREATE TABLE IF NOT EXISTS comments (
@@ -116,8 +155,8 @@ CREATE TABLE IF NOT EXISTS comments (
     
     -- 2. Tipos de datos más genéricos
     id_trayecto INTEGER NOT NULL,
-    username_commentator TEXT NOT NULL,
-    username_trayect TEXT NOT NULL,
+    user_id_commentator INTEGER NOT NULL,
+    user_id_trayect INTEGER NOT NULL,
     opinion TEXT NOT NULL,
     rating INTEGER NOT NULL,
     
@@ -126,13 +165,63 @@ CREATE TABLE IF NOT EXISTS comments (
     
     -- 4. Claves foráneas (SQLite las maneja de forma diferente, pero la sintaxis es similar)
     FOREIGN KEY (id_trayecto) REFERENCES trayectos(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (username_commentator) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (username_trayect) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (user_id_commentator) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (user_id_trayect) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     
     -- 5. Restricción UNIQUE (el nombre se elimina o se simplifica, se puede omitir el "KEY")
-    UNIQUE (id_trayecto, username_commentator)
+    UNIQUE (id_trayecto, user_id_commentator)
 );
 `);
+
+await db.execute(`
+CREATE TABLE IF NOT EXISTS cars (
+  id_coche INTEGER PRIMARY KEY AUTOINCREMENT,
+  matricula TEXT NOT NULL,
+  marca TEXT NOT NULL,
+  modelo TEXT NOT NULL,
+  color TEXT NULL,
+  tipo_combustible TEXT NOT NULL,
+  num_plazas INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  year INTEGER NOT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  UNIQUE (matricula),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
+
+await db.execute(`
+CREATE TABLE IF NOT EXISTS disponibilidad_semanal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  dia_semana TEXT NOT NULL,
+  hora_inicio TEXT NOT NULL,
+  hora_fin TEXT NOT NULL,
+  transport_needed INTEGER NOT NULL DEFAULT 0,
+  transporte TEXT NULL,
+  estado TEXT NOT NULL,
+  finalidad TEXT NOT NULL,
+  origen TEXT NOT NULL,
+  destino TEXT NOT NULL,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
+
+await db.execute(`
+CREATE TABLE IF NOT EXISTS telegram_info (
+  user_id INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY,
+  username_telegram TEXT NULL,
+  first_name TEXT NOT NULL,
+  last_name TEXT NULL,
+  chat_id INTEGER NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
+
 await db.execute(`
 CREATE TABLE IF NOT EXISTS events (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,43 +310,7 @@ CREATE TABLE IF NOT EXISTS service_events (
   FOREIGN KEY (enterprise_id) REFERENCES enterprises(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS accounts (
-  stripe_account_id TEXT PRIMARY KEY NOT NULL,
-  default_account INTEGER DEFAULT 0,
-  username TEXT NOT NULL,
-  charges_enabled INTEGER NOT NULL DEFAULT 0,
-  transfers_enabled INTEGER NOT NULL DEFAULT 0,
-  details_submitted INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    email TEXT NOT NULL UNIQUE,
-    password TEXT NULL,
-    img_perfil TEXT,
-    name TEXT,
-    phone TEXT,
-    fecha_nacimiento TEXT NULL, -- store as ISO string (YYYY-MM-DD)
-    dni TEXT NULL UNIQUE,
-    genero TEXT NULL CHECK (genero IN ('Masculino','Femenino','Otro')),
-    stripe_account TEXT,
-    stripe_customer_account TEXT,
-    ciudad TEXT NULL,
-    provincia TEXT NULL,
-    codigo_postal TEXT NULL,
-    direccion TEXT NULL ,
-    onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
-    about_me TEXT,
-    auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
-    google_id TEXT NULL,
-    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-    updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-  );
-  `);
+
 await db.execute(`
 CREATE TABLE IF NOT EXISTS wallet_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,7 +449,7 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
   const { id } = req.params;
   try {
     const resultado = await db.execute({
-      sql: "SELECT * FROM users WHERE username = ?",
+      sql: "SELECT * FROM users WHERE id = ?",
       args: [id],
     });
     if (resultado.rows.length === 0) {
@@ -416,15 +469,15 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
       .json({ status: "Error", message: "Failed to fetch user" });
   }
 });
-app.get("/api/users/:username/info", (req, res) => user.getUserInfo(req, res));
-app.patch("/api/users/:username", authorization.isLoged, (req, res) =>
+app.get("/api/users/:id/info", (req, res) => user.getUserInfo(req, res));
+app.patch("/api/users/:id", authorization.isLoged, (req, res) =>
   user.updateUserPatch(req, res),
 );
 app.patch("/api/users", authorization.isLoged, (req, res) =>
   user.updateMyUserPatch(req, res),
 );
 
-app.delete("/api/users/:username", authorization.isLoged, (req, res) =>
+app.delete("/api/users/:id", authorization.isLoged, (req, res) =>
   user.removeUser(req, res),
 );
 
@@ -518,10 +571,8 @@ app.get("/api/auth/oauth/register", async (req, res) => {
       return;
     }
 
-    const username = dbUtils.createUsername(googleUserData.name);
     const userResult = await dbUtils.createUser(
       {
-        username,
         email: googleUserData.email,
         password: "",
         name: googleUserData.name,
@@ -530,10 +581,15 @@ app.get("/api/auth/oauth/register", async (req, res) => {
       googleUserData.sub,
     );
 
+    if (userResult?.status !== "Success") {
+      res.redirect(`${frontendUrl}register?error=auth_failed`);
+      return;
+    }
+
     // 5. Generar un Token JWT para la sesión
 
     const payload = {
-      username, // O el nombre de usuario de tu DB
+      userId: userResult?.user?.id,
       email: googleUserData.email,
     };
     const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
@@ -541,7 +597,7 @@ app.get("/api/auth/oauth/register", async (req, res) => {
     });
 
     // 6. Construir la URL de Redirección con parámetros
-    const finalRedirectUrl = `${frontendUrl}register/personal-info?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
+    const finalRedirectUrl = `${frontendUrl}register/personal-info?token=${jwtToken}&userId=${encodeURIComponent(String(userResult?.user?.id ?? ""))}&img_perfil=${encodeURIComponent(String(googleUserData.picture ?? ""))}`;
     // 7. Redirigir al frontend
     res.cookie("access_token", jwtToken, {
       expires: new Date(
@@ -599,9 +655,8 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     }
 
     // 5. Generar un Token JWT para la sesión
-
     const payload = {
-      username: comprobarUser.username, // O el nombre de usuario de tu DB
+      userId: comprobarUser.id,
       email: comprobarUser.email,
     };
     const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
@@ -609,7 +664,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     });
 
     // 6. Construir la URL de Redirección con parámetros
-    const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&username=${googleUserData.email}&img_perfil=${googleUserData.picture}`;
+    const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&userId=${encodeURIComponent(String(comprobarUser.id ?? ""))}&img_perfil=${encodeURIComponent(String(googleUserData.picture ?? ""))}`;
     // 7. Redirigir al frontend
     res.cookie("access_token", jwtToken, {
       expires: new Date(
@@ -741,9 +796,6 @@ app.put("/api/cars/:id", authorization.isLoged, (req, res) =>
 app.delete("/api/cars/:id", authorization.isLoged, (req, res) =>
   cars.removeCar(req, res),
 );
-app.get("/api/cars/username/:username", authorization.isLoged, (req, res) =>
-  cars.getCarsByUsername(req, res),
-);
 app.get("/api/cars/:id", authorization.isLoged, (req, res) =>
   cars.getCar(req, res),
 );
@@ -764,14 +816,18 @@ app.patch("/api/routines/:id", authorization.isLoged, (req, res) =>
 app.delete("/api/routines/:id", authorization.isLoged, (req, res) =>
   disponibilidad_semanal.removeDisponibilidad(req, res),
 );
-app.get("/api/routines/username/:username", authorization.isLoged, (req, res) =>
-  disponibilidad_semanal.getDisponibilidadesByUsername(req, res),
+app.get("/api/cars/user/:userId", authorization.isLoged, (req, res) =>
+  cars.getCarsByUserId(req, res),
+);
+
+app.get("/api/routines/user/:userId", authorization.isLoged, (req, res) =>
+  disponibilidad_semanal.getDisponibilidadesByUserId(req, res),
 );
 app.get(
-  "/api/routines/username/:username/finalidad/:finalidad",
+  "/api/routines/user/:userId/finalidad/:finalidad",
   authorization.isLoged,
   (req, res) =>
-    disponibilidad_semanal.getDisponibilidadesByUsernameAndFinalidad(req, res),
+    disponibilidad_semanal.getDisponibilidadesByUserIdAndFinalidad(req, res),
 );
 
 app.use((req, res) => {

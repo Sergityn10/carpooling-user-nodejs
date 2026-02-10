@@ -35,21 +35,11 @@ async function getUser(data) {
 }
 
 async function createUser(
-  { username, email, password, name },
+  { email, password, name },
   auth_method = "password",
   google_id = "",
 ) {
-  const { rows: userRow } = await database.execute({
-    sql: "SELECT * FROM users WHERE username = ?",
-    args: [username],
-  });
-  console.log(userRow);
-  if (userRow.length > 0) {
-    return { status: "Error", message: "Username already exists" };
-  }
-
   const comprobarUser = await existUser(email);
-  console.log(comprobarUser);
   if (comprobarUser) {
     return { status: "Error", message: "Email already created" };
   }
@@ -57,9 +47,6 @@ async function createUser(
     name: name,
     individual_name: name,
     email: email,
-    metadata: {
-      username: username,
-    },
   });
   const hash = await utils.hashValue(10, password);
 
@@ -71,9 +58,8 @@ async function createUser(
   switch (auth_method) {
     case "password":
       const insertResult = await database.execute({
-        sql: "INSERT INTO users (username, email, password, name, stripe_customer_account,auth_method) VALUES (?, ?, ?, ?, ?, ?)",
+        sql: "INSERT INTO users (email, password, name, stripe_customer_account,auth_method) VALUES (?, ?, ?, ?, ?)",
         args: [
-          username,
           email,
           hash,
           encryptedUserFields.name,
@@ -83,16 +69,13 @@ async function createUser(
       });
 
       if (insertResult.rowsAffected === 0) {
-        return res
-          .status(500)
-          .send({ status: "Error", message: "Failed to register user" });
+        return { status: "Error", message: "Failed to register user" };
       }
       break;
     case "google":
       const googleResult = await database.execute({
-        sql: "INSERT INTO users (username, email, password, name, stripe_customer_account,auth_method,google_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        sql: "INSERT INTO users (email, password, name, stripe_customer_account,auth_method,google_id) VALUES (?, ?, ?, ?, ?, ?)",
         args: [
-          username,
           email,
           hash,
           encryptedUserFields.name,
@@ -103,14 +86,15 @@ async function createUser(
       });
 
       if (googleResult.rowsAffected === 0) {
-        return res
-          .status(500)
-          .send({ status: "Error", message: "Failed to register user" });
+        return { status: "Error", message: "Failed to register user" };
       }
       break;
     default:
       break;
   }
+
+  const created = await getUser(email);
+  return { status: "Success", user: created };
 }
 
 function createUsername(name) {

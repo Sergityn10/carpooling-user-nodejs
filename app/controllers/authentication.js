@@ -31,12 +31,10 @@ async function login(req, res) {
     sql: "SELECT * FROM users WHERE email = ?",
     args: [email],
   });
-  console.log(rows);
   const comprobarUser = cryptoUtils.decryptFields(
     rows[0],
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
-  console.log(comprobarUser);
 
   if (!comprobarUser) {
     return res.status(404).send({ status: "Error", message: "Login failed" });
@@ -52,12 +50,13 @@ async function login(req, res) {
     password,
     comprobarUser.password,
   );
+
   if (!isPasswordValid) {
     return res.status(404).send({ status: "Error", message: "Login failed" });
   }
 
   const token = jsonwebtoken.sign(
-    { username: comprobarUser.username, email },
+    { userId: comprobarUser.id, email },
     process.env.JWT_SECRET_KEY,
     { expiresIn: process.env.EXPIRATION_TIME },
   );
@@ -78,7 +77,7 @@ async function login(req, res) {
   return res.status(200).send({
     status: "Success",
     message: `Login successful`,
-    username: comprobarUser.username,
+    userId: comprobarUser.id,
     token,
     img_perfil: comprobarUser.img_perfil,
     onboarding_ended: comprobarUser.onboarding_ended,
@@ -93,7 +92,7 @@ async function register(req, res) {
       .send({ status: "Error", message: JSON.parse(result.error.message) });
   }
 
-  const { username, email, password, name } = result.data;
+  const { email, password, name } = result.data;
 
   const { rows: userRows } = await database.execute({
     sql: "SELECT * FROM users WHERE email = ?",
@@ -127,15 +126,11 @@ async function register(req, res) {
     name: name,
     individual_name: name,
     email: email,
-    metadata: {
-      username: username,
-    },
   });
 
   const insertResult = await database.execute({
-    sql: "INSERT INTO users (username, email, password, name, auth_method, stripe_customer_account) VALUES (?, ?, ?, ?, ?, ?)",
+    sql: "INSERT INTO users (email, password, name, auth_method, stripe_customer_account) VALUES (?, ?, ?, ?, ?)",
     args: [
-      username,
       email,
       hash,
       encryptedUserFields.name,
@@ -150,8 +145,14 @@ async function register(req, res) {
       .send({ status: "Error", message: "Failed to register user" });
   }
 
+  const { rows: createdRows } = await database.execute({
+    sql: "SELECT id, email FROM users WHERE email = ?",
+    args: [email],
+  });
+  const createdUser = createdRows?.[0];
+
   const token = jsonwebtoken.sign(
-    { username: username },
+    { userId: createdUser?.id, email },
     process.env.JWT_SECRET_KEY,
     { expiresIn: process.env.EXPIRATION_TIME },
   );
@@ -171,8 +172,9 @@ async function register(req, res) {
   res.cookie("access_token", token, cookiesOptions);
   return res.status(201).send({
     status: "Success",
-    message: `User registered successfully ${username}`,
+    message: "User registered successfully",
     token,
+    userId: createdUser?.id,
   });
 }
 
@@ -215,6 +217,69 @@ async function logout(req, res) {
     .send({ status: "Success", message: "Logout successful" });
 }
 
+async function refresh(req, res) {
+  try {
+    const rawHeader =
+      req?.headers?.authorization || req?.headers?.authentication;
+    let bearerToken = null;
+    if (rawHeader && typeof rawHeader === "string") {
+      const [scheme, tokenFromHeader] = rawHeader.split(" ");
+      if (scheme?.toLowerCase() === "bearer" && tokenFromHeader) {
+        bearerToken = tokenFromHeader;
+      }
+    }
+
+    const cookieToken = req?.cookies?.access_token;
+    const token = bearerToken || cookieToken;
+    if (!token) {
+      return res
+        .status(401)
+        .send({ status: "Error", message: "No token provided" });
+    }
+
+    const findUser =
+      (await authorization.reviseBearer(req)) ||
+      (await authorization.reviseCookie(req));
+    if (!findUser) {
+      res.clearCookie("access_token", {
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "none",
+        path: "/",
+      });
+      return res
+        .status(401)
+        .send({ status: "Error", message: "Invalid token" });
+    }
+
+    const newToken = jsonwebtoken.sign(
+      { userId: findUser.id, email: findUser.email },
+      process.env.JWT_SECRET_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME },
+    );
+
+    res.cookie("access_token", newToken, {
+      expires: new Date(
+        Date.now() +
+          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      ),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      path: "/",
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(200).send({
+      status: "Success",
+      message: "Token refreshed",
+      token: newToken,
+      userId: findUser.id,
+    });
+  } catch (error) {
+    return res.status(401).send({ status: "Error", message: "Invalid token" });
+  }
+}
+
 async function validate(req, res) {
   try {
     const rawHeader =
@@ -252,7 +317,7 @@ async function validate(req, res) {
     const token = bearerToken || cookieToken;
 
     const user = {
-      username: findUser.username,
+      userId: findUser.id,
       email: findUser.email,
       img_perfil: findUser.img_perfil,
       ciudad: findUser.ciudad,
@@ -306,6 +371,7 @@ export const methods = {
   register,
   oauthGoogle,
   logout,
+  refresh,
   validate,
   existEmail,
 };

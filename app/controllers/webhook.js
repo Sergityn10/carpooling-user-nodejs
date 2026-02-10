@@ -418,7 +418,6 @@ async function handlePaymentIntentCreated(jsonData) {
 }
 async function handlePaymentIntentUpdated(jsonData) {
   const paymentIntent = jsonData.object;
-  console.log(paymentIntent);
 
   await database.execute({
     sql: "UPDATE reservas SET stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
@@ -437,11 +436,8 @@ async function handlePaymentIntentUpdated(jsonData) {
 }
 async function handlePaymentIntentSucceeded(jsonData) {
   const paymentIntent = jsonData.object;
-  console.log("entro en payment intent suceeded", paymentIntent);
   let id_reserva = paymentIntent?.metadata?.id_reserva;
   if (!id_reserva) {
-    console.log("Entro en el if del payment intent suceededd.");
-    console.log("metadad del payment", paymentIntent.metadata);
     let paymentIntentRes = await database.execute({
       sql: "SELECT * FROM payment_intents WHERE stripe_payment_id = ?",
       args: [paymentIntent.id],
@@ -642,7 +638,6 @@ async function handlePaymentIntentSucceeded(jsonData) {
 }
 async function handlePaymentIntentFailed(jsonData) {
   const paymentIntent = jsonData.object;
-  console.log(paymentIntent);
 
   await database.execute({
     sql: "UPDATE reservas SET status = ?, stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
@@ -671,7 +666,6 @@ async function handlePaymentIntentFailed(jsonData) {
 }
 async function handlePaymentIntentCanceled(jsonData) {
   const paymentIntent = jsonData.object;
-  console.log(paymentIntent);
 
   await database.execute({
     sql: "UPDATE payment_intents SET state = ? WHERE stripe_payment_id = ?",
@@ -705,20 +699,37 @@ async function handlePaymentIntentCanceled(jsonData) {
 }
 async function handleCustomerUpdated(jsonData) {
   const customer = jsonData.object;
+  const userIdRaw =
+    customer?.metadata?.userId ??
+    customer?.metadata?.user_id ??
+    customer?.metadata?.id_user ??
+    null;
+  const userId = userIdRaw != null ? Number(userIdRaw) : null;
+  if (!Number.isFinite(userId)) {
+    return;
+  }
   const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
-    args: [customer.id, customer.metadata.username],
+    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
+    args: [customer.id, userId],
   });
   if (result.rowsAffected === 0) {
     return;
   }
 }
 async function handleCustomerCreated(jsonData) {
-  console.log("entre en el customer created");
   const customer = jsonData.object;
+  const userIdRaw =
+    customer?.metadata?.userId ??
+    customer?.metadata?.user_id ??
+    customer?.metadata?.id_user ??
+    null;
+  const userId = userIdRaw != null ? Number(userIdRaw) : null;
+  if (!Number.isFinite(userId)) {
+    return;
+  }
   const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
-    args: [customer.id, customer.metadata.username],
+    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
+    args: [customer.id, userId],
   });
   if (result.rowsAffected === 0) {
     return;
@@ -740,11 +751,9 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       },
     );
   } catch (_) {}
-  console.log("Nuevo checkout sesion", checkout_session.payment_intent);
 
   const type =
     checkout_session?.metadata?.type ?? checkout_session?.metadata?.typo;
-  console.log(type);
   let paymentIntent = checkout_session.payment_intent;
   if (type === "recharge") {
     const userIdRaw = checkout_session?.metadata?.userId;
@@ -892,9 +901,7 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
     return;
   }
 
-  console.log("Casi llega al fin de la reserva");
   if (type === "reserva") {
-    console.log("Checkout session reserva");
     const id_user = checkout_session?.metadata?.id_user ?? null;
     const id_reserva = checkout_session?.metadata?.id_reserva ?? null;
     const trayectoIdRaw = checkout_session?.metadata?.id_trayecto;
@@ -905,8 +912,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
     }
 
     const runNoTx = async () => {
-      console.log("1");
-
       const userRes = await database.execute({
         sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
         args: [id_user],
@@ -915,7 +920,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
         return;
       }
 
-      console.log("2");
       const trayectoRes = await database.execute({
         sql: "SELECT 1 FROM trayectos WHERE id = ? LIMIT 1",
         args: [trayectoId],
@@ -923,7 +927,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       if (trayectoRes.rows.length === 0) {
         return;
       }
-      console.log("3");
 
       const existingReserva = await database.execute({
         sql: "SELECT id_reserva FROM reservas WHERE id_reserva = ? LIMIT 1",
@@ -932,7 +935,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       if (existingReserva.rows.length === 0) {
         return;
       }
-      console.log("4");
 
       const availableRes = await database.execute({
         sql: "SELECT disponible FROM trayectos WHERE id = ?",
@@ -942,7 +944,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       if (!Number.isFinite(disponible) || disponible <= 0) {
         return;
       }
-      console.log("5");
 
       const decRes = await database.execute({
         sql: "UPDATE trayectos SET disponible = disponible - 1 WHERE id = ? AND disponible > 0",
@@ -951,23 +952,17 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       if (Number(decRes.rowsAffected ?? 0) === 0) {
         return;
       }
-      console.log("6");
 
       await database.execute({
         sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
         args: [status[8], id_reserva],
       });
 
-      console.log("Checkout session reserva", paymentIntent);
       const paymentIntentId =
         (typeof paymentIntent === "string"
           ? paymentIntent
           : paymentIntent?.id) ?? null;
-      console.log("paymentIntentId", paymentIntentId);
-      console.log("7");
-
       if (paymentIntentId) {
-        console.log("8");
         await database.execute({
           sql: `UPDATE reservas
                         SET stripe_payment_intent_id = CASE
@@ -977,7 +972,6 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
                         WHERE id_reserva = ?`,
           args: [paymentIntentId, paymentIntentId, id_reserva],
         });
-        console.log("9");
       }
     };
 
@@ -1046,12 +1040,10 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
         args: [status[8], id_reserva],
       });
 
-      console.log("Checkout session reserva", paymentIntent);
       const paymentIntentId =
         (typeof paymentIntent === "string"
           ? paymentIntent
           : paymentIntent?.id) ?? null;
-      console.log("paymentIntentId", paymentIntentId);
 
       if (paymentIntentId) {
         await tx.execute({
@@ -1124,7 +1116,12 @@ async function handleAccountUpdated(jsonData) {
   }
 
   const stripeAccountId = stripeAccount.id;
-  const username = stripeAccount?.metadata?.username ?? null;
+  const userIdRaw =
+    stripeAccount?.metadata?.userId ??
+    stripeAccount?.metadata?.user_id ??
+    stripeAccount?.metadata?.id_user ??
+    null;
+  let userId = userIdRaw != null ? Number(userIdRaw) : null;
 
   const chargesEnabled = Boolean(stripeAccount.charges_enabled);
   const transfersEnabled =
@@ -1133,44 +1130,45 @@ async function handleAccountUpdated(jsonData) {
   const detailsSubmitted = Boolean(stripeAccount.details_submitted);
 
   // const onboardingComplete = (detailsSubmitted && chargesEnabled && transfersEnabled);
-  const onboardingComplete = true;
+  const onboardingComplete = detailsSubmitted;
   let tx;
   try {
     tx = await database.transaction("write");
 
-    if (!username) {
-      // Sin username no podemos asociar la cuenta al usuario de la BD
+    if (!Number.isFinite(userId)) {
+      const userRes = await tx.execute({
+        sql: "SELECT id FROM users WHERE stripe_account = ?",
+        args: [stripeAccountId],
+      });
+      if (userRes.rows.length > 0) {
+        userId = Number(userRes.rows[0].id);
+      }
+    }
+
+    if (!Number.isFinite(userId)) {
+      // Sin userId no podemos asociar la cuenta al usuario de la BD
       try {
         await tx.rollback();
       } catch (_) {}
       return;
     }
 
-    console.log("Stripe account webhook:", {
-      stripeAccountId,
-      username,
-      chargesEnabled,
-      transfersEnabled,
-      detailsSubmitted,
-      onboardingComplete,
-    });
-
     await tx.execute({
       sql: `INSERT INTO accounts (
                     stripe_account_id,
-                    username,
+                    user_id,
                     charges_enabled,
                     transfers_enabled,
                     details_submitted
                   ) VALUES (?, ?, ?, ?, ?)
                   ON CONFLICT(stripe_account_id) DO UPDATE SET
-                    username = excluded.username,
+                    user_id = excluded.user_id,
                     charges_enabled = excluded.charges_enabled,
                     transfers_enabled = excluded.transfers_enabled,
                     details_submitted = excluded.details_submitted`,
       args: [
         stripeAccountId,
-        username,
+        userId,
         chargesEnabled ? 1 : 0,
         transfersEnabled ? 1 : 0,
         detailsSubmitted ? 1 : 0,
@@ -1185,15 +1183,15 @@ async function handleAccountUpdated(jsonData) {
                             ELSE stripe_account
                           END,
                           onboarding_ended = 1
-                      WHERE username = ?`,
-        args: [stripeAccountId, stripeAccountId, username],
+                      WHERE id = ?`,
+        args: [stripeAccountId, stripeAccountId, userId],
       });
     } else {
       await tx.execute({
         sql: `UPDATE users
                       SET onboarding_ended = 0
-                      WHERE username = ? AND onboarding_ended != 1`,
-        args: [username],
+                      WHERE id = ? AND onboarding_ended != 1`,
+        args: [userId],
       });
     }
 

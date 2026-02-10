@@ -1,25 +1,8 @@
 -- Complete database initialization for Carpooling application
 USE carpooling;
-
--- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    img_perfil MEDIUMTEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    CONSTRAINT chk_username_length CHECK (CHAR_LENGTH(username) >= 3 AND CHAR_LENGTH(username) <= 50),
-    CONSTRAINT chk_password_length CHECK (CHAR_LENGTH(password) >= 6 AND CHAR_LENGTH(password) <= 100),
-    CONSTRAINT chk_email_format CHECK (email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
-);
-
 -- 0) Crear la tabla si no existe (estructura base)
 CREATE TABLE `users` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `username` VARCHAR(50) NOT NULL,
   `email` VARCHAR(50) NOT NULL,
   `password` VARCHAR(255) NOT NULL,
   `img_perfil` MEDIUMTEXT NULL,
@@ -32,7 +15,6 @@ CREATE TABLE `users` (
   `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `ux_users_username` (`username`),
   UNIQUE KEY `ux_users_email` (`email`),
   UNIQUE KEY `ux_users_dni` (`DNI`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -41,7 +23,7 @@ CREATE TABLE `users` (
 -- Telegram info table
 CREATE TABLE IF NOT EXISTS telegram_info (
     id INT NOT NULL PRIMARY KEY,
-    username VARCHAR(50) NOT NULL,
+    user_id INT NOT NULL,
     telegram_username VARCHAR(255) NULL,
     first_name VARCHAR(255) NOT NULL,
     last_name VARCHAR(255) NULL,
@@ -49,7 +31,7 @@ CREATE TABLE IF NOT EXISTS telegram_info (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
-    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT chk_username_length_telegram CHECK (CHAR_LENGTH(username) >= 3 AND CHAR_LENGTH(username) <= 50)
 );
 
