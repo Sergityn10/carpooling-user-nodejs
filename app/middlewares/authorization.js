@@ -133,7 +133,8 @@ async function reviseBearer(req) {
 async function reviseCookie(req) {
   try {
     const cookieJWT = req.cookies.access_token;
-
+    console.log(cookieJWT);
+    console.log(req.cookies);
     if (!cookieJWT) {
       return false;
     }
