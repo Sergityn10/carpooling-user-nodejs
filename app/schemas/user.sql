@@ -1,7 +1,6 @@
 -- Users table based on user.js schema
 CREATE TABLE IF NOT EXISTS users (
    id INTEGER PRIMARY KEY AUTOINCREMENT,
-   username TEXT NOT NULL UNIQUE,
    email TEXT NOT NULL UNIQUE,
    password TEXT NULL,
    img_perfil TEXT,
@@ -27,7 +26,6 @@ CREATE TABLE IF NOT EXISTS users (
 --mysql
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(100) NOT NULL UNIQUE,
     email VARCHAR(150) NOT NULL UNIQUE,
     password VARCHAR(255) NULL,
     img_perfil VARCHAR(255),
@@ -42,6 +40,7 @@ CREATE TABLE IF NOT EXISTS users (
     provincia VARCHAR(100) NULL,
     codigo_postal VARCHAR(20) NULL,
     direccion VARCHAR(255) NULL,
+    pais VARCHAR(100) NULL,
     onboarding_ended TINYINT(1) NOT NULL DEFAULT 0,
     about_me TEXT,
     auth_method ENUM('password', 'google', 'other') NOT NULL DEFAULT 'password',

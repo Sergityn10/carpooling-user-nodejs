@@ -24,7 +24,7 @@ function getEncryptionKeyBuffer() {
 const USER_SENSITIVE_FIELDS = [
   "dni",
   "name",
-  "surname",
+  // "surname",
   "phone",
   "direccion",
   "provincia",

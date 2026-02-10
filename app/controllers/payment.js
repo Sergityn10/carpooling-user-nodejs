@@ -76,7 +76,6 @@ const rechargeWalletUser = async (req, res) => {
 };
 
 async function createCheckoutPaymentIntent(req, res) {
-  console.log(req.body);
   const {
     amount,
     id_reserva,
@@ -141,21 +140,6 @@ async function createCheckoutPaymentIntent(req, res) {
   });
 
   const paymentIntentId = checkout_session.payment_intent;
-  console.log(checkout_session);
-  console.log(
-    JSON.stringify({
-      paymentIntentId,
-      amount,
-      currency: "eur",
-      description,
-      destination,
-      sender_account: user.stripe_account,
-      state: checkout_session.payment_status,
-      client_secret: checkout_session.client_secret ?? null,
-      checkout_session_id: checkout_session.id,
-      id_reserva,
-    }),
-  );
 
   return res.status(200).send(checkout_session);
 }
@@ -163,10 +147,10 @@ async function createCheckoutPaymentIntent(req, res) {
 async function createStripeConnectAccount(req, res) {
   const { email, country, name } = req.body;
   const user = req.user;
-  console.log("Creando cuaenta de stripe a ", user.username);
+  console.log("Creando cuaenta de stripe a ", user.name);
   const existingUser = await database.execute({
-    sql: "SELECT stripe_account, onboarding_ended FROM users WHERE username = ?",
-    args: [user.username],
+    sql: "SELECT stripe_account, onboarding_ended FROM users WHERE id = ?",
+    args: [user.id],
   });
   const existingStripeAccount = existingUser.rows?.[0]?.stripe_account;
   const onboardingEnded = Boolean(existingUser.rows?.[0]?.onboarding_ended);
@@ -260,7 +244,7 @@ async function createStripeConnectAccount(req, res) {
     },
 
     metadata: {
-      username: user.username,
+      name: user.name,
       email: user.email,
       id: user.id,
     },
@@ -268,10 +252,10 @@ async function createStripeConnectAccount(req, res) {
       mcc: "4121",
 
       name: name, // Nombre completo del conductor
-      product_description: "Servicio de transporte compartido (Carpooling)",
+      product_description: "Usuario de la aplicación YouConnext",
       support_email: email,
       // Si el usuario no tiene web, pon la URL de su perfil en tu app
-      url: "https://carpooling.com",
+      url: "https://carpooling-webapp-ten.vercel.app",
     },
 
     capabilities: {
@@ -289,8 +273,8 @@ async function createStripeConnectAccount(req, res) {
   });
 
   await database.execute({
-    sql: "UPDATE users SET stripe_account = ?, onboarding_ended = 0 WHERE username = ?",
-    args: [account.id, user.username],
+    sql: "UPDATE users SET stripe_account = ?, onboarding_ended = 0 WHERE id = ?",
+    args: [account.id, user.id],
   });
 
   const accountLink = await stripe.accountLinks.create({
@@ -311,8 +295,8 @@ async function createStripeConnectAccount(req, res) {
 const getMyStripeConnectAccount = async (req, res) => {
   const user = req.user;
   const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE username = ?",
-    args: [user.username],
+    sql: "SELECT * FROM users WHERE id = ?",
+    args: [user.id],
   });
   if (!rows[0]?.stripe_account) {
     return res
@@ -340,13 +324,13 @@ const createStripeCustomer = async (req, res) => {
     email: email,
     name: name,
     metadata: {
-      username: user.username,
+      userId: String(user.id),
     },
   });
 
   const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE username = ?",
-    args: [customer.id, user.username],
+    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
+    args: [customer.id, user.id],
   });
   if (result.rowsAffected === 0) {
     return res
@@ -375,8 +359,8 @@ const createLoginLink = async (req, res) => {
 
   const user = req.user;
   const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE username = ?",
-    args: [user.username],
+    sql: "SELECT * FROM users WHERE id = ?",
+    args: [user.id],
   });
   if (!rows[0]?.stripe_account) {
     return res
@@ -399,7 +383,7 @@ const createPaymentIntent = async (req, res) => {
     amount: amount,
     currency: currency,
     metadata: {
-      username: req.user.username,
+      userId: String(req.user.id),
       applicationFeeAmount: applicationFeeAmount,
     },
     customer: req.user.stripe_customer_account,
@@ -418,8 +402,8 @@ const createPaymentIntent = async (req, res) => {
 const getMyStripeCustomerAccount = async (req, res) => {
   const user = req.user;
   const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE username = ?",
-    args: [user.username],
+    sql: "SELECT * FROM users WHERE id = ?",
+    args: [user.id],
   });
 
   if (!rows[0]?.stripe_customer_account) {
@@ -473,7 +457,7 @@ const createStripeTransfer = async (req, res) => {
     currency: currency,
     destination: destination,
     metadata: {
-      username: req.user.username,
+      userId: String(req.user.id),
     },
   });
   return res.status(200).send({
@@ -506,7 +490,6 @@ async function getCashBalance(req, res) {
   const cashBalance = await stripe.balance.retrieve({
     stripeAccount: stripe_account,
   });
-  console.log(cashBalance);
   const availableEuros = cashBalance.available.find(
     (b) => b.currency === "eur",
   );
@@ -606,7 +589,6 @@ async function getWalletTransactions(req, res) {
 
 async function capturePaymentIntent(req, res) {
   const { paymentIntentId } = req.body;
-  console.log(paymentIntentId);
   if (!paymentIntentId) {
     return res.status(400).send({
       status: "Error",
@@ -715,7 +697,7 @@ async function createSetupIntent(req, res) {
     payment_method_types: ["card"],
     customer: req.user.stripe_customer_account,
     metadata: {
-      username: req.user.username,
+      userId: String(req.user.id),
     },
   });
   return res.status(200).send({
@@ -733,7 +715,7 @@ async function createPayout(req, res) {
       currency: currency,
       method: "standard",
       metadata: {
-        username: req.user.username,
+        userId: String(req.user.id),
       },
     });
   } catch (error) {
@@ -747,7 +729,6 @@ async function createPayout(req, res) {
       .status(400)
       .send({ status: "Error", message: "Payout creation failed", error });
   }
-  console.log(payout);
   return res.status(200).send({
     status: "Success",
     message: "Payout created successfully",
@@ -1168,7 +1149,6 @@ async function createAccountLink(req, res) {
       type: "account_onboarding",
       collect: "eventually_due",
     });
-    console.log(accountLink);
 
     return res.status(200).send({
       status: "Success",

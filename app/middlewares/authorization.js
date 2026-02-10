@@ -85,17 +85,24 @@ async function reviseBearer(req) {
       process.env.JWT_SECRET_KEY,
     );
 
-    const resultado = await database.execute({
-      sql: "SELECT * FROM users WHERE email = ?",
-      args: [decodificado.email],
-    });
-    console.log("Autenticando token");
+    const hasUserId =
+      decodificado?.userId !== undefined && decodificado?.userId !== null;
+    const resultado = await database.execute(
+      hasUserId
+        ? {
+            sql: "SELECT * FROM users WHERE id = ?",
+            args: [decodificado.userId],
+          }
+        : {
+            sql: "SELECT * FROM users WHERE email = ?",
+            args: [decodificado.email],
+          },
+    );
 
     const findUser = resultado.rows[0];
     if (!findUser) {
       return false;
     }
-
     return cryptoUtils.decryptFields(
       findUser,
       cryptoUtils.USER_SENSITIVE_FIELDS,
@@ -119,11 +126,19 @@ async function reviseCookie(req) {
       process.env.JWT_SECRET_KEY,
     );
 
-    const resultado = await database.execute({
-      sql: "SELECT * FROM users WHERE email = ?",
-      args: [decodificado.email],
-    });
-    console.log("Autenticando token");
+    const hasUserId =
+      decodificado?.userId !== undefined && decodificado?.userId !== null;
+    const resultado = await database.execute(
+      hasUserId
+        ? {
+            sql: "SELECT * FROM users WHERE id = ?",
+            args: [decodificado.userId],
+          }
+        : {
+            sql: "SELECT * FROM users WHERE email = ?",
+            args: [decodificado.email],
+          },
+    );
 
     const findUser = resultado.rows[0];
     if (!findUser) {
@@ -144,7 +159,9 @@ async function reviseCookie(req) {
       );
     }
   } catch (error) {
-    console.error("Error al verificar la cookie:", error);
+    if (error.name !== "TokenExpiredError") {
+      console.error("Error al verificar la cookie:", error);
+    }
     return false;
   }
 }

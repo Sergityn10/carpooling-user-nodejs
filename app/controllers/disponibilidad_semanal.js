@@ -16,57 +16,56 @@ async function createDisponibilidad(req, res) {
   }
 
   const user = req.user;
+  if (!user?.id) {
+    return res.status(401).send({ status: "Error", message: "Unauthorized" });
+  }
   const disponibilidad = {
     ...data.data,
-    username: user?.username ?? data.data.username,
+    user_id: user.id,
   };
 
-  let result;
   try {
-    const connection = await database.getConnection();
-    [result] = await connection.query(
-      "INSERT INTO disponibilidad_semanal (username, dia_semana, hora_inicio, hora_fin, transport_needed, transporte, estado, finalidad, origen, destino) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [
-        disponibilidad.username,
+    const result = await database.execute({
+      sql: "INSERT INTO disponibilidad_semanal (user_id, dia_semana, hora_inicio, hora_fin, transport_needed, transporte, estado, finalidad, origen, destino) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      args: [
+        disponibilidad.user_id,
         disponibilidad.dia_semana,
         disponibilidad.hora_inicio,
         disponibilidad.hora_fin,
-        disponibilidad.transport_needed,
-        disponibilidad.transporte ? disponibilidad.transporte : "",
+        disponibilidad.transport_needed ? 1 : 0,
+        disponibilidad.transporte ?? null,
         disponibilidad.estado,
         disponibilidad.finalidad,
         disponibilidad.origen,
         disponibilidad.destino,
       ],
-    );
-  } catch (error) {
-    switch (error.code) {
-      case "ER_DUP_ENTRY":
-        return res
-          .status(400)
-          .send({ status: "Error", message: "Disponibilidad duplicada" });
-      default:
-        return res
-          .status(500)
-          .send({
-            status: "Error",
-            message: `Error al crear disponibilidad: ${error.message}`,
-          });
+    });
+
+    if (!result || result.rowsAffected === 0) {
+      return res.status(500).send({
+        status: "Error",
+        message: "No se pudo crear la disponibilidad",
+      });
     }
-  }
-  if (result.affectedRows === 0) {
+
+    const insertedId =
+      result?.lastInsertRowid !== undefined && result?.lastInsertRowid !== null
+        ? Number(result.lastInsertRowid)
+        : null;
+
+    return res.status(200).send({
+      status: "Success",
+      message: "Disponibilidad creada correctamente",
+      disponibilidad: {
+        ...disponibilidad,
+        id: insertedId,
+      },
+    });
+  } catch (error) {
     return res
       .status(500)
-      .send({ status: "Error", message: "No se pudo crear la disponibilidad" });
+      .send({ status: "Error", message: "Error al crear disponibilidad" });
   }
-  return res.status(200).send({
-    status: "Success",
-    message: "Disponibilidad creada correctamente",
-    disponibilidad: {
-      ...disponibilidad,
-      disponibilidad_semana_id: result.insertId,
-    },
-  });
 }
 
 async function updateDisponibilidad(req, res) {
@@ -80,15 +79,47 @@ async function updateDisponibilidad(req, res) {
   const value = { ...parsed.data };
   if ("disponibilidad_semana_id" in value)
     delete value.disponibilidad_semana_id;
+  if ("user_id" in value) delete value.user_id;
 
   const { id } = req.params;
   try {
-    const connection = await database.getConnection();
-    const [result] = await connection.query(
-      "UPDATE disponibilidad_semanal SET ? WHERE id = ?",
-      [value, id],
-    );
-    if (result.affectedRows === 0) {
+    const ownerRes = await database.execute({
+      sql: "SELECT user_id FROM disponibilidad_semanal WHERE id = ?",
+      args: [id],
+    });
+    const ownerId = ownerRes.rows?.[0]?.user_id;
+    if (ownerId === undefined || ownerId === null) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Disponibilidad no encontrada" });
+    }
+    if (String(ownerId) !== String(req.user?.id)) {
+      return res.status(403).send({
+        status: "Error",
+        message: "No tienes permiso para modificar esta disponibilidad",
+      });
+    }
+
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "No fields to update" });
+    }
+
+    const setClause = keys.map((k) => `${k} = ?`).join(", ");
+    const args = keys.map((k) => {
+      if (k === "transport_needed") return value[k] ? 1 : 0;
+      return value[k];
+    });
+    args.push(id);
+
+    const result = await database.execute({
+      sql: `UPDATE disponibilidad_semanal SET ${setClause} WHERE id = ?`,
+      args,
+    });
+
+    if (!result || result.rowsAffected === 0) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
@@ -107,25 +138,28 @@ async function updateDisponibilidad(req, res) {
 async function removeDisponibilidad(req, res) {
   const { id } = req.params;
   try {
-    const connection = await database.getConnection();
-    const [rutine] = await connection.query(
-      "SELECT * FROM disponibilidad_semanal WHERE id = ?",
-      [id],
-    );
-    if (rutine.username !== req.user.username) {
+    const rutine = await database.execute({
+      sql: "SELECT user_id FROM disponibilidad_semanal WHERE id = ?",
+      args: [id],
+    });
+    const ownerId = rutine.rows?.[0]?.user_id;
+    if (ownerId === undefined || ownerId === null) {
       return res
-        .status(403)
-        .send({
-          status: "Error",
-          message: "No tienes permiso para eliminar esta disponibilidad",
-        });
+        .status(404)
+        .send({ status: "Error", message: "Disponibilidad no encontrada" });
     }
-    const [result] = await connection.query(
-      "DELETE FROM disponibilidad_semanal WHERE id = ?",
-      [id],
-    );
+    if (String(ownerId) !== String(req.user?.id)) {
+      return res.status(403).send({
+        status: "Error",
+        message: "No tienes permiso para eliminar esta disponibilidad",
+      });
+    }
+    const result = await database.execute({
+      sql: "DELETE FROM disponibilidad_semanal WHERE id = ?",
+      args: [id],
+    });
 
-    if (result.affectedRows === 0) {
+    if (!result || result.rowsAffected === 0) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
@@ -143,23 +177,21 @@ async function removeDisponibilidad(req, res) {
 async function getDisponibilidad(req, res) {
   const { id } = req.params;
   try {
-    const connection = await database.getConnection();
-    const [rows] = await connection.query(
-      "SELECT * FROM disponibilidad_semanal WHERE id = ?",
-      [id],
-    );
-    if (rows[0].username !== req.user.username) {
-      return res
-        .status(403)
-        .send({
-          status: "Error",
-          message: "No tienes permiso para acceder a esta disponibilidad",
-        });
-    }
+    const result = await database.execute({
+      sql: "SELECT * FROM disponibilidad_semanal WHERE id = ?",
+      args: [id],
+    });
+    const rows = result.rows ?? [];
     if (!rows || rows.length === 0) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
+    }
+    if (String(rows[0].user_id) !== String(req.user?.id)) {
+      return res.status(403).send({
+        status: "Error",
+        message: "No tienes permiso para acceder a esta disponibilidad",
+      });
     }
     return res.status(200).send({
       status: "Success",
@@ -173,28 +205,38 @@ async function getDisponibilidad(req, res) {
   }
 }
 
-async function getDisponibilidadesByUsername(req, res) {
-  const { username } = req.params;
+async function getDisponibilidadesByUserId(req, res) {
+  const { userId } = req.params;
   try {
-    const connection = await database.getConnection();
-    const [userRows] = await connection.query(
-      "SELECT username FROM users WHERE username = ?",
-      [username],
-    );
-    if (!userRows || userRows.length === 0) {
+    const userRows = await database.execute({
+      sql: "SELECT 1 FROM users WHERE id = ?",
+      args: [userId],
+    });
+    if ((userRows.rows ?? []).length === 0) {
       return res
         .status(404)
         .send({ status: "Error", message: "Usuario no encontrado" });
     }
 
-    const [rows] = await connection.query(
-      "SELECT * FROM disponibilidad_semanal WHERE username = ? ORDER BY FIELD(dia_semana, 'Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'), hora_inicio",
-      [username],
-    );
+    const rowsRes = await database.execute({
+      sql: `SELECT * FROM disponibilidad_semanal
+            WHERE user_id = ?
+            ORDER BY CASE dia_semana
+              WHEN 'Lunes' THEN 1
+              WHEN 'Martes' THEN 2
+              WHEN 'Miercoles' THEN 3
+              WHEN 'Jueves' THEN 4
+              WHEN 'Viernes' THEN 5
+              WHEN 'Sabado' THEN 6
+              WHEN 'Domingo' THEN 7
+              ELSE 99
+            END, hora_inicio`,
+      args: [userId],
+    });
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidades encontradas",
-      disponibilidades: rows,
+      disponibilidades: rowsRes.rows ?? [],
     });
   } catch (error) {
     return res.status(500).send({
@@ -204,18 +246,28 @@ async function getDisponibilidadesByUsername(req, res) {
   }
 }
 
-async function getDisponibilidadesByUsernameAndFinalidad(req, res) {
-  const { username, finalidad } = req.params;
+async function getDisponibilidadesByUserIdAndFinalidad(req, res) {
+  const { userId, finalidad } = req.params;
   try {
-    const connection = await database.getConnection();
-    const [rows] = await connection.query(
-      "SELECT * FROM disponibilidad_semanal WHERE username = ? AND finalidad = ? ORDER BY FIELD(dia_semana, 'Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'), hora_inicio",
-      [username, finalidad],
-    );
+    const rowsRes = await database.execute({
+      sql: `SELECT * FROM disponibilidad_semanal
+            WHERE user_id = ? AND finalidad = ?
+            ORDER BY CASE dia_semana
+              WHEN 'Lunes' THEN 1
+              WHEN 'Martes' THEN 2
+              WHEN 'Miercoles' THEN 3
+              WHEN 'Jueves' THEN 4
+              WHEN 'Viernes' THEN 5
+              WHEN 'Sabado' THEN 6
+              WHEN 'Domingo' THEN 7
+              ELSE 99
+            END, hora_inicio`,
+      args: [userId, finalidad],
+    });
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidades por finalidad encontradas",
-      disponibilidades: rows,
+      disponibilidades: rowsRes.rows ?? [],
     });
   } catch (error) {
     return res.status(500).send({
@@ -230,6 +282,6 @@ export const methods = {
   updateDisponibilidad,
   removeDisponibilidad,
   getDisponibilidad,
-  getDisponibilidadesByUsername,
-  getDisponibilidadesByUsernameAndFinalidad,
+  getDisponibilidadesByUserId,
+  getDisponibilidadesByUserIdAndFinalidad,
 };

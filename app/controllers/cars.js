@@ -14,12 +14,12 @@ async function createCar(req, res) {
   const user = req.user;
   const car = {
     ...data.data,
-    user: user.username,
+    user_id: user.id,
   };
   let result;
   try {
     const insertResult = await database.execute({
-      sql: "INSERT INTO cars (matricula, marca, modelo, color, tipo_combustible, numero_plazas, user, year) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      sql: "INSERT INTO cars (matricula, marca, modelo, color, tipo_combustible, num_plazas, user_id, year) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       args: [
         car.matricula,
         car.marca,
@@ -27,7 +27,7 @@ async function createCar(req, res) {
         car.color,
         car.tipo_combustible,
         car.num_plazas,
-        car.user,
+        car.user_id,
         car.year,
       ],
     });
@@ -55,11 +55,14 @@ async function createCar(req, res) {
 }
 
 async function updateCar(req, res) {
-  const { error, value } = CocheSchemas.validateCochePartial(req.body);
-  if (error) {
-    return res.status(400).send({ status: "Error", message: error.message });
+  const parsed = CocheSchemas.validateCochePartial(req.body);
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .send({ status: "Error", message: parsed.error.message });
   }
-  const { id_coche } = req.params;
+  const { id: id_coche } = req.params;
+  const value = { ...parsed.data };
   const keys = Object.keys(value);
   if (keys.length === 0) {
     return res
@@ -79,11 +82,11 @@ async function updateCar(req, res) {
   }
   return res
     .status(200)
-    .send({ status: "Success", message: "Car updated successfully", car });
+    .send({ status: "Success", message: "Car updated successfully" });
 }
 
 async function removeCar(req, res) {
-  const { id_coche } = req.params;
+  const { id: id_coche } = req.params;
   const result = await database.execute({
     sql: "DELETE FROM cars WHERE id_coche = ?",
     args: [id_coche],
@@ -99,7 +102,7 @@ async function removeCar(req, res) {
 }
 
 async function getCar(req, res) {
-  const { id_coche } = req.params;
+  const { id: id_coche } = req.params;
   const { rows } = await database.execute({
     sql: "SELECT * FROM cars WHERE id_coche = ?",
     args: [id_coche],
@@ -114,18 +117,18 @@ async function getCar(req, res) {
   });
 }
 
-async function getCarsByUsername(req, res) {
-  const { username } = req.params;
+async function getCarsByUserId(req, res) {
+  const { userId } = req.params;
   const userQuery = await database.execute({
-    sql: "SELECT * FROM users WHERE username = ?",
-    args: [username],
+    sql: "SELECT 1 FROM users WHERE id = ?",
+    args: [userId],
   });
-  if (userQuery.rows.length === 0) {
+  if ((userQuery.rows ?? []).length === 0) {
     return res.status(404).send({ status: "Error", message: "User not found" });
   }
   const carsQuery = await database.execute({
-    sql: "SELECT * FROM cars WHERE user = ?",
-    args: [username],
+    sql: "SELECT * FROM cars WHERE user_id = ?",
+    args: [userId],
   });
   return res.status(200).send({
     status: "Success",
@@ -139,5 +142,5 @@ export const methods = {
   updateCar,
   removeCar,
   getCar,
-  getCarsByUsername,
+  getCarsByUserId,
 };
