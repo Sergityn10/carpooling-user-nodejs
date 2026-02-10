@@ -149,6 +149,14 @@ async function register(req, res) {
     sql: "SELECT id, email FROM users WHERE email = ?",
     args: [email],
   });
+  await fetch(
+    `${process.env.TRAYECTOS_ORIGIN || "http://localhost:3000"}/api/users/${createdUser?.id}/preferences/default`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+
   const createdUser = createdRows?.[0];
 
   const token = jsonwebtoken.sign(
