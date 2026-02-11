@@ -305,6 +305,7 @@ async function validate(req, res) {
     }
 
     const cookieToken = req?.cookies?.access_token;
+    console.log(req.cookies)
     console.log(cookieToken)
     if (!bearerToken && !cookieToken) {
       return res
