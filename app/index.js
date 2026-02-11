@@ -608,8 +608,7 @@ app.get("/api/auth/oauth/register", async (req, res) => {
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-      domain: process.env.NODE_ENV === "production" ? frontendUrl : undefined,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     });
     res.redirect(finalRedirectUrl);
   } catch (error) {
@@ -676,8 +675,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-      domain: process.env.NODE_ENV === "production" ? frontendUrl : undefined,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     });
     res.redirect(finalRedirectUrl);
   } catch (error) {
