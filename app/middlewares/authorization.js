@@ -11,6 +11,7 @@ async function isLoged(req, res, next) {
       .status(403)
       .send({ status: "Error", message: "Access denied. Admins only." });
   }
+  console.log(logueado);
 
   // Aquí podrías verificar si el usuario tiene el rol de administrador, accediendo a la base de datos
   if (logueado) {
@@ -60,6 +61,7 @@ function getBearerTokenFromReq(req) {
   if (!rawHeader || typeof rawHeader !== "string") {
     return null;
   }
+  console.log(rawHeader);
 
   const [scheme, token] = rawHeader.split(" ");
   if (!scheme || !token) {
@@ -87,6 +89,7 @@ async function reviseBearer(req) {
     if (!bearerToken) {
       return false;
     }
+    console.log(bearerToken);
 
     // Add format validation
     if (!isValidJwtFormat(bearerToken)) {
