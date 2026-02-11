@@ -673,11 +673,12 @@ app.get("/api/auth/oauth/login", async (req, res) => {
         process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
       ),
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      secure: true,
+      sameSite: "none",
       path: "/",
       maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     });
+
     res.redirect(finalRedirectUrl);
   } catch (error) {
     console.error("Error en el flujo OAuth:", error);
