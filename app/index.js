@@ -47,6 +47,7 @@ const secret_id = process.env.GOOGLE_OAUTH;
 
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(path.join(__dirname, "public")));
+app.set("trust proxy", 1); // <--- ESTO ES VITAL EN VERCEL
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "10mb" }));
 app.use(
