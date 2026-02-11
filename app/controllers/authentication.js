@@ -305,18 +305,32 @@ async function validate(req, res) {
     }
 
     const cookieToken = req?.cookies?.access_token;
-    console.log(req.cookies)
-    console.log(cookieToken)
     if (!bearerToken && !cookieToken) {
       return res
         .status(401)
-        .send({ status: "Error", message: "No token provided" });
+        .send({ status: "Error", message: "No authentication token provided" });
+    }
+
+    const token = bearerToken || cookieToken;
+
+    // Verificar explícitamente el token
+    try {
+      jsonwebtoken.verify(token, process.env.JWT_SECRET_KEY);
+    } catch (jwtError) {
+      res.clearCookie("access_token", {
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "none",
+        path: "/",
+      });
+      return res.status(401).send({
+        status: "Error",
+        message: "Invalid or expired token"
+      });
     }
 
     const findUser =
       (await authorization.reviseBearer(req)) ||
       (await authorization.reviseCookie(req));
-    console.log(findUser)
 
     if (!findUser) {
       res.clearCookie("access_token", {
@@ -326,10 +340,8 @@ async function validate(req, res) {
       });
       return res
         .status(401)
-        .send({ status: "Error", message: "Invalid token" });
+        .send({ status: "Error", message: "User not found for this token" });
     }
-
-    const token = bearerToken || cookieToken;
 
     const user = {
       userId: findUser.id,
@@ -346,21 +358,11 @@ async function validate(req, res) {
       data: user,
     });
   } catch (error) {
-    const rawHeader =
-      req?.headers?.authorization || req?.headers?.authentication;
-    const hasBearer = !!(
-      rawHeader &&
-      typeof rawHeader === "string" &&
-      rawHeader.toLowerCase().startsWith("bearer ")
-    );
-    if (!hasBearer) {
-      res.clearCookie("access_token", {
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
-        path: "/",
-      });
-    }
-    return res.status(401).send({ status: "Error", message: "Invalid token" });
+    return res.status(401).send({
+      status: "Error",
+      message: "Authentication failed",
+      details: process.env.NODE_ENV === "development" ? error.message : undefined
+    });
   }
 }
 
