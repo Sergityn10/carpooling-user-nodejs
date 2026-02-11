@@ -5,7 +5,15 @@ import { methods as cryptoUtils } from "../utils/crypto.js";
 dotenv.config();
 
 async function isLoged(req, res, next) {
-  const logueado = (await reviseBearer(req)) || (await reviseCookie(req));
+  let logueado;
+  try {
+    logueado = await reviseBearer(req);
+  } catch (e) {
+    return res.status(403).send({
+      status: "Error",
+      message: `Access denied. Admins only. ${e.message}`,
+    });
+  }
   if (!logueado) {
     return res
       .status(403)
