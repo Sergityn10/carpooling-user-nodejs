@@ -64,7 +64,7 @@ async function login(req, res) {
   const cookiesOptions = {
     expires: new Date(
       Date.now() +
-        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
     ), // 1 day
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -161,7 +161,7 @@ async function register(req, res) {
   const cookiesOptions = {
     expires: new Date(
       Date.now() +
-        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
     ), // 1 day
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -272,7 +272,7 @@ async function refresh(req, res) {
     res.cookie("access_token", newToken, {
       expires: new Date(
         Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
       ),
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -305,7 +305,7 @@ async function validate(req, res) {
     }
 
     const cookieToken = req?.cookies?.access_token;
-
+    console.log(cookieToken)
     if (!bearerToken && !cookieToken) {
       return res
         .status(401)
@@ -315,7 +315,8 @@ async function validate(req, res) {
     const findUser =
       (await authorization.reviseBearer(req)) ||
       (await authorization.reviseCookie(req));
-      
+    console.log(findUser)
+
     if (!findUser) {
       res.clearCookie("access_token", {
         secure: process.env.NODE_ENV === "production",
