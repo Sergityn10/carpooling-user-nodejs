@@ -315,6 +315,7 @@ async function validate(req, res) {
     const findUser =
       (await authorization.reviseBearer(req)) ||
       (await authorization.reviseCookie(req));
+      
     if (!findUser) {
       res.clearCookie("access_token", {
         secure: process.env.NODE_ENV === "production",
