@@ -12,6 +12,55 @@ export const status = {
   8: "completed",
 };
 
+function isLikelyStripeWebhookRequest(req) {
+  return (
+    Buffer.isBuffer(req.body) ||
+    typeof req.headers?.["stripe-signature"] === "string" ||
+    typeof req.headers?.["Stripe-Signature"] === "string"
+  );
+}
+
+function getStripeSignatureHeader(req) {
+  console.log(req.headers);
+  return (
+    req.headers?.["stripe-signature"] ||
+    req.headers?.["Stripe-Signature"] ||
+    null
+  );
+}
+
+function parseStripeEventFromRequest(req) {
+  const webhookSecret =
+    process.env.STRIPE_WEBHOOK_SECRET ||
+    process.env.STRIPE_WEBHOOK_SECRET_KEY ||
+    null;
+  const signature = getStripeSignatureHeader(req);
+
+  if (!Buffer.isBuffer(req.body)) {
+    // fallback: if body was already parsed as JSON (e.g. non-stripe sources)
+    return { event: req.body, verified: false };
+  }
+
+  if (!webhookSecret || !signature) {
+    // Can't verify, but still parse (useful for local debugging)
+    try {
+      return {
+        event: JSON.parse(req.body.toString("utf8")),
+        verified: false,
+      };
+    } catch (e) {
+      throw new Error("Invalid raw webhook payload (missing secret/signature)");
+    }
+  }
+
+  const event = stripe.webhooks.constructEvent(
+    req.body,
+    signature,
+    webhookSecret,
+  );
+  return { event, verified: true };
+}
+
 function isNoSuchTableError(error, tableName) {
   const expected = `no such table: ${String(tableName ?? "").toLowerCase()}`;
   const msg = String(
@@ -39,12 +88,21 @@ function isNoSuchColumnError(error, columnName) {
 async function createEvent(req, res) {
   const { source } = req.params;
 
-  let data;
+  let stripeEvent = null;
+  let verified = false;
+  let parsedBody = req.body;
 
-  data = JSON.stringify(req.body);
-  const eventId = req.body?.id ?? null;
-  const eventType = String(req.body?.type ?? "unknown");
-  const stripeObj = req.body?.data?.object;
+  if (source === "stripe" && isLikelyStripeWebhookRequest(req)) {
+    const parsed = parseStripeEventFromRequest(req);
+    stripeEvent = parsed.event;
+    verified = parsed.verified;
+    parsedBody = stripeEvent;
+  }
+
+  const data = JSON.stringify(parsedBody);
+  const eventId = parsedBody?.id ?? null;
+  const eventType = String(parsedBody?.type ?? "unknown");
+  const stripeObj = parsedBody?.data?.object;
   const paymentIntentId =
     (stripeObj?.object === "payment_intent"
       ? stripeObj?.id
@@ -67,6 +125,8 @@ async function createEvent(req, res) {
     });
 
     if (source === "stripe") {
+      // Ensure downstream handlers always see the parsed event
+      req.body = parsedBody;
       await handleStripeEvent(req, res);
     }
   } catch (error) {
@@ -77,6 +137,14 @@ async function createEvent(req, res) {
         args: [status[3], error?.message ?? String(error), eventId],
       });
     } catch (_e) {}
+
+    // For Stripe, return 500 so it can retry (idempotency via events table)
+    if (source === "stripe") {
+      return res.status(500).send({
+        status: "Error",
+        message: "Stripe event received but processing failed",
+      });
+    }
 
     return res.status(200).send({
       status: "Success",

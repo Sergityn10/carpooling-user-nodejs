@@ -48,6 +48,15 @@ const secret_id = process.env.GOOGLE_OAUTH;
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(path.join(__dirname, "public")));
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
+
+// Stripe webhooks need the raw body for signature verification
+app.use((req, res, next) => {
+  if (req.originalUrl === "/api/webhook/stripe") {
+    return express.raw({ type: "application/json" })(req, res, next);
+  }
+  return next();
+});
+
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "10mb" }));
 app.use(
   express.urlencoded({
@@ -708,7 +717,6 @@ app.delete("/api/telegram-info/:id", authorization.isLoged, (req, res) =>
 app.post("/api/telegram-info/bulk", authorization.isLoged, (req, res) =>
   telegramInfo.bulkCreate(req, res),
 );
-
 app.post("/api/webhook/:source", (req, res) => webhook.createEvent(req, res));
 
 //PAYMENTS METHOD
@@ -726,6 +734,7 @@ app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
 app.post("/api/payment/stripe-customer", authorization.isLoged, (req, res) =>
   payment.createStripeCustomer(req, res),
 );
+
 app.get("/api/payment/stripe-customer", authorization.isLoged, (req, res) =>
   payment.getMyStripeCustomerAccount(req, res),
 );
