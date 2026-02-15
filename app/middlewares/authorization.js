@@ -7,7 +7,7 @@ dotenv.config();
 async function isLoged(req, res, next) {
   let logueado;
   try {
-    logueado = await reviseBearer(req);
+    logueado = await reviseBearer(req) || await reviseCookie(req);
   } catch (e) {
     return res.status(403).send({
       status: "Error",
@@ -118,13 +118,13 @@ async function reviseBearer(req) {
     const resultado = await database.execute(
       hasUserId
         ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
+          sql: "SELECT * FROM users WHERE id = ?",
+          args: [decodificado.userId],
+        }
         : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
+          sql: "SELECT * FROM users WHERE email = ?",
+          args: [decodificado.email],
+        },
     );
 
     const findUser = resultado.rows[0];
@@ -169,13 +169,13 @@ async function reviseCookie(req) {
     const resultado = await database.execute(
       hasUserId
         ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
+          sql: "SELECT * FROM users WHERE id = ?",
+          args: [decodificado.userId],
+        }
         : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
+          sql: "SELECT * FROM users WHERE email = ?",
+          args: [decodificado.email],
+        },
     );
 
     const findUser = resultado.rows[0];
