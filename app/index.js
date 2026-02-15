@@ -47,6 +47,7 @@ const secret_id = process.env.GOOGLE_OAUTH;
 
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(path.join(__dirname, "public")));
+app.set("trust proxy", 1); // <--- ESTO ES VITAL EN VERCEL
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
 
 // Stripe webhooks need the raw body for signature verification
@@ -91,33 +92,33 @@ app.use(
 
 try {
   await db.execute("PRAGMA foreign_keys = ON");
-} catch (_e) {}
+} catch (_e) { }
 
 if (process.env.RESET_DB === "1") {
   try {
     await db.execute("PRAGMA foreign_keys = OFF");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS telegram_info");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS disponibilidad_semanal");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS cars");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS comments");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS accounts");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("DROP TABLE IF EXISTS users");
-  } catch (_e) {}
+  } catch (_e) { }
   try {
     await db.execute("PRAGMA foreign_keys = ON");
-  } catch (_e) {}
+  } catch (_e) { }
 }
 
 await db.execute(`
@@ -255,15 +256,15 @@ id INTEGER PRIMARY KEY AUTOINCREMENT,
 
 try {
   await db.execute("ALTER TABLE events ADD COLUMN event_type TEXT");
-} catch (_e) {}
+} catch (_e) { }
 try {
   await db.execute("ALTER TABLE events ADD COLUMN payment_intent_id TEXT");
-} catch (_e) {}
+} catch (_e) { }
 try {
   await db.execute(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id)",
   );
-} catch (_e) {}
+} catch (_e) { }
 
 await db.execute(`
 CREATE TABLE IF NOT EXISTS enterprises (
@@ -290,7 +291,7 @@ await db
     sql: "ALTER TABLE service_events ADD COLUMN enterprise_id INTEGER",
     args: [],
   })
-  .catch(() => {});
+  .catch(() => { });
 await db.execute(`
 CREATE TABLE IF NOT EXISTS service_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,12 +422,12 @@ try {
   await db.execute(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_checkout_session_id ON payment_intents(checkout_session_id)",
   );
-} catch (_e) {}
+} catch (_e) { }
 try {
   await db.execute(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_stripe_payment_id ON payment_intents(stripe_payment_id)",
   );
-} catch (_e) {}
+} catch (_e) { }
 
 //funcionalidades de la aplicacion
 app.get("/api/test", authorization.isLoged, async (req, res) => {
@@ -611,13 +612,13 @@ app.get("/api/auth/oauth/register", async (req, res) => {
     res.cookie("access_token", jwtToken, {
       expires: new Date(
         Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-      ), // 1 day
+        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      ),
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     });
     res.redirect(finalRedirectUrl);
   } catch (error) {
@@ -678,14 +679,15 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     res.cookie("access_token", jwtToken, {
       expires: new Date(
         Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-      ), // 1 day
+        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      ),
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: true,
       sameSite: "none",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000
     });
+
     res.redirect(finalRedirectUrl);
   } catch (error) {
     console.error("Error en el flujo OAuth:", error);
