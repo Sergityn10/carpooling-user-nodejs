@@ -653,10 +653,10 @@ async function cancelPaymentIntent(req, res) {
     });
   }
 
-  if (currentStatus === "succeeded") {
+  if (currentStatus === "captured") {
     return res.status(409).send({
       status: "Error",
-      message: "Payment intent already succeeded and cannot be canceled",
+      message: "El pago ha sido ya realizado y no se puede cancelar.",
       paymentIntent: current,
     });
   }
@@ -671,7 +671,7 @@ async function cancelPaymentIntent(req, res) {
   } catch (error) {
     return res.status(400).send({
       status: "Error",
-      message: "Payment intent cancel failed",
+      message: "El pago ha sido ya realizado y no se puede cancelar.",
       error: error?.message ?? String(error),
     });
   }
