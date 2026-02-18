@@ -745,25 +745,25 @@ async function handlePaymentIntentCanceled(jsonData) {
     args: [status[4], paymentIntent.status, paymentIntent.id],
   });
 
-  await database.execute({
-    sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [status[4], paymentIntent.status, paymentIntent.id],
-  });
+  // await database.execute({
+  //   sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+  //   args: [status[4], paymentIntent.status, paymentIntent.id],
+  // });
 
-  try {
-    await database.execute({
-      sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-      args: [status[4], paymentIntent.status, paymentIntent.id],
-    });
-  } catch (error) {
-    if (!isNoSuchColumnError(error, "status")) {
-      throw error;
-    }
-    await database.execute({
-      sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-      args: [paymentIntent.status, paymentIntent.id],
-    });
-  }
+  // try {
+  //   await database.execute({
+  //     sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+  //     args: [status[4], paymentIntent.status, paymentIntent.id],
+  //   });
+  // } catch (error) {
+  //   if (!isNoSuchColumnError(error, "status")) {
+  //     throw error;
+  //   }
+  //   await database.execute({
+  //     sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
+  //     args: [paymentIntent.status, paymentIntent.id],
+  //   });
+  // }
 }
 async function handleCustomerUpdated(jsonData) {
   const customer = jsonData.object;
