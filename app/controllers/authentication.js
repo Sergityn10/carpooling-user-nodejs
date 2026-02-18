@@ -64,7 +64,7 @@ async function login(req, res) {
   const cookiesOptions = {
     expires: new Date(
       Date.now() +
-      process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
     ), // 1 day
     httpOnly: true,
     secure: true,
@@ -152,6 +152,14 @@ async function register(req, res) {
 
   const createdUser = createdRows?.[0];
 
+  await database.execute({
+    sql: `INSERT OR IGNORE INTO user_preferences (user_id, pref_key, value)
+          SELECT ?, pd.pref_key, pd.default_value
+          FROM preference_definitions pd
+          WHERE pd.is_active = 1`,
+    args: [createdUser?.id],
+  });
+
   const token = jsonwebtoken.sign(
     { userId: createdUser?.id, email },
     process.env.JWT_SECRET_KEY,
@@ -161,7 +169,7 @@ async function register(req, res) {
   const cookiesOptions = {
     expires: new Date(
       Date.now() +
-      process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
     ), // 1 day
     httpOnly: true,
     secure: true,
@@ -171,17 +179,6 @@ async function register(req, res) {
   };
 
   res.cookie("access_token", token, cookiesOptions);
-  await fetch(
-    `${process.env.TRAYECTOS_ORIGIN || "http://localhost:3000"}/api/users/${createdUser?.id}/preferences/default`,
-    {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    },
-  );
   return res.status(201).send({
     status: "Success",
     message: "User registered successfully",
@@ -272,7 +269,7 @@ async function refresh(req, res) {
     res.cookie("access_token", newToken, {
       expires: new Date(
         Date.now() +
-        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
       ),
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -324,7 +321,7 @@ async function validate(req, res) {
       });
       return res.status(401).send({
         status: "Error",
-        message: "Invalid or expired token"
+        message: "Invalid or expired token",
       });
     }
 
@@ -361,7 +358,8 @@ async function validate(req, res) {
     return res.status(401).send({
       status: "Error",
       message: "Authentication failed",
-      details: process.env.NODE_ENV === "development" ? error.message : undefined
+      details:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 }

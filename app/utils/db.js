@@ -94,6 +94,15 @@ async function createUser(
   }
 
   const created = await getUser(email);
+
+  await database.execute({
+    sql: `INSERT OR IGNORE INTO user_preferences (user_id, pref_key, value)
+          SELECT ?, pd.pref_key, pd.default_value
+          FROM preference_definitions pd
+          WHERE pd.is_active = 1`,
+    args: [created?.id],
+  });
+
   return { status: "Success", user: created };
 }
 
