@@ -148,6 +148,47 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
   );
   `);
+
+await db.execute(`
+CREATE TABLE IF NOT EXISTS preference_definitions (
+    pref_key TEXT PRIMARY KEY,
+    value_type TEXT NOT NULL,
+    default_value TEXT NOT NULL,
+    enum_values TEXT,
+    description TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT chk_pref_value_type CHECK (value_type IN ('boolean', 'number', 'text', 'enum'))
+);
+`);
+
+await db.execute(`
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id INTEGER NOT NULL,
+    pref_key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, pref_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (pref_key) REFERENCES preference_definitions(pref_key) ON DELETE CASCADE
+);
+`);
+
+await db.execute(
+  "CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id)",
+);
+
+await db.execute(`
+INSERT OR IGNORE INTO preference_definitions (pref_key, value_type, default_value, enum_values, description) VALUES
+('smoking_allowed', 'boolean', '0', NULL, 'Permite fumar durante el viaje'),
+('pets_allowed', 'boolean', '0', NULL, 'Permite mascotas durante el viaje'),
+('music', 'boolean', '1', NULL, 'Música durante el viaje'),
+('talk_level', 'enum', 'normal', '["silencio","normal","charla"]', 'Nivel de conversación'),
+('temperature', 'enum', 'templado', '["frio","templado","calor"]', 'Temperatura preferida'),
+('luggage_size', 'enum', 'medio', '["pequeno","medio","grande"]', 'Tamaño de equipaje admitido'),
+('stops_allowed', 'boolean', '0', NULL, 'Permite paradas durante el viaje'),
+('max_detour_km', 'number', '0', NULL, 'Desvío máximo aceptado (km)');
+`);
+
 await db.execute(`
 CREATE TABLE IF NOT EXISTS accounts (
   stripe_account_id TEXT PRIMARY KEY NOT NULL,
@@ -232,6 +273,18 @@ CREATE TABLE IF NOT EXISTS telegram_info (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 `);
+
+try {
+  const pagosExists = await db.execute({
+    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='pagos'",
+    args: [],
+  });
+  if ((pagosExists?.rows?.length ?? 0) > 0) {
+    // Legacy table from older schema. It has been seen referencing users with an invalid FK,
+    // which breaks user deletion with: foreign key mismatch - "pagos" referencing "users".
+    await db.execute("DROP TABLE IF EXISTS pagos");
+  }
+} catch (_e) {}
 
 await db.execute(`
 CREATE TABLE IF NOT EXISTS events (
