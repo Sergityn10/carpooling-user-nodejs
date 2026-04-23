@@ -73,6 +73,8 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://localhost:4001",
+      "http://localhost:3001",
+      "https://www.youconnext.es",
       origin,
       origin_without,
       trayectos_origin,
@@ -471,6 +473,17 @@ CREATE TABLE IF NOT EXISTS wallet_payouts (
   UNIQUE (stripe_event_id)
 );
   `);
+await db.execute(`
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+  `);
 
 try {
   await db.execute(
@@ -665,15 +678,15 @@ app.get("/api/auth/oauth/register", async (req, res) => {
     // 7. Redirigir al frontend
     res.cookie("access_token", jwtToken, {
       expires: new Date(
-        Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+        Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
       ),
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
     });
+    await authentication.issueRefreshToken(res, userResult?.user?.id);
     res.redirect(finalRedirectUrl);
   } catch (error) {
     console.error("Error en el flujo OAuth:", error);
@@ -732,16 +745,16 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     // 7. Redirigir al frontend
     res.cookie("access_token", jwtToken, {
       expires: new Date(
-        Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+        Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
       ),
       httpOnly: true,
       secure: true,
       sameSite: "none",
       path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
     });
 
+    await authentication.issueRefreshToken(res, comprobarUser.id);
     res.redirect(finalRedirectUrl);
   } catch (error) {
     console.error("Error en el flujo OAuth:", error);

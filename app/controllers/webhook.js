@@ -1221,6 +1221,37 @@ async function handleAccountUpdated(jsonData) {
       return;
     }
 
+    const userRowRes = await tx.execute({
+      sql: "SELECT name, email, stripe_customer_account FROM users WHERE id = ?",
+      args: [userId],
+    });
+    if (userRowRes.rows.length === 0) {
+      try {
+        await tx.rollback();
+      } catch (_) {}
+      return;
+    }
+
+    const userRow = userRowRes.rows[0];
+    let stripeCustomerAccountId = userRow?.stripe_customer_account ?? null;
+
+    if (
+      !stripeCustomerAccountId &&
+      typeof userRow?.name === "string" &&
+      typeof userRow?.email === "string"
+    ) {
+      const customer_account = await stripe.customers.create({
+        name: userRow.name,
+        individual_name: userRow.name,
+        email: userRow.email,
+      });
+      stripeCustomerAccountId = customer_account.id;
+      await tx.execute({
+        sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
+        args: [stripeCustomerAccountId, userId],
+      });
+    }
+
     await tx.execute({
       sql: `INSERT INTO accounts (
                     stripe_account_id,
