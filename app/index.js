@@ -73,8 +73,9 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://localhost:4001",
-      "http://localhost:3001",
+      "http://localhost:3000",
       "https://www.youconnext.es",
+      "https://youconnext-nextjs.vercel.app",
       origin,
       origin_without,
       trayectos_origin,

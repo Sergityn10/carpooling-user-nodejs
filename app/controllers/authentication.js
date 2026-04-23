@@ -120,12 +120,14 @@ async function login(req, res) {
 }
 
 async function register(req, res) {
+  console.log(req.body);
   const result = UserSchemas.validateRegisterSchema(req.body);
   if (!result.success) {
     return res
       .status(400)
       .send({ status: "Error", message: JSON.parse(result.error.message) });
   }
+  console.log(req.body);
 
   const { email, password } = result.data;
 
@@ -224,6 +226,11 @@ async function oauthGoogle(req, res) {
 
 async function logout(req, res) {
   res.clearCookie("access_token", {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "none",
+    path: "/",
+  });
+  res.clearCookie("refresh_token", {
     secure: process.env.NODE_ENV === "production",
     sameSite: "none",
     path: "/",
