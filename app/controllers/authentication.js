@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
+import crypto from "crypto";
 import database from "../database.js";
 import { schemas } from "../schemas.js";
 import { UserSchemas } from "../schemas/user.js";
@@ -16,6 +17,51 @@ dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const isProduction = process.env.NODE_ENV === "production";
+const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+const ACCESS_COOKIE_DAYS = Number(process.env.JWT_COOKIES_EXPIRATION_TIME || 1);
+
+function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
+  const maxAge = expiresAt.getTime() - Date.now();
+  return {
+    httpOnly,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    path: "/",
+    expires: expiresAt,
+    maxAge,
+  };
+}
+
+function buildAccessCookieOptions() {
+  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_DAYS * 60 * 1000);
+  return buildCookieOptions(expiresAt);
+}
+
+async function persistRefreshToken(userId, rawToken, expiresAt) {
+  const hashedToken = crypto
+    .createHash("sha256")
+    .update(rawToken)
+    .digest("hex");
+
+  await database.execute({
+    sql: "DELETE FROM refresh_tokens WHERE user_id = ?",
+    args: [userId],
+  });
+
+  await database.execute({
+    sql: "INSERT INTO refresh_tokens (user_id, token, expires_at, revoked) VALUES (?, ?, ?, 0)",
+    args: [userId, hashedToken, expiresAt.toISOString()],
+  });
+}
+
+async function issueRefreshToken(res, userId) {
+  const rawToken = crypto.randomBytes(40).toString("hex");
+  const expiresAt = new Date(Date.now() + ONE_MONTH_MS);
+
+  await persistRefreshToken(userId, rawToken, expiresAt);
+  res.cookie("refresh_token", rawToken, buildCookieOptions(expiresAt));
+}
 
 async function login(req, res) {
   const result = UserSchemas.validateLogin(req.body);
@@ -61,19 +107,8 @@ async function login(req, res) {
     { expiresIn: process.env.EXPIRATION_TIME },
   );
 
-  const cookiesOptions = {
-    expires: new Date(
-      Date.now() +
-        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-    ), // 1 day
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    path: "/",
-    maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-  };
-
-  res.cookie("access_token", token, cookiesOptions);
+  res.cookie("access_token", token, buildAccessCookieOptions());
+  await issueRefreshToken(res, comprobarUser.id);
   return res.status(200).send({
     status: "Success",
     message: `Login successful`,
@@ -92,7 +127,7 @@ async function register(req, res) {
       .send({ status: "Error", message: JSON.parse(result.error.message) });
   }
 
-  const { email, password, name } = result.data;
+  const { email, password } = result.data;
 
   const { rows: userRows } = await database.execute({
     sql: "SELECT * FROM users WHERE email = ?",
@@ -108,11 +143,6 @@ async function register(req, res) {
 
   const hash = await utils.hashValue(10, password);
 
-  const encryptedUserFields = cryptoUtils.encryptFields(
-    { name },
-    cryptoUtils.USER_SENSITIVE_FIELDS,
-  );
-
   const { rows: emailRows } = await database.execute({
     sql: "SELECT * FROM users WHERE email = ?",
     args: [email],
@@ -122,21 +152,9 @@ async function register(req, res) {
       .status(400)
       .send({ status: "Error", message: "Email already exists" });
   }
-  const customer_account = await stripe.customers.create({
-    name: name,
-    individual_name: name,
-    email: email,
-  });
-
   const insertResult = await database.execute({
-    sql: "INSERT INTO users (email, password, name, auth_method, stripe_customer_account) VALUES (?, ?, ?, ?, ?)",
-    args: [
-      email,
-      hash,
-      encryptedUserFields.name,
-      authMethods.PASSWORD,
-      customer_account.id,
-    ],
+    sql: "INSERT INTO users (email, password, auth_method) VALUES (?, ?, ?)",
+    args: [email, hash, authMethods.PASSWORD],
   });
 
   if (insertResult.rowsAffected === 0) {
@@ -166,19 +184,8 @@ async function register(req, res) {
     { expiresIn: process.env.EXPIRATION_TIME },
   );
 
-  const cookiesOptions = {
-    expires: new Date(
-      Date.now() +
-        process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-    ), // 1 day
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    path: "/",
-    maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-  };
-
-  res.cookie("access_token", token, cookiesOptions);
+  res.cookie("access_token", token, buildAccessCookieOptions());
+  await issueRefreshToken(res, createdUser?.id);
   return res.status(201).send({
     status: "Success",
     message: "User registered successfully",
@@ -228,63 +235,90 @@ async function logout(req, res) {
 
 async function refresh(req, res) {
   try {
-    const rawHeader =
-      req?.headers?.authorization || req?.headers?.authentication;
-    let bearerToken = null;
-    if (rawHeader && typeof rawHeader === "string") {
-      const [scheme, tokenFromHeader] = rawHeader.split(" ");
-      if (scheme?.toLowerCase() === "bearer" && tokenFromHeader) {
-        bearerToken = tokenFromHeader;
-      }
-    }
-
-    const cookieToken = req?.cookies?.access_token;
-    const token = bearerToken || cookieToken;
-    if (!token) {
+    const rawRefreshToken = req?.cookies?.refresh_token;
+    if (!rawRefreshToken) {
       return res
         .status(401)
-        .send({ status: "Error", message: "No token provided" });
+        .send({ status: "Error", message: "No refresh token provided" });
     }
 
-    const findUser =
-      (await authorization.reviseBearer(req)) ||
-      (await authorization.reviseCookie(req));
-    if (!findUser) {
-      res.clearCookie("access_token", {
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
-        path: "/",
-      });
+    const hashedRefresh = crypto
+      .createHash("sha256")
+      .update(rawRefreshToken)
+      .digest("hex");
+
+    const { rows } = await database.execute({
+      sql: "SELECT user_id, expires_at, revoked FROM refresh_tokens WHERE token = ? LIMIT 1",
+      args: [hashedRefresh],
+    });
+
+    const stored = rows?.[0];
+
+    if (!stored || stored.revoked) {
+      res.clearCookie(
+        "refresh_token",
+        buildCookieOptions(new Date(), { httpOnly: true }),
+      );
       return res
         .status(401)
-        .send({ status: "Error", message: "Invalid token" });
+        .send({ status: "Error", message: "Refresh token invalid" });
     }
 
-    const newToken = jsonwebtoken.sign(
-      { userId: findUser.id, email: findUser.email },
+    const expiresAt = new Date(stored.expires_at);
+    if (
+      Number.isNaN(expiresAt.getTime()) ||
+      expiresAt.getTime() <= Date.now()
+    ) {
+      res.clearCookie(
+        "refresh_token",
+        buildCookieOptions(new Date(), { httpOnly: true }),
+      );
+      return res
+        .status(401)
+        .send({ status: "Error", message: "Refresh token expired" });
+    }
+
+    const { rows: userRows } = await database.execute({
+      sql: "SELECT id, email FROM users WHERE id = ? LIMIT 1",
+      args: [stored.user_id],
+    });
+    const user = userRows?.[0];
+
+    if (!user) {
+      res.clearCookie(
+        "refresh_token",
+        buildCookieOptions(new Date(), { httpOnly: true }),
+      );
+      return res
+        .status(401)
+        .send({ status: "Error", message: "User not found" });
+    }
+
+    // Rotate refresh token and issue new access token
+    const accessToken = jsonwebtoken.sign(
+      { userId: user.id, email: user.email },
       process.env.JWT_SECRET_KEY,
       { expiresIn: process.env.EXPIRATION_TIME },
     );
 
-    res.cookie("access_token", newToken, {
-      expires: new Date(
-        Date.now() +
-          process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-      ),
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
-      path: "/",
-      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("access_token", accessToken, buildAccessCookieOptions());
+    await issueRefreshToken(res, user.id);
 
     return res.status(200).send({
       status: "Success",
       message: "Token refreshed",
-      token: newToken,
-      userId: findUser.id,
+      token: accessToken,
+      userId: user.id,
     });
   } catch (error) {
+    res.clearCookie(
+      "access_token",
+      buildCookieOptions(new Date(), { httpOnly: true }),
+    );
+    res.clearCookie(
+      "refresh_token",
+      buildCookieOptions(new Date(), { httpOnly: true }),
+    );
     return res.status(401).send({ status: "Error", message: "Invalid token" });
   }
 }
@@ -389,4 +423,5 @@ export const methods = {
   refresh,
   validate,
   existEmail,
+  issueRefreshToken,
 };
