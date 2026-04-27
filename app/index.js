@@ -77,6 +77,7 @@ app.use(
       "https://www.youconnext.es",
       "https://www.app.youconnext.es",
       "https://youconnext-nextjs.vercel.app",
+      "https://youconnext-landing-page.vercel.app",
       origin,
       origin_without,
       trayectos_origin,
