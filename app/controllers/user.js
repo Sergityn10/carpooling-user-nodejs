@@ -5,6 +5,7 @@ import { authorization } from "../middlewares/authorization.js";
 import database from "../database.js";
 import { methods as utils } from "../utils/hashing.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
+import { GoogleMapsProvider } from "../providers/google-maps.js";
 
 function isNoSuchTableError(error, tableName) {
   const expected = `no such table: ${String(tableName ?? "").toLowerCase()}`;
@@ -833,6 +834,90 @@ async function getUserInfo(req, res) {
     data: userInfo,
   });
 }
+
+function normalizeLocationText(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+async function getUniqueUsersByLocation(req, res) {
+  const rawLocation = req.query?.location;
+  if (!rawLocation || normalizeLocationText(rawLocation).length < 2) {
+    return res.status(400).send({
+      status: "Error",
+      message: "Missing or invalid query param: location",
+    });
+  }
+
+  let details;
+  try {
+    details = await GoogleMapsProvider.geocodeAddressDetails(rawLocation);
+  } catch (error) {
+    const msg = error?.message ?? String(error);
+    return res
+      .status(400)
+      .send({ status: "Error", message: `Ubicación no válida: ${msg}` });
+  }
+
+  const city = details?.city;
+  if (!city || normalizeLocationText(city).length === 0) {
+    return res.status(400).send({
+      status: "Error",
+      message:
+        "La ubicación no corresponde a una ciudad reconocible (falta componente 'locality').",
+    });
+  }
+
+  let rows;
+  try {
+    const q = await database.execute({
+      sql: "SELECT * FROM users WHERE ciudad IS NOT NULL AND trim(lower(ciudad)) = trim(lower(?))",
+      args: [city],
+    });
+    rows = q.rows ?? [];
+  } catch (error) {
+    console.error("Error fetching users by location:", error);
+    return res
+      .status(500)
+      .send({ status: "Error", message: "Failed to fetch users" });
+  }
+
+  const decryptedRows = (rows ?? []).map((r) =>
+    cryptoUtils.decryptFields(r, cryptoUtils.USER_SENSITIVE_FIELDS),
+  );
+
+  const seen = new Set();
+  const users = [];
+  for (const u of decryptedRows) {
+    const key = u?.id ?? u?.email ?? null;
+    const keyStr = key === null ? null : String(key);
+    if (!keyStr) continue;
+    if (seen.has(keyStr)) continue;
+    seen.add(keyStr);
+    users.push({
+      id: u.id,
+      name: u.name ?? null,
+      img_perfil: u.img_perfil ?? null,
+      ciudad: u.ciudad ?? null,
+    });
+  }
+
+  return res.status(200).send({
+    status: "Success",
+    location: {
+      query: String(rawLocation),
+      normalized_city: city,
+      formatted_address: details?.formatted_address ?? null,
+      place_id: details?.place_id ?? null,
+      lat: details?.lat ?? null,
+      lng: details?.lng ?? null,
+      country: details?.country ?? null,
+    },
+    count: users.length,
+    users,
+  });
+}
 async function getMyUserInfo(req, res) {
   const findUser = req.user;
   const opinionsQuery = await database.execute({
@@ -901,4 +986,5 @@ export const methods = {
   getUserInfo,
   updateMyUserPatch,
   getMyUserInfo,
+  getUniqueUsersByLocation,
 };
