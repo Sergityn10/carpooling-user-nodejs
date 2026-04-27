@@ -75,6 +75,7 @@ app.use(
       "http://localhost:4001",
       "http://localhost:3000",
       "https://www.youconnext.es",
+      "https://www.app.youconnext.es",
       "https://youconnext-nextjs.vercel.app",
       origin,
       origin_without,
@@ -519,6 +520,10 @@ app.get("/api/users", authorization.isLoged, async (req, res) => {
       .json({ status: "Error", message: "Failed to fetch users" });
   }
 });
+
+app.get("/api/users/unique-by-location", (req, res) =>
+  user.getUniqueUsersByLocation(req, res),
+);
 
 app.get("/api/users/info", authorization.isLoged, (req, res) =>
   user.getMyUserInfo(req, res),
