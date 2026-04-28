@@ -75,9 +75,11 @@ app.use(
       "http://localhost:4001",
       "http://localhost:3000",
       "https://www.youconnext.es",
-      "https://www.app.youconnext.es",
+      "https://app.youconnext.es",
       "https://youconnext-nextjs.vercel.app",
+      "https://carpooling-webapp-ten.vercel.app",
       "https://youconnext-landing-page.vercel.app",
+
       origin,
       origin_without,
       trayectos_origin,
