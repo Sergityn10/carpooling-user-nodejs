@@ -577,6 +577,9 @@ app.get("/api/auth/logout", (req, res) => authentication.logout(req, res));
 app.post("/api/auth/refresh", (req, res) => authentication.refresh(req, res));
 app.get("/api/auth/validate", (req, res) => authentication.validate(req, res));
 app.post("/api/auth/oauth", (req, res) => authentication.oauthGoogle(req, res));
+app.post("/api/auth/oauth/android", (req, res) =>
+  authentication.oauthGoogleAndroid(req, res),
+);
 
 app.post("/api/enterprise/auth/register", (req, res) =>
   enterpriseAuthentication.register(req, res),

@@ -16,6 +16,7 @@ import { authMethods } from "../schemas/auth_methods.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
+const android_client_id = process.env.GOOGLE_CLIENT_ID_ANDROID;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const isProduction = process.env.NODE_ENV === "production";
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -224,6 +225,150 @@ async function oauthGoogle(req, res) {
   res.status(200).json({ url: authorizeUrl });
 }
 
+async function oauthGoogleAndroid(req, res) {
+  try {
+    const { id_token, method } = req.body;
+
+    if (!id_token) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "id_token is required" });
+    }
+
+    if (method !== "login" && method !== "register") {
+      return res
+        .status(400)
+        .send({
+          status: "Error",
+          message: "Invalid method, must be 'login' or 'register'",
+        });
+    }
+
+    const oauth2Client = new OAuth2Client();
+    let payload;
+    try {
+      const ticket = await oauth2Client.verifyIdToken({
+        idToken: id_token,
+        audience: [android_client_id, client_id].filter(Boolean),
+      });
+      payload = ticket.getPayload();
+    } catch (verifyError) {
+      return res
+        .status(401)
+        .send({ status: "Error", message: "Invalid Google id_token" });
+    }
+
+    if (!payload) {
+      return res
+        .status(401)
+        .send({
+          status: "Error",
+          message: "Failed to extract payload from id_token",
+        });
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email;
+    const name = payload.name || "";
+    const picture = payload.picture || "";
+
+    if (!email) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "Google account has no email" });
+    }
+
+    const { rows: existingRows } = await database.execute({
+      sql: "SELECT * FROM users WHERE email = ? OR google_id = ?",
+      args: [email, googleId],
+    });
+    const existingUser = existingRows?.[0];
+
+    if (method === "register") {
+      if (existingUser) {
+        return res
+          .status(409)
+          .send({ status: "Error", message: "User already exists" });
+      }
+
+      const { methods: dbUtils } = await import("../utils/db.js");
+      const userResult = await dbUtils.createUser(
+        { email, password: "", name },
+        authMethods.GOOGLE,
+        googleId,
+      );
+
+      if (userResult?.status !== "Success") {
+        return res
+          .status(500)
+          .send({ status: "Error", message: "Failed to register user" });
+      }
+
+      const newUser = userResult.user;
+      const token = jsonwebtoken.sign(
+        { userId: newUser.id, email },
+        process.env.JWT_SECRET_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME },
+      );
+
+      res.cookie("access_token", token, buildAccessCookieOptions());
+      await issueRefreshToken(res, newUser.id);
+
+      return res.status(201).send({
+        status: "Success",
+        message: "User registered successfully",
+        token,
+        userId: newUser.id,
+        img_perfil: picture,
+        onboarding_ended: 0,
+      });
+    }
+
+    if (method === "login") {
+      if (!existingUser) {
+        return res
+          .status(404)
+          .send({ status: "Error", message: "User not found" });
+      }
+
+      if (existingUser.auth_method !== authMethods.GOOGLE) {
+        return res
+          .status(404)
+          .send({
+            status: "Error",
+            message: "Authentication method not valid",
+          });
+      }
+
+      const token = jsonwebtoken.sign(
+        { userId: existingUser.id, email },
+        process.env.JWT_SECRET_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME },
+      );
+
+      res.cookie("access_token", token, buildAccessCookieOptions());
+      await issueRefreshToken(res, existingUser.id);
+
+      return res.status(200).send({
+        status: "Success",
+        message: "Login successful",
+        token,
+        userId: existingUser.id,
+        img_perfil: existingUser.img_perfil || picture,
+        onboarding_ended: existingUser.onboarding_ended,
+      });
+    }
+  } catch (error) {
+    console.error("Error in Android OAuth:", error);
+    return res
+      .status(500)
+      .send({
+        status: "Error",
+        message: "Android OAuth authentication failed",
+      });
+  }
+}
+
 async function logout(req, res) {
   res.clearCookie("access_token", {
     secure: process.env.NODE_ENV === "production",
@@ -426,6 +571,7 @@ export const methods = {
   login,
   register,
   oauthGoogle,
+  oauthGoogleAndroid,
   logout,
   refresh,
   validate,
