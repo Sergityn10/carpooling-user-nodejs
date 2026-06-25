@@ -1,6 +1,6 @@
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
 dotenv.config();
 
@@ -113,19 +113,14 @@ async function reviseBearer(req) {
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
-    const resultado = await database.execute(
-      hasUserId
-        ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
-        : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
-    );
+    console.log(decodificado);
 
-    const findUser = resultado.rows[0];
+    const findUser = await prisma.user.findFirst({
+      where: hasUserId
+        ? { id: String(decodificado.userId) }
+        : { email: decodificado.email },
+    });
+
     if (!findUser) {
       return false;
     }
@@ -146,6 +141,7 @@ async function reviseCookie(req) {
     if (!cookieJWT) {
       return false;
     }
+    console.log(cookieJWT);
 
     // Add format validation
     if (!isValidJwtFormat(cookieJWT)) {
@@ -160,22 +156,17 @@ async function reviseCookie(req) {
       cookieJWT,
       process.env.JWT_SECRET_KEY,
     );
+    console.log(decodificado);
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
-    const resultado = await database.execute(
-      hasUserId
-        ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
-        : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
-    );
 
-    const findUser = resultado.rows[0];
+    const findUser = await prisma.user.findFirst({
+      where: hasUserId
+        ? { id: String(decodificado.userId) }
+        : { email: decodificado.email },
+    });
+
     if (!findUser) {
       if (typeof req?.res?.clearCookie === "function") {
         req.res.clearCookie("access_token", {
@@ -187,12 +178,11 @@ async function reviseCookie(req) {
         });
       }
       return false;
-    } else {
-      return cryptoUtils.decryptFields(
-        findUser,
-        cryptoUtils.USER_SENSITIVE_FIELDS,
-      );
     }
+    return cryptoUtils.decryptFields(
+      findUser,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
   } catch (error) {
     if (error.name !== "TokenExpiredError") {
       console.error("Error al verificar la cookie:", error);

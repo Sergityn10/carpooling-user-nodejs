@@ -1,0 +1,484 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum Genero {
+  Masculino
+  Femenino
+  Otro
+}
+
+enum AuthMethod {
+  password
+  google
+  other
+}
+
+enum TipoCombustible {
+  Gasolina
+  Diesel
+  Electrico
+  Hibrido
+}
+
+enum DiaSemana {
+  Lunes
+  Martes
+  Miercoles
+  Jueves
+  Viernes
+  Sabado
+  Domingo
+}
+
+enum EstadoDisponibilidad {
+  Disponible
+  Ocupado
+}
+
+enum ServiceEventStatus {
+  draft
+  requested
+  approved
+  rejected
+  canceled
+  completed
+}
+
+enum Currency {
+  eur
+  usd
+  gbp
+  jpy
+  aud
+}
+
+enum WalletAccountStatus {
+  active
+  blocked
+}
+
+enum WalletRechargeStatus {
+  pending
+  succeeded
+  failed
+  canceled
+  expired
+}
+
+enum WalletTransactionType {
+  deposit
+  reservation_payment
+  reservation_revenue
+  commision
+  refund
+  refund_reversal
+  adjustment
+}
+
+enum WalletPayoutStatus {
+  pending
+  processing
+  succeeded
+  failed
+  canceled
+}
+
+enum WalletPayoutMethod {
+  standard
+  instant
+}
+
+// ---------------------------------------------------------------------------
+// MODELS
+// ---------------------------------------------------------------------------
+
+model User {
+  id                      String    @id @default(uuid()) @db.VarChar(36)
+  email                   String    @unique @db.VarChar(150)
+  password                String?   @db.VarChar(255)
+  img_perfil              String?   @db.VarChar(255)
+  name                    String?   @db.VarChar(150)
+  phone                   String?   @db.VarChar(20)
+  fecha_nacimiento        DateTime? @db.Date
+  dni                     String?   @unique @db.VarChar(20)
+  genero                  Genero?
+  stripe_account          String?   @db.VarChar(255)
+  stripe_customer_account String?   @db.VarChar(255)
+  ciudad                  String?   @db.VarChar(100)
+  provincia               String?   @db.VarChar(100)
+  codigo_postal           String?   @db.VarChar(20)
+  direccion               String?   @db.VarChar(255)
+  pais                    String?   @db.VarChar(100)
+  onboarding_ended        Boolean   @default(false)
+  about_me                String?   @db.Text
+  auth_method             AuthMethod @default(password)
+  google_id               String?   @db.VarChar(255)
+  role                    String    @default("user") @db.VarChar(50)
+  created_at              DateTime  @default(now())
+  updated_at              DateTime  @updatedAt
+
+  accounts             Account[]
+  cars                 Car[]
+  refreshTokens        RefreshToken[]
+  walletAccounts       WalletAccount[]
+  walletRecharges      WalletRecharge[]
+  walletTransactions   WalletTransaction[]
+  walletPayouts        WalletPayout[]
+  telegramInfo         TelegramInfo[]
+  disponibilidades     DisponibilidadSemanal[]
+  preferences          UserPreference[]
+  commentsGiven        Comment[]    @relation("commentator")
+  commentsReceived     Comment[]    @relation("commentated")
+
+  @@map("users")
+}
+
+model Account {
+  stripe_account_id  String  @id @db.VarChar(255)
+  default_account    Boolean @default(false)
+  user_id            String  @db.VarChar(36)
+  charges_enabled    Boolean @default(false)
+  transfers_enabled  Boolean @default(false)
+  details_submitted  Boolean @default(false)
+
+  user           User            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  paymentIntents PaymentIntent[]
+
+  @@index([user_id])
+  @@map("accounts")
+}
+
+model Car {
+  id_coche         String   @id @default(uuid()) @db.VarChar(36)
+  matricula        String   @unique @db.VarChar(10)
+  marca            String   @db.VarChar(50)
+  modelo           String   @db.VarChar(50)
+  color            String?  @db.VarChar(50)
+  tipo_combustible TipoCombustible
+  num_plazas       Int      @db.TinyInt
+  user_id          String   @db.VarChar(36)
+  year             Int
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@map("cars")
+}
+
+model Comment {
+  id_comment          String @id @default(uuid()) @db.VarChar(36)
+  id_trayecto         Int
+  user_id_commentator String @db.VarChar(36)
+  user_id_trayect     String @db.VarChar(36)
+  opinion             String @db.Text
+  rating              Int    @db.TinyInt
+
+  trayecto    Trayecto @relation(fields: [id_trayecto], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  commentator User     @relation("commentator", fields: [user_id_commentator], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  commentated User     @relation("commentated", fields: [user_id_trayect], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([id_trayecto, user_id_commentator])
+  @@index([user_id_commentator])
+  @@index([user_id_trayect])
+  @@map("comments")
+}
+
+model TelegramInfo {
+  id                BigInt  @id
+  user_id           String  @db.VarChar(36)
+  username_telegram String? @db.VarChar(255)
+  first_name        String  @db.VarChar(255)
+  last_name         String? @db.VarChar(255)
+  chat_id           BigInt?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@map("telegram_info")
+}
+
+model DisponibilidadSemanal {
+  id               String               @id @default(uuid()) @db.VarChar(36)
+  user_id          String               @db.VarChar(36)
+  dia_semana       DiaSemana
+  hora_inicio      String               @db.VarChar(5)
+  hora_fin         String               @db.VarChar(5)
+  transport_needed Boolean              @default(false)
+  transporte       String?              @db.VarChar(100)
+  estado           EstadoDisponibilidad
+  finalidad        String               @db.VarChar(100)
+  origen           String               @db.VarChar(200)
+  destino          String               @db.VarChar(200)
+  created_at       DateTime             @default(now())
+  updated_at       DateTime             @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@map("disponibilidad_semanal")
+}
+
+model PreferenceDefinition {
+  pref_key      String  @id @db.VarChar(100)
+  value_type    String  @db.VarChar(20)
+  default_value String  @db.VarChar(255)
+  enum_values   String? @db.Text
+  description   String? @db.Text
+  is_active     Boolean @default(true)
+
+  userPreferences UserPreference[]
+
+  @@map("preference_definitions")
+}
+
+model UserPreference {
+  user_id    String   @db.VarChar(36)
+  pref_key   String   @db.VarChar(100)
+  value      String   @db.VarChar(255)
+  updated_at DateTime @updatedAt
+
+  user       User                 @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  definition PreferenceDefinition @relation(fields: [pref_key], references: [pref_key], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([user_id, pref_key])
+  @@index([user_id])
+  @@map("user_preferences")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  user_id    String   @db.VarChar(36)
+  token      String   @unique @db.VarChar(512)
+  expires_at DateTime
+  created_at DateTime @default(now())
+  revoked    Boolean  @default(false)
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@map("refresh_tokens")
+}
+
+model Event {
+  id               String   @id @default(uuid()) @db.VarChar(36)
+  event_id         String   @unique @db.VarChar(255)
+  event_type       String   @db.VarChar(100)
+  payment_intent_id String? @db.VarChar(255)
+  data             Json
+  source           String   @db.VarChar(100)
+  processing_error String?  @db.Text
+  status           String   @db.VarChar(50)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("events")
+}
+
+model Enterprise {
+  id            String   @id @default(uuid()) @db.VarChar(36)
+  name          String   @db.VarChar(255)
+  email         String   @unique @db.VarChar(255)
+  password      String   @db.VarChar(255)
+  phone         String?  @db.VarChar(30)
+  cif           String?  @unique @db.VarChar(50)
+  website       String?  @db.VarChar(255)
+  address_line1 String?  @db.VarChar(255)
+  address_line2 String?  @db.VarChar(255)
+  city          String?  @db.VarChar(120)
+  province      String?  @db.VarChar(120)
+  postal_code   String?  @db.VarChar(20)
+  country       String   @default("ES") @db.Char(2)
+  verified      Boolean  @default(false)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  serviceEvents ServiceEvent[]
+
+  @@index([verified])
+  @@map("enterprises")
+}
+
+model ServiceEvent {
+  id                 String             @id @default(uuid()) @db.VarChar(36)
+  enterprise_id      String             @db.VarChar(36)
+  title              String             @db.VarChar(255)
+  description        String?            @db.Text
+  start_at           DateTime
+  end_at             DateTime?
+  status             ServiceEventStatus @default(requested)
+  venue_name         String?            @db.VarChar(255)
+  address_line1      String             @db.VarChar(255)
+  address_line2      String?            @db.VarChar(255)
+  city               String             @db.VarChar(120)
+  province           String?            @db.VarChar(120)
+  postal_code        String?            @db.VarChar(20)
+  country            String             @default("ES") @db.Char(2)
+  latitude           Decimal?           @db.Decimal(10, 7)
+  longitude          Decimal?           @db.Decimal(10, 7)
+  contact_name       String?            @db.VarChar(255)
+  contact_email      String?            @db.VarChar(255)
+  contact_phone      String?            @db.VarChar(30)
+  attendees_estimate Int?
+  notes              String?            @db.Text
+  created_at         DateTime           @default(now())
+  updated_at         DateTime           @updatedAt
+
+  enterprise Enterprise @relation(fields: [enterprise_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([enterprise_id])
+  @@index([status])
+  @@index([start_at])
+  @@map("service_events")
+}
+
+model PaymentIntent {
+  stripe_payment_id   String   @id @db.VarChar(255)
+  amount              Int
+  currency            Currency @default(eur)
+  description         String?  @db.Text
+  destination_account String?  @db.VarChar(255)
+  sender_account      String?  @db.VarChar(255)
+  state               String   @db.VarChar(50)
+  client_secret       String?  @db.VarChar(500)
+  checkout_session_id String?  @unique @db.VarChar(255)
+  id_reserva          String?  @db.VarChar(255)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  senderAccountRel   Account?           @relation(fields: [sender_account], references: [stripe_account_id], onDelete: Cascade, onUpdate: Cascade)
+  reserva            Reserva?           @relation(fields: [id_reserva], references: [id_reserva], onDelete: SetNull, onUpdate: Cascade)
+  walletTransactions WalletTransaction[]
+
+  @@index([id_reserva])
+  @@index([sender_account])
+  @@map("payment_intents")
+}
+
+model WalletAccount {
+  id         String              @id @default(uuid()) @db.VarChar(36)
+  user_id    String              @db.VarChar(36)
+  currency   String              @default("eur") @db.VarChar(10)
+  balance    Int                 @default(0)
+  status     WalletAccountStatus @default(active)
+  created_at DateTime            @default(now())
+  updated_at DateTime            @updatedAt
+
+  user         User                @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  transactions WalletTransaction[]
+  payouts      WalletPayout[]
+
+  @@unique([user_id, currency])
+  @@index([currency])
+  @@map("wallet_accounts")
+}
+
+model WalletRecharge {
+  id                         String               @id @default(uuid()) @db.VarChar(36)
+  user_id                    String               @db.VarChar(36)
+  amount                     Int
+  currency                   String               @db.VarChar(10)
+  description                String?              @db.Text
+  status                     WalletRechargeStatus @default(pending)
+  stripe_checkout_session_id String               @unique @db.VarChar(255)
+  stripe_payment_intent_id   String?              @db.VarChar(255)
+  stripe_event_id            String?              @unique @db.VarChar(255)
+  stripe_payment_status      String?              @db.VarChar(100)
+  created_at                 DateTime             @default(now())
+  updated_at                 DateTime             @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@index([status])
+  @@map("wallet_recharges")
+}
+
+model WalletTransaction {
+  id                       String                @id @default(uuid()) @db.VarChar(36)
+  wallet_account_id        String                @db.VarChar(36)
+  user_id                  String                @db.VarChar(36)
+  currency                 String                @db.VarChar(10)
+  id_reserva               String?               @db.VarChar(255)
+  type                     WalletTransactionType
+  amount                   Int
+  balance_before           Int
+  balance_after            Int
+  description              String?               @db.Text
+  stripe_payment_intent_id String?               @db.VarChar(255)
+  created_at               DateTime              @default(now())
+  updated_at               DateTime              @updatedAt
+
+  walletAccount WalletAccount  @relation(fields: [wallet_account_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  user          User           @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  reserva       Reserva?       @relation(fields: [id_reserva], references: [id_reserva], onDelete: Cascade, onUpdate: Cascade)
+  paymentIntent PaymentIntent? @relation(fields: [stripe_payment_intent_id], references: [stripe_payment_id], onDelete: Cascade, onUpdate: Cascade)
+  walletPayouts WalletPayout[]
+
+  @@index([wallet_account_id])
+  @@index([user_id])
+  @@index([stripe_payment_intent_id])
+  @@index([created_at])
+  @@map("wallet_transactions")
+}
+
+model WalletPayout {
+  id                    String             @id @default(uuid()) @db.VarChar(36)
+  wallet_account_id     String             @db.VarChar(36)
+  wallet_transaction_id String             @db.VarChar(36)
+  user_id               String             @db.VarChar(36)
+  currency              String             @db.VarChar(10)
+  amount                Int
+  status                WalletPayoutStatus @default(pending)
+  method                WalletPayoutMethod @default(standard)
+  idempotency_key       String             @unique @db.VarChar(255)
+  stripe_payout_id      String?            @unique @db.VarChar(255)
+  stripe_payout_status  String?            @db.VarChar(100)
+  stripe_event_id       String?            @unique @db.VarChar(255)
+  failure_reason        String?            @db.Text
+  created_at            DateTime           @default(now())
+  updated_at            DateTime           @updatedAt
+
+  walletAccount     WalletAccount     @relation(fields: [wallet_account_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  walletTransaction WalletTransaction @relation(fields: [wallet_transaction_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([user_id])
+  @@index([wallet_account_id])
+  @@index([status])
+  @@map("wallet_payouts")
+}
+
+// ---------------------------------------------------------------------------
+// STUB MODELS (tablas de otro servicio, misma base de datos MySQL)
+// Solo se definen los campos necesarios para las relaciones FK de este servicio.
+// El esquema completo de estas tablas lo gestiona el servicio de trayectos.
+// ---------------------------------------------------------------------------
+
+model Reserva {
+  id_reserva String @id @db.VarChar(255)
+
+  walletTransactions WalletTransaction[]
+  paymentIntents     PaymentIntent[]
+
+  @@map("reservas")
+}
+
+model Trayecto {
+  id Int @id @default(autoincrement())
+
+  comments Comment[]
+
+  @@map("trayectos")
+}

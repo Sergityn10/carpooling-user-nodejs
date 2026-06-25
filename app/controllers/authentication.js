@@ -2,7 +2,7 @@ import bcrypt from "bcrypt";
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
 import crypto from "crypto";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { schemas } from "../schemas.js";
 import { UserSchemas } from "../schemas/user.js";
 import { TelegramInfo } from "../schemas/Telegram/telegramInfo.js";
@@ -45,14 +45,15 @@ async function persistRefreshToken(userId, rawToken, expiresAt) {
     .update(rawToken)
     .digest("hex");
 
-  await database.execute({
-    sql: "DELETE FROM refresh_tokens WHERE user_id = ?",
-    args: [userId],
-  });
+  await prisma.refreshToken.deleteMany({ where: { user_id: userId } });
 
-  await database.execute({
-    sql: "INSERT INTO refresh_tokens (user_id, token, expires_at, revoked) VALUES (?, ?, ?, 0)",
-    args: [userId, hashedToken, expiresAt.toISOString()],
+  await prisma.refreshToken.create({
+    data: {
+      user_id: userId,
+      token: hashedToken,
+      expires_at: expiresAt,
+      revoked: false,
+    },
   });
 }
 
@@ -74,12 +75,9 @@ async function login(req, res) {
 
   const { email, password } = result.data;
 
-  const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
-  });
+  const rawUser = await prisma.user.findUnique({ where: { email } });
   const comprobarUser = cryptoUtils.decryptFields(
-    rows[0],
+    rawUser,
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
@@ -132,11 +130,7 @@ async function register(req, res) {
 
   const { email, password } = result.data;
 
-  const { rows: userRows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
-  });
-  const comprobarUser = userRows[0];
+  const comprobarUser = await prisma.user.findUnique({ where: { email } });
 
   if (comprobarUser) {
     return res
@@ -146,40 +140,23 @@ async function register(req, res) {
 
   const hash = await utils.hashValue(10, password);
 
-  const { rows: emailRows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
+  const createdUser = await prisma.user.create({
+    data: { email, password: hash, auth_method: authMethods.PASSWORD },
   });
-  if (emailRows.length > 0) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: "Email already exists" });
+
+  const activeDefs = await prisma.preferenceDefinition.findMany({
+    where: { is_active: true },
+  });
+  if (activeDefs.length > 0) {
+    await prisma.userPreference.createMany({
+      data: activeDefs.map((pd) => ({
+        user_id: createdUser.id,
+        pref_key: pd.pref_key,
+        value: pd.default_value,
+      })),
+      skipDuplicates: true,
+    });
   }
-  const insertResult = await database.execute({
-    sql: "INSERT INTO users (email, password, auth_method) VALUES (?, ?, ?)",
-    args: [email, hash, authMethods.PASSWORD],
-  });
-
-  if (insertResult.rowsAffected === 0) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to register user" });
-  }
-
-  const { rows: createdRows } = await database.execute({
-    sql: "SELECT id, email FROM users WHERE email = ?",
-    args: [email],
-  });
-
-  const createdUser = createdRows?.[0];
-
-  await database.execute({
-    sql: `INSERT OR IGNORE INTO user_preferences (user_id, pref_key, value)
-          SELECT ?, pd.pref_key, pd.default_value
-          FROM preference_definitions pd
-          WHERE pd.is_active = 1`,
-    args: [createdUser?.id],
-  });
 
   const token = jsonwebtoken.sign(
     { userId: createdUser?.id, email },
@@ -200,7 +177,10 @@ async function register(req, res) {
 async function oauthGoogle(req, res) {
   res.header("Access-Control-Allow-origin", `${process.env.ORIGIN}`);
   res.header("Referrer-Policy", "no-referrer-when-downgrade");
+  // Example query: GET /api/auth/oauth/google?method=login
+  // or: GET /api/auth/oauth/google?method=register
   const method = req.query.method;
+  console.log("Entra");
   let redirectUrl;
   let origin = process.env.MY_ORIGIN;
   switch (method) {
@@ -236,12 +216,10 @@ async function oauthGoogleAndroid(req, res) {
     }
 
     if (method !== "login" && method !== "register") {
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message: "Invalid method, must be 'login' or 'register'",
-        });
+      return res.status(400).send({
+        status: "Error",
+        message: "Invalid method, must be 'login' or 'register'",
+      });
     }
 
     const oauth2Client = new OAuth2Client();
@@ -259,12 +237,10 @@ async function oauthGoogleAndroid(req, res) {
     }
 
     if (!payload) {
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message: "Failed to extract payload from id_token",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "Failed to extract payload from id_token",
+      });
     }
 
     const googleId = payload.sub;
@@ -278,11 +254,9 @@ async function oauthGoogleAndroid(req, res) {
         .send({ status: "Error", message: "Google account has no email" });
     }
 
-    const { rows: existingRows } = await database.execute({
-      sql: "SELECT * FROM users WHERE email = ? OR google_id = ?",
-      args: [email, googleId],
+    const existingUser = await prisma.user.findFirst({
+      where: { OR: [{ email }, { google_id: googleId }] },
     });
-    const existingUser = existingRows?.[0];
 
     if (method === "register") {
       if (existingUser) {
@@ -332,12 +306,10 @@ async function oauthGoogleAndroid(req, res) {
       }
 
       if (existingUser.auth_method !== authMethods.GOOGLE) {
-        return res
-          .status(404)
-          .send({
-            status: "Error",
-            message: "Authentication method not valid",
-          });
+        return res.status(404).send({
+          status: "Error",
+          message: "Authentication method not valid",
+        });
       }
 
       const token = jsonwebtoken.sign(
@@ -360,12 +332,10 @@ async function oauthGoogleAndroid(req, res) {
     }
   } catch (error) {
     console.error("Error in Android OAuth:", error);
-    return res
-      .status(500)
-      .send({
-        status: "Error",
-        message: "Android OAuth authentication failed",
-      });
+    return res.status(500).send({
+      status: "Error",
+      message: "Android OAuth authentication failed",
+    });
   }
 }
 
@@ -399,12 +369,10 @@ async function refresh(req, res) {
       .update(rawRefreshToken)
       .digest("hex");
 
-    const { rows } = await database.execute({
-      sql: "SELECT user_id, expires_at, revoked FROM refresh_tokens WHERE token = ? LIMIT 1",
-      args: [hashedRefresh],
+    const stored = await prisma.refreshToken.findFirst({
+      where: { token: hashedRefresh },
+      select: { user_id: true, expires_at: true, revoked: true },
     });
-
-    const stored = rows?.[0];
 
     if (!stored || stored.revoked) {
       res.clearCookie(
@@ -430,11 +398,10 @@ async function refresh(req, res) {
         .send({ status: "Error", message: "Refresh token expired" });
     }
 
-    const { rows: userRows } = await database.execute({
-      sql: "SELECT id, email FROM users WHERE id = ? LIMIT 1",
-      args: [stored.user_id],
+    const user = await prisma.user.findUnique({
+      where: { id: stored.user_id },
+      select: { id: true, email: true },
     });
-    const user = userRows?.[0];
 
     if (!user) {
       res.clearCookie(
@@ -486,7 +453,6 @@ async function validate(req, res) {
         bearerToken = tokenFromHeader;
       }
     }
-
     const cookieToken = req?.cookies?.access_token;
     if (!bearerToken && !cookieToken) {
       return res
@@ -495,11 +461,13 @@ async function validate(req, res) {
     }
 
     const token = bearerToken || cookieToken;
+    console.log(token);
 
     // Verificar explícitamente el token
     try {
       jsonwebtoken.verify(token, process.env.JWT_SECRET_KEY);
     } catch (jwtError) {
+      console.error("[validate] JWT error:", jwtError.name, jwtError.message);
       res.clearCookie("access_token", {
         secure: process.env.NODE_ENV === "production",
         sameSite: "none",
@@ -508,6 +476,7 @@ async function validate(req, res) {
       return res.status(401).send({
         status: "Error",
         message: "Invalid or expired token",
+        detail: jwtError.name,
       });
     }
 
@@ -552,11 +521,7 @@ async function validate(req, res) {
 
 async function existEmail(req, res) {
   const { email } = req.query;
-  const { rows: emailCheckRows } = await db.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
-  });
-  const comprobarUser = emailCheckRows[0];
+  const comprobarUser = await prisma.user.findUnique({ where: { email } });
   if (comprobarUser) {
     return res
       .status(404)
