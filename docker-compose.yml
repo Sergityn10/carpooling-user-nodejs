@@ -1,13 +1,13 @@
-
 services:
   mysql:
     image: mysql:8.0
     container_name: mysql-carpooling2
     restart: unless-stopped
     ports:
-      - "3306:3306"           # Accesible externamente
+      - "3306:3306" # Accesible externamente
     environment:
       MYSQL_ROOT_PASSWORD: password
+      MYSQL_PASSWORD: password
       MYSQL_USER: carpoolingUser
       MYSQL_DATABASE: carpooling
     volumes:
