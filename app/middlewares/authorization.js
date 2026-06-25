@@ -7,7 +7,7 @@ dotenv.config();
 async function isLoged(req, res, next) {
   let logueado;
   try {
-    logueado = await reviseBearer(req) || await reviseCookie(req);
+    logueado = (await reviseBearer(req)) || (await reviseCookie(req));
   } catch (e) {
     return res.status(403).send({
       status: "Error",
@@ -19,7 +19,6 @@ async function isLoged(req, res, next) {
       .status(403)
       .send({ status: "Error", message: "Access denied. Admins only." });
   }
-  console.log(logueado);
 
   // Aquí podrías verificar si el usuario tiene el rol de administrador, accediendo a la base de datos
   if (logueado) {
@@ -97,7 +96,6 @@ async function reviseBearer(req) {
     if (!bearerToken) {
       return false;
     }
-    console.log(bearerToken);
 
     // Add format validation
     if (!isValidJwtFormat(bearerToken)) {
@@ -118,13 +116,13 @@ async function reviseBearer(req) {
     const resultado = await database.execute(
       hasUserId
         ? {
-          sql: "SELECT * FROM users WHERE id = ?",
-          args: [decodificado.userId],
-        }
+            sql: "SELECT * FROM users WHERE id = ?",
+            args: [decodificado.userId],
+          }
         : {
-          sql: "SELECT * FROM users WHERE email = ?",
-          args: [decodificado.email],
-        },
+            sql: "SELECT * FROM users WHERE email = ?",
+            args: [decodificado.email],
+          },
     );
 
     const findUser = resultado.rows[0];
@@ -144,8 +142,7 @@ async function reviseBearer(req) {
 async function reviseCookie(req) {
   try {
     const cookieJWT = req.cookies.access_token;
-    console.log(cookieJWT);
-    console.log(req.cookies);
+
     if (!cookieJWT) {
       return false;
     }
@@ -169,13 +166,13 @@ async function reviseCookie(req) {
     const resultado = await database.execute(
       hasUserId
         ? {
-          sql: "SELECT * FROM users WHERE id = ?",
-          args: [decodificado.userId],
-        }
+            sql: "SELECT * FROM users WHERE id = ?",
+            args: [decodificado.userId],
+          }
         : {
-          sql: "SELECT * FROM users WHERE email = ?",
-          args: [decodificado.email],
-        },
+            sql: "SELECT * FROM users WHERE email = ?",
+            args: [decodificado.email],
+          },
     );
 
     const findUser = resultado.rows[0];
