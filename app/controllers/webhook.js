@@ -396,30 +396,12 @@ async function handlePaymentIntentCreated(jsonData) {
     },
   });
 
-  if (id_reserva) {
-    const existing = await prisma.reserva.findUnique({
-      where: { id_reserva },
-      select: { stripe_payment_intent_id: true },
-    });
-    if (
-      existing &&
-      (!existing.stripe_payment_intent_id ||
-        existing.stripe_payment_intent_id === stripePaymentIntentId)
-    ) {
-      await prisma.reserva.update({
-        where: { id_reserva },
-        data: { stripe_payment_intent_id: stripePaymentIntentId },
-      });
-    }
-  }
+  // id_reserva is stored as a string reference only (microservice architecture)
+  // The reserva/trayecto updates are handled by another microservice
 }
+
 async function handlePaymentIntentUpdated(jsonData) {
   const paymentIntent = jsonData.object;
-
-  await prisma.reserva.updateMany({
-    where: { stripe_payment_intent_id: paymentIntent.id },
-    data: { stripe_payment_intent_status: paymentIntent.status },
-  });
 
   await prisma.walletRecharge.updateMany({
     where: { stripe_payment_intent_id: paymentIntent.id },
@@ -501,10 +483,7 @@ async function handlePaymentIntentSucceeded(jsonData) {
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.reserva.update({
-        where: { id_reserva },
-        data: { status: status[8] },
-      });
+      // reserva status update is handled by another microservice
 
       const ensureWalletAccount = async (userId) => {
         await tx.walletAccount.upsert({
@@ -604,13 +583,7 @@ async function handlePaymentIntentSucceeded(jsonData) {
 async function handlePaymentIntentFailed(jsonData) {
   const paymentIntent = jsonData.object;
 
-  await prisma.reserva.updateMany({
-    where: { stripe_payment_intent_id: paymentIntent.id },
-    data: {
-      status: status[3],
-      stripe_payment_intent_status: paymentIntent.status,
-    },
-  });
+  // reserva status update is handled by another microservice
 
   await prisma.walletRecharge.updateMany({
     where: { stripe_payment_intent_id: paymentIntent.id },
@@ -630,13 +603,7 @@ async function handlePaymentIntentCanceled(jsonData) {
     data: { state: paymentIntent.status },
   });
 
-  await prisma.reserva.updateMany({
-    where: { stripe_payment_intent_id: paymentIntent.id },
-    data: {
-      status: status[4],
-      stripe_payment_intent_status: paymentIntent.status,
-    },
-  });
+  // reserva status update is handled by another microservice
 }
 async function handleCustomerUpdated(jsonData) {
   const customer = jsonData.object;
@@ -701,166 +668,14 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
   }
 
   if (type === "reserva") {
-    const id_user = checkout_session?.metadata?.id_user ?? null;
-    const id_reserva = checkout_session?.metadata?.id_reserva ?? null;
-    const trayectoIdRaw = checkout_session?.metadata?.id_trayecto;
-    const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
-
-    if (!id_user || !Number.isFinite(trayectoId)) {
-      return;
-    }
-
-    const paymentIntentId =
-      (typeof paymentIntent === "string" ? paymentIntent : paymentIntent?.id) ??
-      null;
-
-    const runNoTx = async () => {
-      const userExists = await prisma.user.findUnique({
-        where: { id: String(id_user) },
-        select: { id: true },
-      });
-      if (!userExists) return;
-
-      const trayectoExists = await prisma.trayecto.findUnique({
-        where: { id: trayectoId },
-        select: { id: true },
-      });
-      if (!trayectoExists) return;
-
-      const existingReserva = await prisma.reserva.findUnique({
-        where: { id_reserva },
-        select: { id_reserva: true },
-      });
-      if (!existingReserva) return;
-
-      const trayecto = await prisma.trayecto.findUnique({
-        where: { id: trayectoId },
-        select: { disponible: true },
-      });
-      const disponible = Number(trayecto?.disponible ?? 0);
-      if (!Number.isFinite(disponible) || disponible <= 0) return;
-
-      const updated = await prisma.trayecto.updateMany({
-        where: { id: trayectoId, disponible: { gt: 0 } },
-        data: { disponible: { decrement: 1 } },
-      });
-      if (updated.count === 0) return;
-
-      await prisma.reserva.update({
-        where: { id_reserva },
-        data: { status: status[8] },
-      });
-
-      if (paymentIntentId) {
-        const reserva = await prisma.reserva.findUnique({
-          where: { id_reserva },
-          select: { stripe_payment_intent_id: true },
-        });
-        if (
-          reserva &&
-          (!reserva.stripe_payment_intent_id ||
-            reserva.stripe_payment_intent_id === paymentIntentId)
-        ) {
-          await prisma.reserva.update({
-            where: { id_reserva },
-            data: { stripe_payment_intent_id: paymentIntentId },
-          });
-        }
-      }
-    };
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const userExists = await tx.user.findUnique({
-          where: { id: String(id_user) },
-          select: { id: true },
-        });
-        if (!userExists) return;
-
-        const trayectoExists = await tx.trayecto.findUnique({
-          where: { id: trayectoId },
-          select: { id: true },
-        });
-        if (!trayectoExists) return;
-
-        const existingReserva = await tx.reserva.findUnique({
-          where: { id_reserva },
-          select: { id_reserva: true },
-        });
-        if (!existingReserva) return;
-
-        const trayecto = await tx.trayecto.findUnique({
-          where: { id: trayectoId },
-          select: { disponible: true },
-        });
-        const disponible = Number(trayecto?.disponible ?? 0);
-        if (!Number.isFinite(disponible) || disponible <= 0) return;
-
-        const updated = await tx.trayecto.updateMany({
-          where: { id: trayectoId, disponible: { gt: 0 } },
-          data: { disponible: { decrement: 1 } },
-        });
-        if (updated.count === 0) return;
-
-        await tx.reserva.update({
-          where: { id_reserva },
-          data: { status: status[8] },
-        });
-
-        if (paymentIntentId) {
-          const reserva = await tx.reserva.findUnique({
-            where: { id_reserva },
-            select: { stripe_payment_intent_id: true },
-          });
-          if (
-            reserva &&
-            (!reserva.stripe_payment_intent_id ||
-              reserva.stripe_payment_intent_id === paymentIntentId)
-          ) {
-            await tx.reserva.update({
-              where: { id_reserva },
-              data: { stripe_payment_intent_id: paymentIntentId },
-            });
-          }
-        }
-      });
-    } catch (error) {
-      const msg = String(error?.message ?? "");
-      if (msg.includes("HTTP status 404")) {
-        await runNoTx();
-        return;
-      }
-      throw error;
-    }
-
+    // Reserva and trayecto management is handled by another microservice.
+    // This microservice only stores id_reserva and id_trayecto as string references.
     return;
   }
 }
 
 async function handleCheckoutSessionExpired(jsonData) {
-  const checkout_session = jsonData.object;
-  const reserva = await prisma.reserva.findFirst({
-    where: { stripe_checkout_session_id: checkout_session.id },
-    select: { id_reserva: true, id_trayecto: true },
-  });
-  if (!reserva) {
-    return;
-  }
-
-  await prisma.reserva.delete({
-    where: { id_reserva: reserva.id_reserva },
-  });
-
-  const trayecto = await prisma.trayecto.findUnique({
-    where: { id: reserva.id_trayecto },
-    select: { disponible: true },
-  });
-  if (trayecto) {
-    await prisma.trayecto.update({
-      where: { id: reserva.id_trayecto },
-      data: { disponible: (trayecto.disponible ?? 0) + 1 },
-    });
-  }
+  // Reserva and trayecto cleanup is handled by another microservice.
 }
 async function handleAccountUpdated(jsonData) {
   const stripeAccount = jsonData?.object;

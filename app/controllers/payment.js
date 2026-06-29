@@ -88,8 +88,8 @@ async function createCheckoutPaymentIntent(req, res) {
 
   const trayectoIdRaw =
     req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
-  const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
-  if (!Number.isFinite(trayectoId)) {
+  const trayectoId = trayectoIdRaw != null ? String(trayectoIdRaw) : null;
+  if (!trayectoId) {
     return res
       .status(400)
       .send({ status: "Error", message: "Missing or invalid id_trayecto" });
@@ -122,7 +122,7 @@ async function createCheckoutPaymentIntent(req, res) {
         id_reserva: String(id_reserva),
         sender_account: String(user.stripe_account ?? ""),
         destination_account: String(destination ?? ""),
-        id_trayecto: String(trayectoId),
+        id_trayecto: trayectoId,
       },
     },
     metadata: {
@@ -131,7 +131,7 @@ async function createCheckoutPaymentIntent(req, res) {
       id_reserva,
       sender_account: user.stripe_account,
       destination_account: destination,
-      id_trayecto: String(trayectoId),
+      id_trayecto: trayectoId,
     },
     submit_type: "pay",
     mode: "payment",
@@ -1198,12 +1198,10 @@ async function getLinkedExternalAccounts(req, res) {
     });
 
     if (!dbUser?.stripe_account) {
-      return res
-        .status(404)
-        .send({
-          status: "Error",
-          message: "El usuario no tiene cuenta de Stripe",
-        });
+      return res.status(404).send({
+        status: "Error",
+        message: "El usuario no tiene cuenta de Stripe",
+      });
     }
 
     const externalAccounts = await stripe.accounts.listExternalAccounts(

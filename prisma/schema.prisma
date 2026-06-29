@@ -107,7 +107,7 @@ model User {
   id                      String    @id @default(uuid()) @db.VarChar(36)
   email                   String    @unique @db.VarChar(150)
   password                String?   @db.VarChar(255)
-  img_perfil              String?   @db.VarChar(255)
+  img_perfil              String?   @db.MediumText
   name                    String?   @db.VarChar(512)
   phone                   String?   @db.VarChar(255)
   fecha_nacimiento        String?   @db.VarChar(255)
@@ -180,19 +180,19 @@ model Car {
 
 model Comment {
   id_comment          String @id @default(uuid()) @db.VarChar(36)
-  id_trayecto         Int
+  id_trayecto         String @db.VarChar(255)
   user_id_commentator String @db.VarChar(36)
   user_id_trayect     String @db.VarChar(36)
   opinion             String @db.Text
   rating              Int    @db.TinyInt
 
-  trayecto    Trayecto @relation(fields: [id_trayecto], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  commentator User     @relation("commentator", fields: [user_id_commentator], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  commentated User     @relation("commentated", fields: [user_id_trayect], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  commentator User @relation("commentator", fields: [user_id_commentator], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  commentated User @relation("commentated", fields: [user_id_trayect], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@unique([id_trayecto, user_id_commentator])
   @@index([user_id_commentator])
   @@index([user_id_trayect])
+  @@index([id_trayecto])
   @@map("comments")
 }
 
@@ -359,7 +359,6 @@ model PaymentIntent {
   updated_at          DateTime @updatedAt
 
   senderAccountRel   Account?           @relation(fields: [sender_account], references: [stripe_account_id], onDelete: Cascade, onUpdate: Cascade)
-  reserva            Reserva?           @relation(fields: [id_reserva], references: [id_reserva], onDelete: SetNull, onUpdate: Cascade)
   walletTransactions WalletTransaction[]
 
   @@index([id_reserva])
@@ -426,7 +425,6 @@ model WalletTransaction {
 
   walletAccount WalletAccount  @relation(fields: [wallet_account_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
   user          User           @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  reserva       Reserva?       @relation(fields: [id_reserva], references: [id_reserva], onDelete: Cascade, onUpdate: Cascade)
   paymentIntent PaymentIntent? @relation(fields: [stripe_payment_intent_id], references: [stripe_payment_id], onDelete: Cascade, onUpdate: Cascade)
   walletPayouts WalletPayout[]
 

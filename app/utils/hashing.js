@@ -2,6 +2,7 @@ import bcrypt from "bcrypt";
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import { PRIVATE_KEY, JWT_ALGORITHM } from "./jwtKeys.js";
 // Clave secreta guardada en el servidor (archivo .env)
 const ENCRYPTION_KEY = process.env.MY_SECRET_KEY; // Debe tener 32 chars
 const IV_LENGTH = 16; // Para AES
@@ -12,11 +13,10 @@ async function hashValue(numSalt, value) {
   return hash;
 }
 async function createCookie(username) {
-  const token = jsonwebtoken.sign(
-    { username: username },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: process.env.EXPIRATION_TIME },
-  );
+  const token = jsonwebtoken.sign({ username: username }, PRIVATE_KEY, {
+    expiresIn: process.env.EXPIRATION_TIME,
+    algorithm: JWT_ALGORITHM,
+  });
 
   const cookiesOptions = {
     expires: new Date(

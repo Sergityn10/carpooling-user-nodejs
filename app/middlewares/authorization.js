@@ -3,10 +3,14 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
+import { PRIVATE_KEY, PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
 dotenv.config();
 
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-const ACCESS_COOKIE_DAYS = Number(process.env.JWT_COOKIES_EXPIRATION_TIME || 1);
+const ACCESS_COOKIE_MINUTES = Number(
+  process.env.JWT_COOKIES_EXPIRATION_TIME || 15,
+);
+const PROACTIVE_REFRESH_MS = 5 * 60 * 1000; // Refresh access token if it expires within 5 min
 const isProduction = process.env.NODE_ENV === "production";
 
 function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
@@ -22,17 +26,28 @@ function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
 }
 
 function buildAccessCookieOptions() {
-  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_DAYS * 60 * 1000);
+  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_MINUTES * 60 * 1000);
   return buildCookieOptions(expiresAt);
 }
 
-async function persistRefreshToken(userId, rawToken, expiresAt) {
+async function persistRefreshToken(
+  userId,
+  rawToken,
+  expiresAt,
+  { deleteAll = true, oldTokenHash = null } = {},
+) {
   const hashedToken = crypto
     .createHash("sha256")
     .update(rawToken)
     .digest("hex");
 
-  await prisma.refreshToken.deleteMany({ where: { user_id: userId } });
+  if (deleteAll) {
+    await prisma.refreshToken.deleteMany({ where: { user_id: userId } });
+  } else if (oldTokenHash) {
+    await prisma.refreshToken.deleteMany({
+      where: { user_id: userId, token: oldTokenHash },
+    });
+  }
 
   await prisma.refreshToken.create({
     data: {
@@ -42,14 +57,34 @@ async function persistRefreshToken(userId, rawToken, expiresAt) {
       revoked: false,
     },
   });
+
+  return hashedToken;
 }
 
-async function issueRefreshToken(res, userId) {
+async function issueRefreshToken(
+  res,
+  userId,
+  { rotate = false, oldTokenHash = null } = {},
+) {
   const rawToken = crypto.randomBytes(40).toString("hex");
   const expiresAt = new Date(Date.now() + ONE_MONTH_MS);
 
-  await persistRefreshToken(userId, rawToken, expiresAt);
+  await persistRefreshToken(userId, rawToken, expiresAt, {
+    deleteAll: !rotate,
+    oldTokenHash: rotate ? oldTokenHash : null,
+  });
   res.cookie("refresh_token", rawToken, buildCookieOptions(expiresAt));
+}
+
+function clearRefreshCookie(res) {
+  if (res?.clearCookie) {
+    res.clearCookie("refresh_token", {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+    });
+  }
 }
 
 async function tryRefreshAccessToken(req, res) {
@@ -63,19 +98,12 @@ async function tryRefreshAccessToken(req, res) {
       .digest("hex");
 
     const stored = await prisma.refreshToken.findFirst({
-      where: { token: hashedRefresh },
+      where: { token: hashedRefresh, revoked: false },
       select: { id: true, user_id: true, expires_at: true, revoked: true },
     });
 
-    if (!stored || stored.revoked) {
-      if (res?.clearCookie) {
-        res.clearCookie("refresh_token", {
-          httpOnly: true,
-          secure: isProduction,
-          sameSite: isProduction ? "none" : "lax",
-          path: "/",
-        });
-      }
+    if (!stored) {
+      clearRefreshCookie(res);
       return null;
     }
 
@@ -84,14 +112,7 @@ async function tryRefreshAccessToken(req, res) {
       Number.isNaN(expiresAt.getTime()) ||
       expiresAt.getTime() <= Date.now()
     ) {
-      if (res?.clearCookie) {
-        res.clearCookie("refresh_token", {
-          httpOnly: true,
-          secure: isProduction,
-          sameSite: isProduction ? "none" : "lax",
-          path: "/",
-        });
-      }
+      clearRefreshCookie(res);
       return null;
     }
 
@@ -100,27 +121,25 @@ async function tryRefreshAccessToken(req, res) {
     });
 
     if (!user) {
-      if (res?.clearCookie) {
-        res.clearCookie("refresh_token", {
-          httpOnly: true,
-          secure: isProduction,
-          sameSite: isProduction ? "none" : "lax",
-          path: "/",
-        });
-      }
+      clearRefreshCookie(res);
       return null;
     }
 
     const accessToken = jsonwebtoken.sign(
       { userId: user.id, email: user.email },
-      process.env.JWT_SECRET_KEY,
-      { expiresIn: process.env.EXPIRATION_TIME },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
 
     if (res?.cookie) {
       res.cookie("access_token", accessToken, buildAccessCookieOptions());
     }
-    await issueRefreshToken(res, user.id);
+
+    // Rotate refresh token: only delete the old one, not all tokens
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
 
     return cryptoUtils.decryptFields(user, cryptoUtils.USER_SENSITIVE_FIELDS);
   } catch (error) {
@@ -129,93 +148,118 @@ async function tryRefreshAccessToken(req, res) {
   }
 }
 
-async function isLoged(req, res, next) {
-  let logueado;
-  let expired = false;
+function send401(res, message = "Token inválido o expirado.") {
+  res.clearCookie("access_token", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    path: "/",
+  });
+  return res.status(401).send({ status: "Error", message });
+}
+
+function shouldProactivelyRefresh(decoded) {
+  if (!decoded?.exp) return false;
+  const expiresAtMs = decoded.exp * 1000;
+  const nowMs = Date.now();
+  return expiresAtMs - nowMs <= PROACTIVE_REFRESH_MS;
+}
+
+async function silentlyRefreshAccessToken(req, res, user) {
   try {
-    logueado = (await reviseBearer(req)) || (await reviseCookie(req));
+    const rawRefreshToken = req?.cookies?.refresh_token;
+    if (!rawRefreshToken) return;
+
+    const hashedRefresh = crypto
+      .createHash("sha256")
+      .update(rawRefreshToken)
+      .digest("hex");
+
+    const exists = await prisma.refreshToken.findFirst({
+      where: { token: hashedRefresh, revoked: false },
+      select: { id: true },
+    });
+    if (!exists) return;
+
+    const accessToken = jsonwebtoken.sign(
+      { userId: user.id, email: user.email },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+    );
+
+    if (res?.cookie) {
+      res.cookie("access_token", accessToken, buildAccessCookieOptions());
+    }
+  } catch (_e) {
+    // Silent failure — don't interrupt the request
+  }
+}
+
+async function authenticate(req, res) {
+  let user;
+  let expired = false;
+  let decoded = null;
+  try {
+    user = (await reviseBearer(req)) || (await reviseCookie(req));
   } catch (e) {
     if (e.isExpired) {
       expired = true;
     } else {
-      return res.status(403).send({
-        status: "Error",
-        message: `Access denied. ${e.message}`,
-      });
+      return {
+        user: null,
+        error: send401(res, `Token inválido: ${e.message}`),
+      };
     }
   }
 
-  if (!logueado && expired) {
-    logueado = await tryRefreshAccessToken(req, res);
+  if (!user && expired) {
+    user = await tryRefreshAccessToken(req, res);
   }
 
-  if (!logueado) {
-    return res.status(403).send({ status: "Error", message: "Access denied." });
+  if (!user) {
+    return { user: null, error: send401(res, "Token inválido o expirado.") };
   }
 
-  req.user = logueado;
+  // Proactive refresh: if the access token is valid but expires soon,
+  // silently issue a new one so the client doesn't get 401 on the next request.
+  if (!expired) {
+    decoded = getDecodedToken(req);
+    if (decoded && shouldProactivelyRefresh(decoded)) {
+      await silentlyRefreshAccessToken(req, res, user);
+    }
+  }
+
+  return { user, error: null };
+}
+
+async function isLoged(req, res, next) {
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  req.user = user;
   next();
 }
 
 async function onlyAdmin(req, res, next) {
-  let logueado;
-  let expired = false;
-  try {
-    logueado = (await reviseBearer(req)) || (await reviseCookie(req));
-  } catch (e) {
-    if (e.isExpired) {
-      expired = true;
-    } else {
-      return res
-        .status(403)
-        .send({ status: "Error", message: "Access denied. Admins only." });
-    }
-  }
-
-  if (!logueado && expired) {
-    logueado = await tryRefreshAccessToken(req, res);
-  }
-
-  if (!logueado) {
-    return res
-      .status(403)
-      .send({ status: "Error", message: "Access denied. Admins only." });
-  }
-
-  if (logueado.role === "admin") {
-    req.user = logueado;
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  if (user.role === "admin") {
+    req.user = user;
     next();
   } else {
-    res
+    return res
       .status(403)
       .send({ status: "Error", message: "Access denied. Admins only." });
   }
 }
 
 async function onlyUser(req, res, next) {
-  let logueado;
-  let expired = false;
-  try {
-    logueado = (await reviseBearer(req)) || (await reviseCookie(req));
-  } catch (e) {
-    if (e.isExpired) {
-      expired = true;
-    } else {
-      return res
-        .status(403)
-        .send({ status: "Error", message: "Access denied. Users only." });
-    }
-  }
-
-  if (!logueado && expired) {
-    logueado = await tryRefreshAccessToken(req, res);
-  }
-
-  if (logueado && logueado.role === "user") {
-    req.user = logueado;
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  if (user.role === "user") {
+    req.user = user;
     next();
   } else {
-    res
+    return res
       .status(403)
       .send({ status: "Error", message: "Access denied. Users only." });
   }
@@ -241,11 +285,22 @@ function getBearerTokenFromReq(req) {
 }
 
 function isValidJwtFormat(token) {
-  // JWT format: 3 base64url-encoded parts separated by dots
   const jwtPattern = /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
   return (
     typeof token === "string" && jwtPattern.test(token) && token.length > 100
   );
+}
+
+function getDecodedToken(req) {
+  const bearerToken = getBearerTokenFromReq(req);
+  const cookieToken = req?.cookies?.access_token;
+  const token = bearerToken || cookieToken;
+  if (!token || !isValidJwtFormat(token)) return null;
+  try {
+    return jsonwebtoken.decode(token);
+  } catch (_e) {
+    return null;
+  }
 }
 
 async function reviseBearer(req) {
@@ -264,10 +319,9 @@ async function reviseBearer(req) {
       return false;
     }
 
-    const decodificado = jsonwebtoken.verify(
-      bearerToken,
-      process.env.JWT_SECRET_KEY,
-    );
+    const decodificado = jsonwebtoken.verify(bearerToken, PUBLIC_KEY, {
+      algorithms: [JWT_ALGORITHM],
+    });
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
@@ -315,10 +369,9 @@ async function reviseCookie(req) {
       return false;
     }
 
-    const decodificado = jsonwebtoken.verify(
-      cookieJWT,
-      process.env.JWT_SECRET_KEY,
-    );
+    const decodificado = jsonwebtoken.verify(cookieJWT, PUBLIC_KEY, {
+      algorithms: [JWT_ALGORITHM],
+    });
     console.log(decodificado);
 
     const hasUserId =
@@ -356,6 +409,13 @@ async function reviseCookie(req) {
     return false;
   }
 }
+
+export {
+  buildCookieOptions,
+  buildAccessCookieOptions,
+  issueRefreshToken,
+  persistRefreshToken,
+};
 
 export const authorization = {
   isLoged,

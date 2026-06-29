@@ -24,6 +24,7 @@ import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
 import { methods as dbUtils } from "./utils/db.js";
+import { PRIVATE_KEY, JWT_ALGORITHM } from "./utils/jwtKeys.js";
 dotenv.config();
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -681,8 +682,9 @@ app.get("/api/auth/oauth/register", async (req, res) => {
       userId: userResult?.user?.id,
       email: googleUserData.email,
     };
-    const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
+    const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
       expiresIn: process.env.EXPIRATION_TIME,
+      algorithm: JWT_ALGORITHM,
     });
 
     // 6. Construir la URL de Redirección con parámetros
@@ -748,8 +750,9 @@ app.get("/api/auth/oauth/login", async (req, res) => {
       userId: comprobarUser.id,
       email: comprobarUser.email,
     };
-    const jwtToken = jsonwebtoken.sign(payload, process.env.JWT_SECRET_KEY, {
+    const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
       expiresIn: process.env.EXPIRATION_TIME,
+      algorithm: JWT_ALGORITHM,
     });
 
     // 6. Construir la URL de Redirección con parámetros
