@@ -9,14 +9,9 @@ import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
 
 async function countUserViajes(conductor) {
-  if (!conductor) return 0;
-  try {
-    const result =
-      await prisma.$queryRaw`SELECT COUNT(*) as count FROM trayectos WHERE conductor = ${conductor}`;
-    return Number(result[0]?.count ?? 0);
-  } catch (_e) {
-    return 0;
-  }
+  // trayectos table is managed by another microservice.
+  // This should be fetched via an API call to the trayectos microservice.
+  return 0;
 }
 
 async function updateUserPatch(req, res) {
@@ -26,6 +21,8 @@ async function updateUserPatch(req, res) {
       .status(400)
       .send({ status: "Error", message: JSON.parse(result.error.message) });
   }
+
+  console.log(result);
 
   const { id } = req.params;
 
@@ -95,6 +92,7 @@ async function updateMyUserPatch(req, res) {
 
   //Comprobar si el usuario existe y es el mismo que está logueado
   const findUser = req.user;
+  console.log(result);
 
   if (result.data.password) {
     result.data.password = await utils.hashValue(10, result.data.password);

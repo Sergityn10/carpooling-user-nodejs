@@ -14,6 +14,12 @@ import Stripe from "stripe";
 import { OAuth2Client } from "google-auth-library";
 import { authMethods } from "../schemas/auth_methods.js";
 import { methods as paymentServices } from "./payment.js";
+import { PRIVATE_KEY, PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
+import {
+  buildCookieOptions,
+  buildAccessCookieOptions,
+  issueRefreshToken,
+} from "../middlewares/authorization.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
@@ -46,51 +52,6 @@ async function createStripeAccountForUser(userId, email) {
     console.error("Error creating Stripe account:", error);
     return null;
   }
-}
-const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-const ACCESS_COOKIE_DAYS = Number(process.env.JWT_COOKIES_EXPIRATION_TIME || 1);
-
-function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
-  const maxAge = expiresAt.getTime() - Date.now();
-  return {
-    httpOnly,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    path: "/",
-    expires: expiresAt,
-    maxAge,
-  };
-}
-
-function buildAccessCookieOptions() {
-  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_DAYS * 60 * 1000);
-  return buildCookieOptions(expiresAt);
-}
-
-async function persistRefreshToken(userId, rawToken, expiresAt) {
-  const hashedToken = crypto
-    .createHash("sha256")
-    .update(rawToken)
-    .digest("hex");
-
-  await prisma.refreshToken.deleteMany({ where: { user_id: userId } });
-
-  await prisma.refreshToken.create({
-    data: {
-      user_id: userId,
-      token: hashedToken,
-      expires_at: expiresAt,
-      revoked: false,
-    },
-  });
-}
-
-async function issueRefreshToken(res, userId) {
-  const rawToken = crypto.randomBytes(40).toString("hex");
-  const expiresAt = new Date(Date.now() + ONE_MONTH_MS);
-
-  await persistRefreshToken(userId, rawToken, expiresAt);
-  res.cookie("refresh_token", rawToken, buildCookieOptions(expiresAt));
 }
 
 async function login(req, res) {
@@ -130,8 +91,8 @@ async function login(req, res) {
 
   const token = jsonwebtoken.sign(
     { userId: comprobarUser.id, email },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: process.env.EXPIRATION_TIME },
+    PRIVATE_KEY,
+    { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
 
   res.cookie("access_token", token, buildAccessCookieOptions());
@@ -200,8 +161,8 @@ async function register(req, res) {
 
   const token = jsonwebtoken.sign(
     { userId: createdUser?.id, email },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: process.env.EXPIRATION_TIME },
+    PRIVATE_KEY,
+    { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
 
   res.cookie("access_token", token, buildAccessCookieOptions());
@@ -321,8 +282,8 @@ async function oauthGoogleAndroid(req, res) {
       const newUser = userResult.user;
       const token = jsonwebtoken.sign(
         { userId: newUser.id, email },
-        process.env.JWT_SECRET_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME },
+        PRIVATE_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
 
       res.cookie("access_token", token, buildAccessCookieOptions());
@@ -354,8 +315,8 @@ async function oauthGoogleAndroid(req, res) {
 
       const token = jsonwebtoken.sign(
         { userId: existingUser.id, email },
-        process.env.JWT_SECRET_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME },
+        PRIVATE_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
 
       res.cookie("access_token", token, buildAccessCookieOptions());
@@ -410,11 +371,11 @@ async function refresh(req, res) {
       .digest("hex");
 
     const stored = await prisma.refreshToken.findFirst({
-      where: { token: hashedRefresh },
+      where: { token: hashedRefresh, revoked: false },
       select: { user_id: true, expires_at: true, revoked: true },
     });
 
-    if (!stored || stored.revoked) {
+    if (!stored) {
       res.clearCookie(
         "refresh_token",
         buildCookieOptions(new Date(), { httpOnly: true }),
@@ -456,12 +417,15 @@ async function refresh(req, res) {
     // Rotate refresh token and issue new access token
     const accessToken = jsonwebtoken.sign(
       { userId: user.id, email: user.email },
-      process.env.JWT_SECRET_KEY,
-      { expiresIn: process.env.EXPIRATION_TIME },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
 
     res.cookie("access_token", accessToken, buildAccessCookieOptions());
-    await issueRefreshToken(res, user.id);
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
 
     return res.status(200).send({
       status: "Success",
@@ -505,7 +469,7 @@ async function validate(req, res) {
 
     // Verificar explícitamente el token
     try {
-      jsonwebtoken.verify(token, process.env.JWT_SECRET_KEY);
+      jsonwebtoken.verify(token, PUBLIC_KEY, { algorithms: [JWT_ALGORITHM] });
     } catch (jwtError) {
       console.error("[validate] JWT error:", jwtError.name, jwtError.message);
       res.clearCookie("access_token", {
