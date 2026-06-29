@@ -804,8 +804,10 @@ app.post("/api/payment/session", (req, res) => payment.createSession(req, res));
 app.post("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
   payment.createStripeConnectAccount(req, res),
 );
-app.get("/api/payment/stripe-connect-link", authorization.isLoged, (req, res) =>
-  payment.createAccountLink(req, res),
+app.post(
+  "/api/payment/stripe-connect-link",
+  authorization.isLoged,
+  (req, res) => payment.createAccountLink(req, res),
 );
 app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
   payment.getMyStripeConnectAccount(req, res),
@@ -846,6 +848,9 @@ app.post("/api/payment/wallet-payout", authorization.isLoged, (req, res) =>
 );
 app.get("/api/payment/wallet-payouts", authorization.isLoged, (req, res) =>
   payment.getWalletPayouts(req, res),
+);
+app.get("/api/monedero/cuenta-vinculada", authorization.isLoged, (req, res) =>
+  payment.getLinkedExternalAccounts(req, res),
 );
 app.post("/api/payment/payment-intent", authorization.isLoged, (req, res) =>
   payment.createPaymentIntent(req, res),

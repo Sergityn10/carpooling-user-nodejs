@@ -1,7 +1,7 @@
 import z from "zod";
 
 const userSchema = z.object({
-  name: z.string(),
+  name: z.string().optional(),
   phone: z.string().optional(),
   stripe_customer_id: z.string().optional(),
   img_perfil: z.string().optional(),
@@ -12,15 +12,23 @@ const userSchema = z.object({
     })
     .min(3)
     .max(50),
-  password: z.string(),
-  fecha_nacimiento: z.string(),
-  ciudad: z.string(),
-  provincia: z.string(),
-  codigo_postal: z.string(),
-  direccion: z.string(),
+  password: z.string().optional(),
+  fecha_nacimiento: z
+    .string()
+    .optional()
+    .refine((val) => !val || !isNaN(Date.parse(val)), {
+      message: "fecha_nacimiento must be a valid date string (YYYY-MM-DD)",
+    }),
+  ciudad: z.string().optional(),
+  provincia: z.string().optional(),
+  codigo_postal: z.string().optional(),
+  direccion: z.string().optional(),
   about_me: z.string().min(3).max(255).optional(),
-  dni: z.string().regex(/^[0-9]{8}[A-Za-z]$/),
-  genero: z.enum(["Masculino", "Femenino", "Otro"]),
+  dni: z
+    .string()
+    .regex(/^[0-9]{8}[A-Za-z]$/)
+    .optional(),
+  genero: z.enum(["Masculino", "Femenino", "Otro"]).optional(),
   stripe_account: z.string().optional(),
   stripe_customer_account: z.string().optional(),
   onboarding_ended: z.boolean().optional(),
