@@ -50,6 +50,50 @@ async function createUser(
     },
   });
 
+  let stripeAccountId = null;
+  try {
+    const nameParts = (name || "").trim().split(/\s+/);
+    const stripeAccount = await stripe.accounts.create({
+      type: "express",
+      country: "ES",
+      email,
+      business_type: "individual",
+      individual: {
+        ...(nameParts[0] ? { first_name: nameParts[0] } : {}),
+        ...(nameParts[1] ? { last_name: nameParts[1] } : {}),
+      },
+      business_profile: {
+        mcc: "4121",
+        product_description:
+          "Conductor de carpooling en la plataforma YouConnext",
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
+      metadata: { userId: created.id },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+    await prisma.account.create({
+      data: {
+        stripe_account_id: stripeAccount.id,
+        user_id: created.id,
+        charges_enabled: stripeAccount.charges_enabled ?? false,
+        transfers_enabled:
+          String(stripeAccount.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: stripeAccount.details_submitted ?? false,
+      },
+    });
+    stripeAccountId = stripeAccount.id;
+    await prisma.user.update({
+      where: { id: created.id },
+      data: { stripe_account: stripeAccountId },
+    });
+  } catch (error) {
+    console.error("Error creating Stripe Connect account:", error);
+  }
+
   const activeDefs = await prisma.preferenceDefinition.findMany({
     where: { is_active: true },
   });

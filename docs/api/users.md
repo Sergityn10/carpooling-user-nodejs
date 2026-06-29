@@ -72,6 +72,8 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
     "email": "user@example.com",
     "img_perfil": "url",
     "role": "user",
+    "fecha_nacimiento": "1990-01-15",
+    "genero": "Masculino",
     "averageRating": 8.5,
     "numOpinions": 10,
     "myNumOpinions": 5,
@@ -157,7 +159,7 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
 
 **Autenticación:** Requerida (`isLoged`). El usuario autenticado debe ser el mismo que el `:id`.
 
-**Descripción:** Actualiza parcialmente los datos de un usuario. La contraseña se hashea antes de guardar. El DNI se encripta y se verifica que no exista ya en otro usuario. Los campos sensibles se encriptan antes de persistir.
+**Descripción:** Actualiza parcialmente los datos de un usuario. La contraseña se hashea antes de guardar. El DNI se encripta y se verifica que no exista ya en otro usuario. Los campos sensibles se encriptan antes de persistir. Adicionalmente, sincroniza los datos del perfil con la cuenta Stripe Connect del usuario (nombre, email, teléfono, dirección, fecha de nacimiento) mediante `updateStripeAccountFromProfile`, de forma no bloqueante.
 
 **Parámetros de URL:**
 - `id` — ID numérico del usuario.
@@ -204,7 +206,7 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Similar al endpoint anterior pero actualiza al usuario autenticado sin necesidad de especificar ID. Usa el email del token para identificar al usuario.
+**Descripción:** Similar al endpoint anterior pero actualiza al usuario autenticado sin necesidad de especificar ID. Usa el email del token para identificar al usuario. También sincroniza los datos con Stripe Connect.
 
 **Entrada:** Igual que `PATCH /api/users/:id`.
 
@@ -291,6 +293,7 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
 
 ## Notas generales
 
-- **Campos sensibles encriptados:** `email`, `phone`, `dni`, `name`, `ciudad`, `provincia`, `codigo_postal`, `direccion`, `pais`, `about_me` (dependiendo de `USER_SENSITIVE_FIELDS`).
+- **Campos sensibles encriptados:** `dni`, `name`, `phone`, `direccion`, `provincia`, `codigo_postal`, `fecha_nacimiento` (definidos en `USER_SENSITIVE_FIELDS`). Los valores encriptados se almacenan como strings en la BD (formato `iv_hex:encrypted_hex`).
+- **Sincronización con Stripe:** Al actualizar el perfil, se sincronizan automáticamente los datos con la cuenta Stripe Connect del usuario (`individual.first_name`, `individual.last_name`, `individual.email`, `individual.phone`, `individual.address`, `individual.dob`, `business_profile`).
 - **Preferencias:** Se almacenan en la tabla `user_preferences` con claves definidas en `preference_definitions`.
 - **Valoración media:** Calculada desde la tabla `comments` donde `user_id_trayect` = ID del usuario.

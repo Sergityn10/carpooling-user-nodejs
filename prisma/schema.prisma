@@ -83,6 +83,7 @@ enum WalletTransactionType {
   refund
   refund_reversal
   adjustment
+  credit
 }
 
 enum WalletPayoutStatus {
@@ -107,17 +108,17 @@ model User {
   email                   String    @unique @db.VarChar(150)
   password                String?   @db.VarChar(255)
   img_perfil              String?   @db.VarChar(255)
-  name                    String?   @db.VarChar(150)
-  phone                   String?   @db.VarChar(20)
-  fecha_nacimiento        DateTime? @db.Date
-  dni                     String?   @unique @db.VarChar(20)
+  name                    String?   @db.VarChar(512)
+  phone                   String?   @db.VarChar(255)
+  fecha_nacimiento        String?   @db.VarChar(255)
+  dni                     String?   @unique @db.VarChar(255)
   genero                  Genero?
   stripe_account          String?   @db.VarChar(255)
   stripe_customer_account String?   @db.VarChar(255)
   ciudad                  String?   @db.VarChar(100)
-  provincia               String?   @db.VarChar(100)
-  codigo_postal           String?   @db.VarChar(20)
-  direccion               String?   @db.VarChar(255)
+  provincia               String?   @db.VarChar(255)
+  codigo_postal           String?   @db.VarChar(255)
+  direccion               String?   @db.VarChar(1024)
   pais                    String?   @db.VarChar(100)
   onboarding_ended        Boolean   @default(false)
   about_me                String?   @db.Text
@@ -417,6 +418,9 @@ model WalletTransaction {
   balance_after            Int
   description              String?               @db.Text
   stripe_payment_intent_id String?               @db.VarChar(255)
+  status                   String?               @db.VarChar(50)
+  stripe_payment_status    String?               @db.VarChar(100)
+  stripe_event_id          String?               @unique @db.VarChar(255)
   created_at               DateTime              @default(now())
   updated_at               DateTime              @updatedAt
 
@@ -460,25 +464,5 @@ model WalletPayout {
   @@map("wallet_payouts")
 }
 
-// ---------------------------------------------------------------------------
-// STUB MODELS (tablas de otro servicio, misma base de datos MySQL)
-// Solo se definen los campos necesarios para las relaciones FK de este servicio.
-// El esquema completo de estas tablas lo gestiona el servicio de trayectos.
-// ---------------------------------------------------------------------------
 
-model Reserva {
-  id_reserva String @id @db.VarChar(255)
 
-  walletTransactions WalletTransaction[]
-  paymentIntents     PaymentIntent[]
-
-  @@map("reservas")
-}
-
-model Trayecto {
-  id Int @id @default(autoincrement())
-
-  comments Comment[]
-
-  @@map("trayectos")
-}

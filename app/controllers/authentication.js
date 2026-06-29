@@ -13,12 +13,40 @@ import { methods as cryptoUtils } from "../utils/crypto.js";
 import Stripe from "stripe";
 import { OAuth2Client } from "google-auth-library";
 import { authMethods } from "../schemas/auth_methods.js";
+import { methods as paymentServices } from "./payment.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
 const android_client_id = process.env.GOOGLE_CLIENT_ID_ANDROID;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const isProduction = process.env.NODE_ENV === "production";
+
+async function createStripeAccountForUser(userId, email) {
+  try {
+    const account = await stripe.accounts.create({
+      type: "express",
+      email,
+      metadata: { userId },
+    });
+
+    await prisma.account.create({
+      data: {
+        stripe_account_id: account.id,
+        user_id: userId,
+        charges_enabled: account.charges_enabled ?? false,
+        transfers_enabled:
+          String(account.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: account.details_submitted ?? false,
+      },
+    });
+
+    return account.id;
+  } catch (error) {
+    console.error("Error creating Stripe account:", error);
+    return null;
+  }
+}
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const ACCESS_COOKIE_DAYS = Number(process.env.JWT_COOKIES_EXPIRATION_TIME || 1);
 
@@ -155,6 +183,18 @@ async function register(req, res) {
         value: pd.default_value,
       })),
       skipDuplicates: true,
+    });
+  }
+
+  const stripeAccountId = await paymentServices.createStripeAccountForUserEmpty(
+    createdUser.id,
+    email,
+    result.data.name || "",
+  );
+  if (stripeAccountId) {
+    await prisma.user.update({
+      where: { id: createdUser.id },
+      data: { stripe_account: stripeAccountId },
     });
   }
 
