@@ -64,7 +64,10 @@ async function login(req, res) {
 
   const { email, password } = result.data;
 
-  const rawUser = await prisma.user.findUnique({ where: { email } });
+  const rawUser = await prisma.user.findUnique({
+    where: { email },
+    include: { role: true },
+  });
   const comprobarUser = cryptoUtils.decryptFields(
     rawUser,
     cryptoUtils.USER_SENSITIVE_FIELDS,
@@ -257,6 +260,7 @@ async function oauthGoogleAndroid(req, res) {
 
     const existingUser = await prisma.user.findFirst({
       where: { OR: [{ email }, { google_id: googleId }] },
+      include: { role: true },
     });
 
     if (method === "register") {
@@ -505,7 +509,7 @@ async function validate(req, res) {
       img_perfil: findUser.img_perfil,
       ciudad: findUser.ciudad,
       onboarding_ended: findUser.onboarding_ended,
-      role: findUser.role,
+      role: findUser.role?.name ?? "user",
     };
     return res.status(200).send({
       status: "Success",
