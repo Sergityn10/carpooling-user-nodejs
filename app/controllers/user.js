@@ -190,7 +190,10 @@ async function removeUser(req, res) {
 async function getUserInfo(req, res) {
   const { id } = req.params;
 
-  const rawUser = await prisma.user.findUnique({ where: { id } });
+  const rawUser = await prisma.user.findUnique({
+    where: { id },
+    include: { role: true },
+  });
   const user = cryptoUtils.decryptFields(
     rawUser,
     cryptoUtils.USER_SENSITIVE_FIELDS,
@@ -236,7 +239,7 @@ async function getUserInfo(req, res) {
       phone: user.phone,
       email: user.email,
       img_perfil: user.img_perfil,
-      role: user.role,
+      role: user.role?.name ?? "user",
       averageRating,
       numOpinions,
       myNumOpinions: givenComments.length,
@@ -369,7 +372,7 @@ async function getMyUserInfo(req, res) {
       phone: findUser.phone,
       email: findUser.email,
       img_perfil: findUser.img_perfil,
-      role: findUser.role,
+      role: findUser.role?.name ?? "user",
       fecha_nacimiento: findUser.fecha_nacimiento,
       genero: findUser.genero,
       averageRating,

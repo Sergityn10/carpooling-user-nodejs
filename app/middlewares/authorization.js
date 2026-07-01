@@ -118,6 +118,7 @@ async function tryRefreshAccessToken(req, res) {
 
     const user = await prisma.user.findUnique({
       where: { id: stored.user_id },
+      include: { role: true },
     });
 
     if (!user) {
@@ -242,7 +243,7 @@ async function isLoged(req, res, next) {
 async function onlyAdmin(req, res, next) {
   const { user, error } = await authenticate(req, res);
   if (error) return error;
-  if (user.role === "admin") {
+  if (user.role.name === "admin") {
     req.user = user;
     next();
   } else {
@@ -255,7 +256,7 @@ async function onlyAdmin(req, res, next) {
 async function onlyUser(req, res, next) {
   const { user, error } = await authenticate(req, res);
   if (error) return error;
-  if (user.role === "user") {
+  if (user.role.name === "user") {
     req.user = user;
     next();
   } else {
@@ -331,6 +332,7 @@ async function reviseBearer(req) {
       where: hasUserId
         ? { id: String(decodificado.userId) }
         : { email: decodificado.email },
+      include: { role: true },
     });
 
     if (!findUser) {
@@ -381,6 +383,7 @@ async function reviseCookie(req) {
       where: hasUserId
         ? { id: String(decodificado.userId) }
         : { email: decodificado.email },
+      include: { role: true },
     });
 
     if (!findUser) {
