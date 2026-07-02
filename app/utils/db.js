@@ -48,6 +48,7 @@ async function createUser(
       auth_method,
       ...(google_id ? { google_id } : {}),
     },
+    include: { role: true },
   });
 
   let stripeAccountId = null;

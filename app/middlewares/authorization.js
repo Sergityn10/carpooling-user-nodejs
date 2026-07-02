@@ -127,7 +127,7 @@ async function tryRefreshAccessToken(req, res) {
     }
 
     const accessToken = jsonwebtoken.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, email: user.email, role: user.role?.name ?? "user" },
       PRIVATE_KEY,
       { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
@@ -183,7 +183,7 @@ async function silentlyRefreshAccessToken(req, res, user) {
     if (!exists) return;
 
     const accessToken = jsonwebtoken.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, email: user.email, role: user.role?.name ?? "user" },
       PRIVATE_KEY,
       { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
