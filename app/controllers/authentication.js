@@ -92,8 +92,9 @@ async function login(req, res) {
     return res.status(404).send({ status: "Error", message: "Login failed" });
   }
 
+  const role = comprobarUser.role?.name ?? "user";
   const token = jsonwebtoken.sign(
-    { userId: comprobarUser.id, email },
+    { userId: comprobarUser.id, email, role },
     PRIVATE_KEY,
     { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
@@ -105,6 +106,7 @@ async function login(req, res) {
     message: `Login successful`,
     userId: comprobarUser.id,
     token,
+    role,
     img_perfil: comprobarUser.img_perfil,
     onboarding_ended: comprobarUser.onboarding_ended,
   });
@@ -134,6 +136,7 @@ async function register(req, res) {
 
   const createdUser = await prisma.user.create({
     data: { email, password: hash, auth_method: authMethods.PASSWORD },
+    include: { role: true },
   });
 
   const activeDefs = await prisma.preferenceDefinition.findMany({
@@ -162,8 +165,9 @@ async function register(req, res) {
     });
   }
 
+  const role = createdUser?.role?.name ?? "user";
   const token = jsonwebtoken.sign(
-    { userId: createdUser?.id, email },
+    { userId: createdUser?.id, email, role },
     PRIVATE_KEY,
     { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
@@ -174,6 +178,7 @@ async function register(req, res) {
     status: "Success",
     message: "User registered successfully",
     token,
+    role,
     userId: createdUser?.id,
   });
 }
@@ -284,8 +289,9 @@ async function oauthGoogleAndroid(req, res) {
       }
 
       const newUser = userResult.user;
+      const role = newUser.role?.name ?? "user";
       const token = jsonwebtoken.sign(
-        { userId: newUser.id, email },
+        { userId: newUser.id, email, role },
         PRIVATE_KEY,
         { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
@@ -297,6 +303,7 @@ async function oauthGoogleAndroid(req, res) {
         status: "Success",
         message: "User registered successfully",
         token,
+        role,
         userId: newUser.id,
         img_perfil: picture,
         onboarding_ended: 0,
@@ -317,8 +324,9 @@ async function oauthGoogleAndroid(req, res) {
         });
       }
 
+      const role = existingUser.role?.name ?? "user";
       const token = jsonwebtoken.sign(
-        { userId: existingUser.id, email },
+        { userId: existingUser.id, email, role },
         PRIVATE_KEY,
         { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
@@ -330,6 +338,7 @@ async function oauthGoogleAndroid(req, res) {
         status: "Success",
         message: "Login successful",
         token,
+        role,
         userId: existingUser.id,
         img_perfil: existingUser.img_perfil || picture,
         onboarding_ended: existingUser.onboarding_ended,
