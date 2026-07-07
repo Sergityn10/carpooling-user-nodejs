@@ -346,6 +346,7 @@ model ServiceEvent {
   contact_phone      String?            @db.VarChar(30)
   attendees_estimate Int?
   notes              String?            @db.Text
+  image              String?            @db.LongText
   created_at         DateTime           @default(now())
   updated_at         DateTime           @updatedAt
 
@@ -473,6 +474,67 @@ model WalletPayout {
   @@index([wallet_account_id])
   @@index([status])
   @@map("wallet_payouts")
+}
+
+model Company {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  name        String   @db.VarChar(255)
+  email       String   @unique @db.VarChar(255)
+  phone       String?  @db.VarChar(30)
+  website     String?  @db.VarChar(255)
+  logo        String?  @db.MediumText
+  description String?  @db.Text
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  events PlatformEvent[]
+
+  @@map("companies")
+}
+
+model PlatformEvent {
+  id           String   @id @default(uuid()) @db.VarChar(36)
+  name         String   @db.VarChar(255)
+  company_id   String   @db.VarChar(36)
+  latitude     Decimal? @db.Decimal(10, 7)
+  longitude    Decimal? @db.Decimal(10, 7)
+  image        String?  @db.MediumText
+  unique_code  String   @unique @db.VarChar(20)
+  description  String?  @db.Text
+  url          String?  @db.VarChar(500)
+  ticket_url   String?  @db.VarChar(500)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  company Company     @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  tags   EventTag[]
+
+  @@index([company_id])
+  @@index([unique_code])
+  @@map("platform_events")
+}
+
+model Tag {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  created_at  DateTime @default(now())
+
+  events EventTag[]
+
+  @@map("tags")
+}
+
+model EventTag {
+  event_id String @db.VarChar(36)
+  tag_id   Int
+
+  event PlatformEvent @relation(fields: [event_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  tag   Tag           @relation(fields: [tag_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([event_id, tag_id])
+  @@index([tag_id])
+  @@map("event_tags")
 }
 
 

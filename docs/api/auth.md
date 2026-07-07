@@ -27,10 +27,13 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "message": "Login successful",
   "userId": 1,
   "token": "<JWT>",
+  "role": "user",
   "img_perfil": "url o null",
   "onboarding_ended": 0
 }
 ```
+
+> **Nota:** El JWT incluye `userId`, `email` y `role` en el payload.
 
 **Errores:**
 - `400` — Validación de esquema fallida (email/password inválidos).
@@ -62,6 +65,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "User registered successfully",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1
 }
 ```
@@ -140,6 +144,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "Token refreshed",
   "token": "<nuevo JWT>",
+  "role": "user",
   "userId": 1
 }
 ```
@@ -266,6 +271,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "User registered successfully",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1,
   "img_perfil": "https://lh3.googleusercontent.com/...",
   "onboarding_ended": 0
@@ -278,6 +284,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "Login successful",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1,
   "img_perfil": "https://lh3.googleusercontent.com/...",
   "onboarding_ended": 1
@@ -302,7 +309,10 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 ## Notas generales
 
 - **JWT Secret:** `process.env.JWT_SECRET_KEY`
+- **JWT Payload:** Incluye `userId`, `email` y `role` (nombre del rol desde la tabla `roles`).
 - **Expiración del access token:** `process.env.EXPIRATION_TIME`
 - **Expiración de cookies:** `process.env.JWT_COOKIES_EXPIRATION_TIME` (en minutos)
-- **Refresh token:** Válido por 30 días, rotatorio (cada uso genera uno nuevo)
+- **Refresh token:** Válido por 30 días, rotatorio (cada uso genera uno nuevo).
+- **Refresh proactivo:** Si el access token es válido pero expira en menos de 5 minutos, se renueva silenciosamente sin que el cliente reciba un 401.
 - **Cookies:** `httpOnly`, `secure` en producción, `sameSite: none` en producción / `lax` en desarrollo.
+- **Roles:** Los roles se almacenan en la tabla `roles` (`user` id=1, `admin` id=2). El usuario se relaciona mediante `role_id`. El rol por defecto es `user`.

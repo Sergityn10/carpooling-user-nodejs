@@ -10,7 +10,7 @@ import { methods as cryptoUtils } from "./utils/crypto.js";
 import { fileURLToPath } from "url";
 import { methods as authentication } from "./controllers/authentication.js";
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js";
-import db from "./database.js";
+import prisma from "./lib/prisma.js";
 import { methods as user } from "./controllers/user.js";
 import { methods as webhook } from "./controllers/webhook.js";
 import { methods as disponibilidad_semanal } from "./controllers/disponibilidad_semanal.js";
@@ -20,6 +20,8 @@ import { enterpriseAuthorization } from "./middlewares/enterpriseAuthorization.j
 import { methods as enterpriseAuthentication } from "./controllers/enterprise_authentication.js";
 import { methods as enterprise } from "./controllers/enterprise.js";
 import { methods as enterpriseServiceEvents } from "./controllers/enterprise_service_events.js";
+import { methods as events } from "./controllers/events.js";
+import { methods as companies } from "./controllers/companies.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -99,409 +101,6 @@ app.use(
 //     next();
 // });
 
-try {
-  await db.execute("PRAGMA foreign_keys = ON");
-} catch (_e) {}
-
-if (process.env.RESET_DB === "1") {
-  try {
-    await db.execute("PRAGMA foreign_keys = OFF");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS telegram_info");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS disponibilidad_semanal");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS cars");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS comments");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS accounts");
-  } catch (_e) {}
-  try {
-    await db.execute("DROP TABLE IF EXISTS users");
-  } catch (_e) {}
-  try {
-    await db.execute("PRAGMA foreign_keys = ON");
-  } catch (_e) {}
-}
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
-    password TEXT NULL,
-    img_perfil TEXT,
-    name TEXT,
-    phone TEXT,
-    fecha_nacimiento TEXT NULL, -- store as ISO string (YYYY-MM-DD)
-    dni TEXT NULL UNIQUE,
-    genero TEXT NULL CHECK (genero IN ('Masculino','Femenino','Otro')),
-    stripe_account TEXT,
-    stripe_customer_account TEXT,
-    ciudad TEXT NULL,
-    provincia TEXT NULL,
-    codigo_postal TEXT NULL,
-    direccion TEXT NULL ,
-    pais TEXT NULL,
-    onboarding_ended INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
-    about_me TEXT,
-    auth_method TEXT CHECK (auth_method IN ('password', 'google', 'other')) NOT NULL DEFAULT 'password',
-    google_id TEXT NULL,
-    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-    updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-  );
-  `);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS preference_definitions (
-    pref_key TEXT PRIMARY KEY,
-    value_type TEXT NOT NULL,
-    default_value TEXT NOT NULL,
-    enum_values TEXT,
-    description TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    CONSTRAINT chk_pref_value_type CHECK (value_type IN ('boolean', 'number', 'text', 'enum'))
-);
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS user_preferences (
-    user_id INTEGER NOT NULL,
-    pref_key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, pref_key),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (pref_key) REFERENCES preference_definitions(pref_key) ON DELETE CASCADE
-);
-`);
-
-await db.execute(
-  "CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id)",
-);
-
-await db.execute(`
-INSERT OR IGNORE INTO preference_definitions (pref_key, value_type, default_value, enum_values, description) VALUES
-('smoking_allowed', 'boolean', '0', NULL, 'Permite fumar durante el viaje'),
-('pets_allowed', 'boolean', '0', NULL, 'Permite mascotas durante el viaje'),
-('music', 'boolean', '1', NULL, 'Música durante el viaje'),
-('talk_level', 'enum', 'normal', '["silencio","normal","charla"]', 'Nivel de conversación'),
-('temperature', 'enum', 'templado', '["frio","templado","calor"]', 'Temperatura preferida'),
-('luggage_size', 'enum', 'medio', '["pequeno","medio","grande"]', 'Tamaño de equipaje admitido'),
-('stops_allowed', 'boolean', '0', NULL, 'Permite paradas durante el viaje'),
-('max_detour_km', 'number', '0', NULL, 'Desvío máximo aceptado (km)');
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS accounts (
-  stripe_account_id TEXT PRIMARY KEY NOT NULL,
-  default_account INTEGER DEFAULT 0,
-  user_id INTEGER NOT NULL,
-  charges_enabled INTEGER NOT NULL DEFAULT 0,
-  transfers_enabled INTEGER NOT NULL DEFAULT 0,
-  details_submitted INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS comments (
-    -- 1. Clave primaria con autoincremento
-    id_comment INTEGER PRIMARY KEY AUTOINCREMENT, 
-    
-    -- 2. Tipos de datos más genéricos
-    id_trayecto INTEGER NOT NULL,
-    user_id_commentator INTEGER NOT NULL,
-    user_id_trayect INTEGER NOT NULL,
-    opinion TEXT NOT NULL,
-    rating INTEGER NOT NULL,
-    
-    -- 3. Restricción CHECK
-    CONSTRAINT chk_opinion_rating CHECK (rating >= 1 AND rating <= 10),
-    
-    -- 4. Claves foráneas (SQLite las maneja de forma diferente, pero la sintaxis es similar)
-    FOREIGN KEY (id_trayecto) REFERENCES trayectos(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (user_id_commentator) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY (user_id_trayect) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-    
-    -- 5. Restricción UNIQUE (el nombre se elimina o se simplifica, se puede omitir el "KEY")
-    UNIQUE (id_trayecto, user_id_commentator)
-);
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS cars (
-  id_coche INTEGER PRIMARY KEY AUTOINCREMENT,
-  matricula TEXT NOT NULL,
-  marca TEXT NOT NULL,
-  modelo TEXT NOT NULL,
-  color TEXT NULL,
-  tipo_combustible TEXT NOT NULL,
-  num_plazas INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  year INTEGER NOT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  UNIQUE (matricula),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS disponibilidad_semanal (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  dia_semana TEXT NOT NULL,
-  hora_inicio TEXT NOT NULL,
-  hora_fin TEXT NOT NULL,
-  transport_needed INTEGER NOT NULL DEFAULT 0,
-  transporte TEXT NULL,
-  estado TEXT NOT NULL,
-  finalidad TEXT NOT NULL,
-  origen TEXT NOT NULL,
-  destino TEXT NOT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS telegram_info (
-  user_id INTEGER NOT NULL,
-  id INTEGER PRIMARY KEY,
-  username_telegram TEXT NULL,
-  first_name TEXT NOT NULL,
-  last_name TEXT NULL,
-  chat_id INTEGER NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-
-try {
-  const pagosExists = await db.execute({
-    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='pagos'",
-    args: [],
-  });
-  if ((pagosExists?.rows?.length ?? 0) > 0) {
-    // Legacy table from older schema. It has been seen referencing users with an invalid FK,
-    // which breaks user deletion with: foreign key mismatch - "pagos" referencing "users".
-    await db.execute("DROP TABLE IF EXISTS pagos");
-  }
-} catch (_e) {}
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS events (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-  -- 1. Clave primaria con TEXT
-  event_id TEXT NOT NULL,
-  event_type TEXT NOT NULL,
-  payment_intent_id TEXT NULL,
-  -- 2. JSON se convierte a TEXT
-  data TEXT NOT NULL,
-  
-  -- 3. Cadenas de texto
-  source TEXT NOT NULL,
-  processing_error TEXT NULL,
-  status TEXT NOT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-  
-  -- Nota: Las restricciones UNIQUE en la clave primaria son redundantes en SQLite
-);
-
-`);
-
-try {
-  await db.execute("ALTER TABLE events ADD COLUMN event_type TEXT");
-} catch (_e) {}
-try {
-  await db.execute("ALTER TABLE events ADD COLUMN payment_intent_id TEXT");
-} catch (_e) {}
-try {
-  await db.execute(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id)",
-  );
-} catch (_e) {}
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS enterprises (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  password TEXT NOT NULL,
-  phone TEXT NULL,
-  cif TEXT NULL UNIQUE,
-  website TEXT NULL,
-  address_line1 TEXT NULL,
-  address_line2 TEXT NULL,
-  city TEXT NULL,
-  province TEXT NULL,
-  postal_code TEXT NULL,
-  country TEXT NOT NULL DEFAULT 'ES',
-  verified INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
-);
-`);
-await db
-  .execute({
-    sql: "ALTER TABLE service_events ADD COLUMN enterprise_id INTEGER",
-    args: [],
-  })
-  .catch(() => {});
-await db.execute(`
-CREATE TABLE IF NOT EXISTS service_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  enterprise_id INTEGER NOT NULL,
-  title TEXT NOT NULL,
-  description TEXT NULL,
-  start_at TEXT NOT NULL,
-  end_at TEXT NULL,
-  status TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('draft','requested','approved','rejected','canceled','completed')),
-  venue_name TEXT NULL,
-  address_line1 TEXT NOT NULL,
-  address_line2 TEXT NULL,
-  city TEXT NOT NULL,
-  province TEXT NULL,
-  postal_code TEXT NULL,
-  country TEXT NOT NULL DEFAULT 'ES',
-  latitude REAL NULL,
-  longitude REAL NULL,
-  contact_name TEXT NULL,
-  contact_email TEXT NULL,
-  contact_phone TEXT NULL,
-  attendees_estimate INTEGER NULL CHECK (attendees_estimate IS NULL OR attendees_estimate >= 0),
-  notes TEXT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (enterprise_id) REFERENCES enterprises(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`);
-
-await db.execute(`
-CREATE TABLE IF NOT EXISTS wallet_accounts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  currency TEXT NOT NULL DEFAULT 'eur',
-  balance INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','blocked')),
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  UNIQUE (user_id, currency)
-);
-  `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS wallet_recharges (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  amount INTEGER NOT NULL,
-  currency TEXT NOT NULL,
-  description TEXT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','succeeded','failed','canceled','expired')),
-  stripe_checkout_session_id TEXT NOT NULL,
-  stripe_payment_intent_id TEXT NULL,
-  stripe_event_id TEXT NULL,
-  stripe_payment_status TEXT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  UNIQUE (stripe_checkout_session_id),
-  UNIQUE (stripe_event_id)
-);
-  `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS payment_intents (
-    stripe_payment_id TEXT UNIQUE PRIMARY KEY,
-    amount INTEGER NOT NULL,
-    currency TEXT NOT NULL DEFAULT 'eur' CHECK (currency IN ('eur', 'usd', 'gbp', 'jpy', 'aud')),
-    description TEXT NULL,
-    destination_account TEXT NULL,
-    sender_account TEXT NULL,
-    state TEXT NOT NULL,
-    client_secret TEXT NULL,
-    checkout_session_id TEXT NULL,
-    id_reserva TEXT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE SET NULL ON UPDATE CASCADE,
-    FOREIGN KEY (sender_account) REFERENCES accounts(stripe_account_id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-  `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS wallet_transactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  wallet_account_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  currency TEXT NOT NULL,
-  id_reserva TEXT NULL,
-  type TEXT NOT NULL CHECK (type IN ('deposit','reservation_payment','reservation_revenue','commision','refund','refund_reversal', 'adjustment')),
-  amount INTEGER NOT NULL,
-  balance_before INTEGER NOT NULL,
-  balance_after INTEGER NOT NULL,
-  description TEXT NULL,
-  stripe_payment_intent_id TEXT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (id_reserva) REFERENCES reservas(id_reserva) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (stripe_payment_intent_id) REFERENCES payment_intents(stripe_payment_id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-  `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS wallet_payouts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  wallet_account_id INTEGER NOT NULL,
-  wallet_transaction_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  currency TEXT NOT NULL,
-  amount INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','succeeded','failed','canceled')),
-  method TEXT NOT NULL DEFAULT 'standard' CHECK (method IN ('standard','instant')),
-  idempotency_key TEXT NOT NULL,
-  stripe_payout_id TEXT NULL,
-  stripe_payout_status TEXT NULL,
-  stripe_event_id TEXT NULL,
-  failure_reason TEXT NULL,
-  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP),
-  FOREIGN KEY (wallet_account_id) REFERENCES wallet_accounts(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (wallet_transaction_id) REFERENCES wallet_transactions(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  UNIQUE (idempotency_key),
-  UNIQUE (stripe_payout_id),
-  UNIQUE (stripe_event_id)
-);
-  `);
-await db.execute(`
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    revoked INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-  `);
-
-try {
-  await db.execute(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_checkout_session_id ON payment_intents(checkout_session_id)",
-  );
-} catch (_e) {}
-try {
-  await db.execute(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_intents_stripe_payment_id ON payment_intents(stripe_payment_id)",
-  );
-} catch (_e) {}
-
 //funcionalidades de la aplicacion
 app.get("/api/test", authorization.isLoged, async (req, res) => {
   res
@@ -511,12 +110,17 @@ app.get("/api/test", authorization.isLoged, async (req, res) => {
 
 app.get("/api/users", authorization.isLoged, async (req, res) => {
   try {
-    const resultado = await db.execute("SELECT * FROM users");
-    const rows = Array.isArray(resultado?.[0]) ? resultado[0] : resultado?.rows;
-    const decryptedRows = (rows ?? []).map((r) =>
-      cryptoUtils.decryptFields(r, cryptoUtils.USER_SENSITIVE_FIELDS),
-    );
-    return res.status(200).json(decryptedRows); // El resultado es un array, así que devolvemos el primer elemento
+    const users = await prisma.user.findMany({
+      include: { role: true },
+    });
+    const decryptedRows = users.map((r) => {
+      const decrypted = cryptoUtils.decryptFields(
+        r,
+        cryptoUtils.USER_SENSITIVE_FIELDS,
+      );
+      return { ...decrypted, role: r.role?.name ?? "user" };
+    });
+    return res.status(200).json(decryptedRows);
   } catch (error) {
     console.error("Error fetching users:", error);
     return res
@@ -535,20 +139,22 @@ app.get("/api/users/info", authorization.isLoged, (req, res) =>
 app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
   const { id } = req.params;
   try {
-    const resultado = await db.execute({
-      sql: "SELECT * FROM users WHERE id = ?",
-      args: [id],
+    const findUser = await prisma.user.findUnique({
+      where: { id },
+      include: { role: true },
     });
-    if (resultado.rows.length === 0) {
+    if (!findUser) {
       return res
         .status(404)
         .json({ status: "Error", message: "User not found" });
     }
-    const user = cryptoUtils.decryptFields(
-      resultado.rows[0],
+    const decrypted = cryptoUtils.decryptFields(
+      findUser,
       cryptoUtils.USER_SENSITIVE_FIELDS,
     );
-    return res.status(200).json(user);
+    return res
+      .status(200)
+      .json({ ...decrypted, role: findUser.role?.name ?? "user" });
   } catch (error) {
     console.error("Error fetching user:", error);
     return res
@@ -681,6 +287,7 @@ app.get("/api/auth/oauth/register", async (req, res) => {
     const payload = {
       userId: userResult?.user?.id,
       email: googleUserData.email,
+      role: userResult?.user?.role?.name ?? "user",
     };
     const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
       expiresIn: process.env.EXPIRATION_TIME,
@@ -749,6 +356,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
     const payload = {
       userId: comprobarUser.id,
       email: comprobarUser.email,
+      role: comprobarUser.role?.name ?? "user",
     };
     const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
       expiresIn: process.env.EXPIRATION_TIME,
@@ -810,11 +418,18 @@ app.post("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
 app.post(
   "/api/payment/stripe-connect-link",
   authorization.isLoged,
-  (req, res) => payment.createAccountLink(req, res),
+  (req, res) => {
+    console.log("llega");
+
+    payment.createAccountLink(req, res);
+  },
 );
-app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
-  payment.getMyStripeConnectAccount(req, res),
+app.get("/api/payment/stripe-redirect", (req, res) =>
+  payment.stripeRedirect(req, res),
 );
+app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) => {
+  payment.getMyStripeConnectAccount(req, res);
+});
 // app.get("/api/payment/stripe-connect/:stripe_account_id", authorization.isLoged, (req, res) => payment.getMyStripeConnectAccount(req, res))
 app.post("/api/payment/stripe-customer", authorization.isLoged, (req, res) =>
   payment.createStripeCustomer(req, res),
@@ -862,6 +477,11 @@ app.post(
   "/api/payment/payment-intent/checkout",
   authorization.isLoged,
   (req, res) => payment.createCheckoutPaymentIntent(req, res),
+);
+app.post(
+  "/api/payment/payment-intent/resume",
+  authorization.isLoged,
+  (req, res) => payment.resumeCheckoutPaymentIntent(req, res),
 );
 app.post(
   "/api/payment/payment-intent/capture",
@@ -925,6 +545,57 @@ app.get(
   authorization.isLoged,
   (req, res) =>
     disponibilidad_semanal.getDisponibilidadesByUserIdAndFinalidad(req, res),
+);
+
+// --- Events ---
+app.get("/api/events", authorization.isLoged, (req, res) =>
+  events.getAllEvents(req, res),
+);
+app.get("/api/events/nearby", authorization.isLoged, (req, res) =>
+  events.getNearbyEvents(req, res),
+);
+app.get("/api/events/code/:code", authorization.isLoged, (req, res) =>
+  events.getEventByCode(req, res),
+);
+app.get("/api/events/:id", authorization.isLoged, (req, res) =>
+  events.getEventById(req, res),
+);
+app.post("/api/events", authorization.onlyAdmin, (req, res) =>
+  events.createEvent(req, res),
+);
+app.patch("/api/events/:id", authorization.onlyAdmin, (req, res) =>
+  events.updateEvent(req, res),
+);
+app.delete("/api/events/:id", authorization.onlyAdmin, (req, res) =>
+  events.deleteEvent(req, res),
+);
+
+// --- Tags ---
+app.get("/api/tags", authorization.isLoged, (req, res) =>
+  events.getAllTags(req, res),
+);
+app.post("/api/tags", authorization.onlyAdmin, (req, res) =>
+  events.createTag(req, res),
+);
+app.delete("/api/tags/:id", authorization.onlyAdmin, (req, res) =>
+  events.deleteTag(req, res),
+);
+
+// --- Companies ---
+app.get("/api/companies", authorization.isLoged, (req, res) =>
+  companies.getAllCompanies(req, res),
+);
+app.get("/api/companies/:id", authorization.isLoged, (req, res) =>
+  companies.getCompanyById(req, res),
+);
+app.post("/api/companies", authorization.onlyAdmin, (req, res) =>
+  companies.createCompany(req, res),
+);
+app.patch("/api/companies/:id", authorization.onlyAdmin, (req, res) =>
+  companies.updateCompany(req, res),
+);
+app.delete("/api/companies/:id", authorization.onlyAdmin, (req, res) =>
+  companies.deleteCompany(req, res),
 );
 
 app.use((req, res) => {

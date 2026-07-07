@@ -4,18 +4,29 @@ services:
     container_name: mysql-carpooling2
     restart: unless-stopped
     ports:
-      - "3306:3306" # Accesible externamente
+      - "3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: password
-      # MYSQL_PASSWORD: password
-      # MYSQL_USER: carpoolingUser
-      # MYSQL_DATABASE: carpooling
     volumes:
       - ./mysql_data:/var/lib/mysql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     command: --default-authentication-plugin=mysql_native_password
     networks:
       - carpooling-network
+
+  app:
+    build: .
+    container_name: carpooling-user
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+    networks:
+      - carpooling-network
+
 volumes:
   mysql_data:
 

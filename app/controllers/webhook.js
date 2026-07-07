@@ -1,5 +1,6 @@
 import prisma from "../lib/prisma.js";
 import Stripe from "stripe";
+import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 export const status = {
   1: "pending",
@@ -396,12 +397,25 @@ async function handlePaymentIntentCreated(jsonData) {
     },
   });
 
-  // id_reserva is stored as a string reference only (microservice architecture)
-  // The reserva/trayecto updates are handled by another microservice
+  if (id_reserva) {
+    const mappedStatus = state === "succeeded" ? "completed" : "pending";
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      mappedStatus,
+      stripePaymentIntentId,
+    );
+  }
 }
 
 async function handlePaymentIntentUpdated(jsonData) {
   const paymentIntent = jsonData.object;
+
+  try {
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
+    });
+  } catch (_) {}
 
   await prisma.walletRecharge.updateMany({
     where: { stripe_payment_intent_id: paymentIntent.id },
@@ -415,6 +429,14 @@ async function handlePaymentIntentUpdated(jsonData) {
 }
 async function handlePaymentIntentSucceeded(jsonData) {
   const paymentIntent = jsonData.object;
+
+  try {
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
+    });
+  } catch (_) {}
+
   let id_reserva = paymentIntent?.metadata?.id_reserva;
   if (!id_reserva) {
     const paymentIntentRow = await prisma.paymentIntent.findUnique({
@@ -482,9 +504,15 @@ async function handlePaymentIntentSucceeded(jsonData) {
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      // reserva status update is handled by another microservice
+    if (id_reserva) {
+      await trayectosService.updateReservaStatus(
+        id_reserva,
+        "completed",
+        stripePaymentIntentId,
+      );
+    }
 
+    await prisma.$transaction(async (tx) => {
       const ensureWalletAccount = async (userId) => {
         await tx.walletAccount.upsert({
           where: { user_id_currency: { user_id: userId, currency } },
@@ -583,7 +611,28 @@ async function handlePaymentIntentSucceeded(jsonData) {
 async function handlePaymentIntentFailed(jsonData) {
   const paymentIntent = jsonData.object;
 
-  // reserva status update is handled by another microservice
+  try {
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
+    });
+  } catch (_) {}
+
+  let id_reserva = paymentIntent?.metadata?.id_reserva;
+  if (!id_reserva) {
+    const piRow = await prisma.paymentIntent.findUnique({
+      where: { stripe_payment_id: paymentIntent.id },
+      select: { id_reserva: true },
+    });
+    id_reserva = piRow?.id_reserva;
+  }
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      "canceled",
+      paymentIntent.id,
+    );
+  }
 
   await prisma.walletRecharge.updateMany({
     where: { stripe_payment_intent_id: paymentIntent.id },
@@ -603,7 +652,21 @@ async function handlePaymentIntentCanceled(jsonData) {
     data: { state: paymentIntent.status },
   });
 
-  // reserva status update is handled by another microservice
+  let id_reserva = paymentIntent?.metadata?.id_reserva;
+  if (!id_reserva) {
+    const piRow = await prisma.paymentIntent.findUnique({
+      where: { stripe_payment_id: paymentIntent.id },
+      select: { id_reserva: true },
+    });
+    id_reserva = piRow?.id_reserva;
+  }
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      "canceled",
+      paymentIntent.id,
+    );
+  }
 }
 async function handleCustomerUpdated(jsonData) {
   const customer = jsonData.object;
@@ -662,20 +725,46 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
 
   const type =
     checkout_session?.metadata?.type ?? checkout_session?.metadata?.typo;
-  let paymentIntent = checkout_session.payment_intent;
+  const paymentIntentId =
+    typeof checkout_session?.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : (checkout_session?.payment_intent?.id ?? null);
+
+  if (paymentIntentId) {
+    try {
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: paymentIntentId },
+        data: {
+          state: "checkout_completed",
+          checkout_session_id: checkout_session?.id ?? undefined,
+        },
+      });
+    } catch (_) {}
+  }
+
   if (type === "recharge") {
     return;
   }
 
   if (type === "reserva") {
-    // Reserva and trayecto management is handled by another microservice.
-    // This microservice only stores id_reserva and id_trayecto as string references.
+    const id_reserva = checkout_session?.metadata?.id_reserva;
+    if (id_reserva) {
+      await trayectosService.updateReservaStatus(
+        id_reserva,
+        "pending",
+        paymentIntentId,
+      );
+    }
     return;
   }
 }
 
 async function handleCheckoutSessionExpired(jsonData) {
-  // Reserva and trayecto cleanup is handled by another microservice.
+  const session = jsonData?.object;
+  const id_reserva = session?.metadata?.id_reserva;
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(id_reserva, "canceled", null);
+  }
 }
 async function handleAccountUpdated(jsonData) {
   const stripeAccount = jsonData?.object;

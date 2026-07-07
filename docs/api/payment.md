@@ -63,19 +63,15 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 ## 3. Obtener link de onboarding (Account Link)
 
-**URL:** `POST /api/payment/stripe-connect-link`
+**URL:** `GET /api/payment/stripe-connect-link`
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario autenticado. Útil para reanudar el onboarding si no se completó. Acepta `return_url` y `refresh_url` opcionales en el body; si no se proporcionan, se usa `process.env.ORIGIN`.
+**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario autenticado. Útil para reanudar el onboarding si no se completó. Acepta `return_url` y `refresh_url` opcionales como query params; si no se proporcionan, se usa `process.env.ORIGIN`.
 
-**Entrada (body JSON, opcional):**
-```json
-{
-  "return_url": "string (URL de retorno tras onboarding)",
-  "refresh_url": "string (URL de refresco si el onboarding expira)"
-}
-```
+**Query params (opcionales):**
+- `return_url` — URL de retorno tras completar el onboarding (default: `process.env.ORIGIN`).
+- `refresh_url` — URL de refresco si el link expira (default: `process.env.ORIGIN`).
 
 **Salida (200):**
 ```json
@@ -684,7 +680,7 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 ## Notas generales
 
-- **Stripe Connect:** Los usuarios tienen cuentas tipo "express" con `business_type: individual`. Se crean automáticamente al registrarse (tanto password como Google OAuth) con `capabilities: card_payments` y `transfers` habilitadas, y `business_profile` pre-rellenado (MCC `4121`, descripción del producto, URL de la plataforma). El usuario debe completar el onboarding mediante `POST /api/payment/stripe-connect-link`.
+- **Stripe Connect:** Los usuarios tienen cuentas tipo "express" con `business_type: individual`. Se crean automáticamente al registrarse (tanto password como Google OAuth) con `capabilities: card_payments` y `transfers` habilitadas, y `business_profile` pre-rellenado (MCC `4121`, descripción del producto, URL de la plataforma). El usuario debe completar el onboarding mediante `GET /api/payment/stripe-connect-link`.
 - **Sincronización de perfil:** Al actualizar el perfil de usuario (`PATCH /api/users` o `PATCH /api/users/:id`), se sincronizan automáticamente los datos con la cuenta Stripe Connect (`individual.first_name`, `individual.last_name`, `individual.email`, `individual.phone`, `individual.address`, `individual.dob`, `business_profile`).
 - **Comisión de plataforma:** 10% en payment intents directos, 15% en checkout de reservas.
 - **Monedero virtual:** Tablas `wallet_accounts`, `wallet_transactions`, `wallet_recharges`, `wallet_payouts`.
