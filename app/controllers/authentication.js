@@ -414,7 +414,7 @@ async function refresh(req, res) {
 
     const user = await prisma.user.findUnique({
       where: { id: stored.user_id },
-      select: { id: true, email: true },
+      include: { role: true },
     });
 
     if (!user) {
@@ -427,9 +427,10 @@ async function refresh(req, res) {
         .send({ status: "Error", message: "User not found" });
     }
 
+    const role = user.role?.name ?? "user";
     // Rotate refresh token and issue new access token
     const accessToken = jsonwebtoken.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, email: user.email, role },
       PRIVATE_KEY,
       { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
@@ -444,6 +445,7 @@ async function refresh(req, res) {
       status: "Success",
       message: "Token refreshed",
       token: accessToken,
+      role,
       userId: user.id,
     });
   } catch (error) {

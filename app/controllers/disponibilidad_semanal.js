@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { DisponibilidadSemanaSchemas } from "../schemas/disponibilidad_semana.js";
 
 dotenv.config();
@@ -25,41 +25,25 @@ async function createDisponibilidad(req, res) {
   };
 
   try {
-    const result = await database.execute({
-      sql: "INSERT INTO disponibilidad_semanal (user_id, dia_semana, hora_inicio, hora_fin, transport_needed, transporte, estado, finalidad, origen, destino) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      args: [
-        disponibilidad.user_id,
-        disponibilidad.dia_semana,
-        disponibilidad.hora_inicio,
-        disponibilidad.hora_fin,
-        disponibilidad.transport_needed ? 1 : 0,
-        disponibilidad.transporte ?? null,
-        disponibilidad.estado,
-        disponibilidad.finalidad,
-        disponibilidad.origen,
-        disponibilidad.destino,
-      ],
+    const disponibilidad = await prisma.disponibilidadSemanal.create({
+      data: {
+        user_id: user.id,
+        dia_semana: data.data.dia_semana,
+        hora_inicio: data.data.hora_inicio,
+        hora_fin: data.data.hora_fin,
+        transport_needed: data.data.transport_needed ? 1 : 0,
+        transporte: data.data.transporte ?? null,
+        estado: data.data.estado,
+        finalidad: data.data.finalidad,
+        origen: data.data.origen,
+        destino: data.data.destino,
+      },
     });
-
-    if (!result || result.rowsAffected === 0) {
-      return res.status(500).send({
-        status: "Error",
-        message: "No se pudo crear la disponibilidad",
-      });
-    }
-
-    const insertedId =
-      result?.lastInsertRowid !== undefined && result?.lastInsertRowid !== null
-        ? Number(result.lastInsertRowid)
-        : null;
 
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidad creada correctamente",
-      disponibilidad: {
-        ...disponibilidad,
-        id: insertedId,
-      },
+      disponibilidad,
     });
   } catch (error) {
     return res
@@ -83,17 +67,15 @@ async function updateDisponibilidad(req, res) {
 
   const { id } = req.params;
   try {
-    const ownerRes = await database.execute({
-      sql: "SELECT user_id FROM disponibilidad_semanal WHERE id = ?",
-      args: [id],
+    const existing = await prisma.disponibilidadSemanal.findUnique({
+      where: { id: Number(id) },
     });
-    const ownerId = ownerRes.rows?.[0]?.user_id;
-    if (ownerId === undefined || ownerId === null) {
+    if (!existing) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
     }
-    if (String(ownerId) !== String(req.user?.id)) {
+    if (String(existing.user_id) !== String(req.user?.id)) {
       return res.status(403).send({
         status: "Error",
         message: "No tienes permiso para modificar esta disponibilidad",
@@ -107,23 +89,15 @@ async function updateDisponibilidad(req, res) {
         .send({ status: "Error", message: "No fields to update" });
     }
 
-    const setClause = keys.map((k) => `${k} = ?`).join(", ");
-    const args = keys.map((k) => {
-      if (k === "transport_needed") return value[k] ? 1 : 0;
-      return value[k];
-    });
-    args.push(id);
-
-    const result = await database.execute({
-      sql: `UPDATE disponibilidad_semanal SET ${setClause} WHERE id = ?`,
-      args,
-    });
-
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Disponibilidad no encontrada" });
+    if ("transport_needed" in value) {
+      value.transport_needed = value.transport_needed ? 1 : 0;
     }
+
+    await prisma.disponibilidadSemanal.update({
+      where: { id: Number(id) },
+      data: value,
+    });
+
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidad actualizada correctamente",
@@ -138,32 +112,24 @@ async function updateDisponibilidad(req, res) {
 async function removeDisponibilidad(req, res) {
   const { id } = req.params;
   try {
-    const rutine = await database.execute({
-      sql: "SELECT user_id FROM disponibilidad_semanal WHERE id = ?",
-      args: [id],
+    const existing = await prisma.disponibilidadSemanal.findUnique({
+      where: { id: Number(id) },
     });
-    const ownerId = rutine.rows?.[0]?.user_id;
-    if (ownerId === undefined || ownerId === null) {
+    if (!existing) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
     }
-    if (String(ownerId) !== String(req.user?.id)) {
+    if (String(existing.user_id) !== String(req.user?.id)) {
       return res.status(403).send({
         status: "Error",
         message: "No tienes permiso para eliminar esta disponibilidad",
       });
     }
-    const result = await database.execute({
-      sql: "DELETE FROM disponibilidad_semanal WHERE id = ?",
-      args: [id],
+    await prisma.disponibilidadSemanal.delete({
+      where: { id: Number(id) },
     });
 
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Disponibilidad no encontrada" });
-    }
     return res
       .status(200)
       .send({ status: "Success", message: "Disponibilidad eliminada" });
@@ -177,17 +143,15 @@ async function removeDisponibilidad(req, res) {
 async function getDisponibilidad(req, res) {
   const { id } = req.params;
   try {
-    const result = await database.execute({
-      sql: "SELECT * FROM disponibilidad_semanal WHERE id = ?",
-      args: [id],
+    const row = await prisma.disponibilidadSemanal.findUnique({
+      where: { id: Number(id) },
     });
-    const rows = result.rows ?? [];
-    if (!rows || rows.length === 0) {
+    if (!row) {
       return res
         .status(404)
         .send({ status: "Error", message: "Disponibilidad no encontrada" });
     }
-    if (String(rows[0].user_id) !== String(req.user?.id)) {
+    if (String(row.user_id) !== String(req.user?.id)) {
       return res.status(403).send({
         status: "Error",
         message: "No tienes permiso para acceder a esta disponibilidad",
@@ -196,7 +160,7 @@ async function getDisponibilidad(req, res) {
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidad encontrada",
-      disponibilidad: rows[0],
+      disponibilidad: row,
     });
   } catch (error) {
     return res
@@ -208,35 +172,39 @@ async function getDisponibilidad(req, res) {
 async function getDisponibilidadesByUserId(req, res) {
   const { userId } = req.params;
   try {
-    const userRows = await database.execute({
-      sql: "SELECT 1 FROM users WHERE id = ?",
-      args: [userId],
+    const existingUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
     });
-    if ((userRows.rows ?? []).length === 0) {
+    if (!existingUser) {
       return res
         .status(404)
         .send({ status: "Error", message: "Usuario no encontrado" });
     }
 
-    const rowsRes = await database.execute({
-      sql: `SELECT * FROM disponibilidad_semanal
-            WHERE user_id = ?
-            ORDER BY CASE dia_semana
-              WHEN 'Lunes' THEN 1
-              WHEN 'Martes' THEN 2
-              WHEN 'Miercoles' THEN 3
-              WHEN 'Jueves' THEN 4
-              WHEN 'Viernes' THEN 5
-              WHEN 'Sabado' THEN 6
-              WHEN 'Domingo' THEN 7
-              ELSE 99
-            END, hora_inicio`,
-      args: [userId],
+    const dayOrder = [
+      "Lunes",
+      "Martes",
+      "Miercoles",
+      "Jueves",
+      "Viernes",
+      "Sabado",
+      "Domingo",
+    ];
+    const rows = await prisma.disponibilidadSemanal.findMany({
+      where: { user_id: userId },
+      orderBy: { hora_inicio: "asc" },
     });
+    rows.sort((a, b) => {
+      const ai = dayOrder.indexOf(a.dia_semana);
+      const bi = dayOrder.indexOf(b.dia_semana);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidades encontradas",
-      disponibilidades: rowsRes.rows ?? [],
+      disponibilidades: rows,
     });
   } catch (error) {
     return res.status(500).send({
@@ -249,25 +217,29 @@ async function getDisponibilidadesByUserId(req, res) {
 async function getDisponibilidadesByUserIdAndFinalidad(req, res) {
   const { userId, finalidad } = req.params;
   try {
-    const rowsRes = await database.execute({
-      sql: `SELECT * FROM disponibilidad_semanal
-            WHERE user_id = ? AND finalidad = ?
-            ORDER BY CASE dia_semana
-              WHEN 'Lunes' THEN 1
-              WHEN 'Martes' THEN 2
-              WHEN 'Miercoles' THEN 3
-              WHEN 'Jueves' THEN 4
-              WHEN 'Viernes' THEN 5
-              WHEN 'Sabado' THEN 6
-              WHEN 'Domingo' THEN 7
-              ELSE 99
-            END, hora_inicio`,
-      args: [userId, finalidad],
+    const dayOrder = [
+      "Lunes",
+      "Martes",
+      "Miercoles",
+      "Jueves",
+      "Viernes",
+      "Sabado",
+      "Domingo",
+    ];
+    const rows = await prisma.disponibilidadSemanal.findMany({
+      where: { user_id: userId, finalidad },
+      orderBy: { hora_inicio: "asc" },
     });
+    rows.sort((a, b) => {
+      const ai = dayOrder.indexOf(a.dia_semana);
+      const bi = dayOrder.indexOf(b.dia_semana);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
     return res.status(200).send({
       status: "Success",
       message: "Disponibilidades por finalidad encontradas",
-      disponibilidades: rowsRes.rows ?? [],
+      disponibilidades: rows,
     });
   } catch (error) {
     return res.status(500).send({

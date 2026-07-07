@@ -191,6 +191,11 @@ async function silentlyRefreshAccessToken(req, res, user) {
     if (res?.cookie) {
       res.cookie("access_token", accessToken, buildAccessCookieOptions());
     }
+
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
   } catch (_e) {
     // Silent failure — don't interrupt the request
   }

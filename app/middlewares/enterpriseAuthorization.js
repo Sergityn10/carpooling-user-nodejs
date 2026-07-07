@@ -1,6 +1,6 @@
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
 
 dotenv.config();
@@ -20,12 +20,10 @@ async function reviseEnterpriseCookie(req) {
       return false;
     }
 
-    const result = await database.execute({
-      sql: "SELECT * FROM enterprises WHERE email = ?",
-      args: [email],
+    const enterprise = await prisma.enterprise.findUnique({
+      where: { email },
     });
 
-    const enterprise = result.rows?.[0];
     if (!enterprise) {
       return false;
     }

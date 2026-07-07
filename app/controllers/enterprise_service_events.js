@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { ServiceEventSchemas } from "../schemas/service_event.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 
@@ -30,20 +30,17 @@ async function create(req, res) {
       .send({ status: "Error", message: "Access denied. Enterprises only." });
   }
 
-  const enterpriseRow = await database.execute({
-    sql: "SELECT id FROM enterprises WHERE email = ? LIMIT 1",
-    args: [email],
+  const enterpriseRecord = await prisma.enterprise.findUnique({
+    where: { email },
+    select: { id: true },
   });
-  const rawEnterpriseId = enterpriseRow.rows?.[0]?.id;
-  const enterpriseId = Math.trunc(Number(rawEnterpriseId));
+  const enterpriseId = enterpriseRecord?.id;
 
   if (!Number.isFinite(enterpriseId)) {
-    return res
-      .status(400)
-      .send({
-        status: "Error",
-        message: "Empresa no encontrada en BD (enterprise_id inválido).",
-      });
+    return res.status(400).send({
+      status: "Error",
+      message: "Empresa no encontrada en BD (enterprise_id inválido).",
+    });
   }
 
   let latitude = ev.latitude ?? null;
@@ -62,53 +59,37 @@ async function create(req, res) {
     }
   }
 
-  let insertRes;
   try {
-    insertRes = await database.execute({
-      sql: `INSERT INTO service_events (
-                    enterprise_id,
-                    title,
-                    description,
-                    start_at,
-                    end_at,
-                    status,
-                    venue_name,
-                    address_line1,
-                    address_line2,
-                    city,
-                    province,
-                    postal_code,
-                    country,
-                    latitude,
-                    longitude,
-                    contact_name,
-                    contact_email,
-                    contact_phone,
-                    attendees_estimate,
-                    notes
-                  ) VALUES (CAST(? AS INTEGER), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        enterpriseId,
+    const created = await prisma.serviceEvent.create({
+      data: {
+        enterprise_id: enterpriseId,
         title,
         description,
         start_at,
         end_at,
-        "requested",
-        null,
+        status: "requested",
+        venue_name: null,
         address_line1,
-        null,
+        address_line2: null,
         city,
-        null,
-        null,
-        "ES",
+        province: null,
+        postal_code: null,
+        country: "ES",
         latitude,
         longitude,
-        null,
-        null,
-        null,
-        null,
-        null,
-      ],
+        contact_name: null,
+        contact_email: null,
+        contact_phone: null,
+        attendees_estimate: null,
+        notes: null,
+        image: ev.image ?? null,
+      },
+    });
+
+    return res.status(201).send({
+      status: "Success",
+      message: "Service event created",
+      service_event: created,
     });
   } catch (error) {
     console.error("Error creating service event", {
@@ -121,53 +102,17 @@ async function create(req, res) {
       msg.toLowerCase().includes("foreign key") ||
       msg.toLowerCase().includes("constraint")
     ) {
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message:
-            "Empresa no válida para crear el evento (enterprise_id no existe o relación inválida).",
-        });
-    }
-    return res
-      .status(500)
-      .send({
+      return res.status(400).send({
         status: "Error",
-        message: `Failed to create service event: ${msg}`,
+        message:
+          "Empresa no válida para crear el evento (enterprise_id no existe o relación inválida).",
       });
-  }
-
-  if (!insertRes || insertRes.rowsAffected === 0) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to create service event" });
-  }
-
-  const rowId = insertRes.lastInsertRowid ?? null;
-  let created = null;
-  if (rowId != null) {
-    try {
-      const q = await database.execute({
-        sql: "SELECT * FROM service_events WHERE id = ? AND enterprise_id = ?",
-        args: [Number(rowId), enterprise.id],
-      });
-      created = q.rows?.[0] ?? null;
-    } catch (_) {
-      const q = await database.execute({
-        sql: "SELECT * FROM service_events WHERE id = ? AND username = ?",
-        args: [Number(rowId), enterprise.email],
-      });
-      created = q.rows?.[0] ?? null;
     }
-  }
-
-  return res
-    .status(201)
-    .send({
-      status: "Success",
-      message: "Service event created",
-      service_event: created,
+    return res.status(500).send({
+      status: "Error",
+      message: `Failed to create service event: ${msg}`,
     });
+  }
 }
 
 async function list(req, res) {
@@ -182,32 +127,22 @@ async function list(req, res) {
     ? Math.max(0, Number(offsetRaw))
     : 0;
 
-  let rows;
   try {
-    const q = await database.execute({
-      sql: `SELECT *
-                  FROM service_events
-                  WHERE enterprise_id = ?
-                  ORDER BY datetime(created_at) DESC
-                  LIMIT ? OFFSET ?`,
-      args: [enterprise.id, limit, offset],
+    const rows = await prisma.serviceEvent.findMany({
+      where: { enterprise_id: enterprise.id },
+      orderBy: { created_at: "desc" },
+      take: limit,
+      skip: offset,
     });
-    rows = q.rows;
-  } catch (_) {
-    const q = await database.execute({
-      sql: `SELECT *
-                  FROM service_events
-                  WHERE username = ?
-                  ORDER BY datetime(created_at) DESC
-                  LIMIT ? OFFSET ?`,
-      args: [enterprise.email, limit, offset],
-    });
-    rows = q.rows;
-  }
 
-  return res
-    .status(201)
-    .send({ status: "Success", service_events: rows, limit, offset });
+    return res
+      .status(200)
+      .send({ status: "Success", service_events: rows, limit, offset });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: "Failed to fetch service events" });
+  }
 }
 
 async function getById(req, res) {
@@ -217,28 +152,23 @@ async function getById(req, res) {
     return res.status(400).send({ status: "Error", message: "Invalid id" });
   }
 
-  let rows;
   try {
-    const q = await database.execute({
-      sql: "SELECT * FROM service_events WHERE id = ? AND enterprise_id = ? LIMIT 1",
-      args: [id, enterprise.id],
+    const row = await prisma.serviceEvent.findFirst({
+      where: { id, enterprise_id: enterprise.id },
     });
-    rows = q.rows;
-  } catch (_) {
-    const q = await database.execute({
-      sql: "SELECT * FROM service_events WHERE id = ? AND username = ? LIMIT 1",
-      args: [id, enterprise.email],
-    });
-    rows = q.rows;
-  }
 
-  if (rows.length === 0) {
+    if (!row) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Service event not found" });
+    }
+
+    return res.status(200).send({ status: "Success", service_event: row });
+  } catch (error) {
     return res
-      .status(404)
-      .send({ status: "Error", message: "Service event not found" });
+      .status(500)
+      .send({ status: "Error", message: "Failed to fetch service event" });
   }
-
-  return res.status(200).send({ status: "Success", service_event: rows[0] });
 }
 
 async function patch(req, res) {
@@ -252,12 +182,10 @@ async function patch(req, res) {
     req.body,
   );
   if (!allowedSchema.success) {
-    return res
-      .status(400)
-      .send({
-        status: "Error",
-        message: JSON.parse(allowedSchema.error.message),
-      });
+    return res.status(400).send({
+      status: "Error",
+      message: JSON.parse(allowedSchema.error.message),
+    });
   }
 
   const updates = { ...allowedSchema.data };
@@ -271,53 +199,32 @@ async function patch(req, res) {
       .send({ status: "Error", message: "No fields to update" });
   }
 
-  const setClause = keys.map((k) => `${k} = ?`).join(", ");
-  const args = [...keys.map((k) => updates[k]), id, enterprise.id];
-
-  let updateRes;
   try {
-    updateRes = await database.execute({
-      sql: `UPDATE service_events
-                  SET ${setClause}, updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ? AND enterprise_id = ?`,
-      args,
+    const updated = await prisma.serviceEvent.updateMany({
+      where: { id, enterprise_id: enterprise.id },
+      data: updates,
     });
-  } catch (_) {
-    const argsLegacy = [...keys.map((k) => updates[k]), id, enterprise.email];
-    updateRes = await database.execute({
-      sql: `UPDATE service_events
-                  SET ${setClause}, updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ? AND username = ?`,
-      args: argsLegacy,
-    });
-  }
 
-  if (!updateRes || updateRes.rowsAffected === 0) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "Service event not found" });
-  }
+    if (updated.count === 0) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Service event not found" });
+    }
 
-  let refreshed;
-  try {
-    refreshed = await database.execute({
-      sql: "SELECT * FROM service_events WHERE id = ? AND enterprise_id = ?",
-      args: [id, enterprise.id],
+    const refreshed = await prisma.serviceEvent.findFirst({
+      where: { id, enterprise_id: enterprise.id },
     });
-  } catch (_) {
-    refreshed = await database.execute({
-      sql: "SELECT * FROM service_events WHERE id = ? AND username = ?",
-      args: [id, enterprise.email],
-    });
-  }
 
-  return res
-    .status(200)
-    .send({
+    return res.status(200).send({
       status: "Success",
       message: "Service event updated",
-      service_event: refreshed.rows?.[0] ?? null,
+      service_event: refreshed,
     });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: "Failed to update service event" });
+  }
 }
 
 async function remove(req, res) {
@@ -327,28 +234,25 @@ async function remove(req, res) {
     return res.status(400).send({ status: "Error", message: "Invalid id" });
   }
 
-  let delRes;
   try {
-    delRes = await database.execute({
-      sql: "DELETE FROM service_events WHERE id = ? AND enterprise_id = ?",
-      args: [id, enterprise.id],
+    const deleted = await prisma.serviceEvent.deleteMany({
+      where: { id, enterprise_id: enterprise.id },
     });
-  } catch (_) {
-    delRes = await database.execute({
-      sql: "DELETE FROM service_events WHERE id = ? AND username = ?",
-      args: [id, enterprise.email],
-    });
-  }
 
-  if (!delRes || delRes.rowsAffected === 0) {
+    if (deleted.count === 0) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Service event not found" });
+    }
+
     return res
-      .status(404)
-      .send({ status: "Error", message: "Service event not found" });
+      .status(200)
+      .send({ status: "Success", message: "Service event removed" });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: "Failed to remove service event" });
   }
-
-  return res
-    .status(200)
-    .send({ status: "Success", message: "Service event removed" });
 }
 
 export const methods = {

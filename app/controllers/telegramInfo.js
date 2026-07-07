@@ -1,7 +1,7 @@
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { TelegramInfo } from "../schemas/Telegram/telegramInfo.js";
 
-// Helper: map DB row -> API schema shape
+// Helper: map Prisma row -> API schema shape
 function mapRowToSchema(row) {
   return {
     user_id: row.user_id,
@@ -17,28 +17,20 @@ function mapRowToSchema(row) {
 }
 
 async function userExists(userId) {
-  const result = await database.execute({
-    sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-    args: [userId],
+  const result = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
   });
-  return (result.rows ?? []).length > 0;
+  return !!result;
 }
 
 async function getAll(req, res) {
   try {
     const userId = req.query.user_id ?? req.query.userId ?? null;
-    const result = await database.execute(
-      userId != null
-        ? {
-            sql: "SELECT * FROM telegram_info WHERE user_id = ?",
-            args: [userId],
-          }
-        : {
-            sql: "SELECT * FROM telegram_info",
-            args: [],
-          },
+    const rows = await prisma.telegramInfo.findMany(
+      userId != null ? { where: { user_id: userId } } : undefined,
     );
-    const data = (result.rows ?? []).map(mapRowToSchema);
+    const data = rows.map(mapRowToSchema);
     return res.status(200).json({ status: "Success", data });
   } catch (error) {
     console.error("Error fetching telegram_info:", error);
@@ -51,19 +43,17 @@ async function getAll(req, res) {
 async function getById(req, res) {
   const { id } = req.params;
   try {
-    const result = await database.execute({
-      sql: "SELECT * FROM telegram_info WHERE id = ?",
-      args: [id],
+    const row = await prisma.telegramInfo.findUnique({
+      where: { id: Number(id) },
     });
-    const rows = result.rows ?? [];
-    if (rows.length === 0) {
+    if (!row) {
       return res
         .status(404)
         .json({ status: "Error", message: "Telegram info not found" });
     }
     return res
       .status(200)
-      .json({ status: "Success", data: mapRowToSchema(rows[0]) });
+      .json({ status: "Success", data: mapRowToSchema(row) });
   } catch (error) {
     console.error("Error fetching telegram_info by id:", error);
     return res
@@ -92,36 +82,27 @@ async function create(req, res) {
     }
 
     // Ensure telegram_info primary key (id) is unique
-    const existing = await database.execute({
-      sql: "SELECT id FROM telegram_info WHERE id = ?",
-      args: [id],
+    const existing = await prisma.telegramInfo.findUnique({
+      where: { id: Number(id) },
+      select: { id: true },
     });
-    if ((existing.rows ?? []).length > 0) {
-      return res
-        .status(409)
-        .json({
-          status: "Error",
-          message: "Telegram info already exists for this id",
-        });
+    if (existing) {
+      return res.status(409).json({
+        status: "Error",
+        message: "Telegram info already exists for this id",
+      });
     }
 
-    const result = await database.execute({
-      sql: "INSERT INTO telegram_info (user_id, id, username_telegram, first_name, last_name, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
-      args: [
+    await prisma.telegramInfo.create({
+      data: {
         user_id,
-        id,
-        telegram_username ?? null,
+        id: Number(id),
+        username_telegram: telegram_username ?? null,
         first_name,
-        last_name ?? null,
-        chat_id ?? null,
-      ],
+        last_name: last_name ?? null,
+        chat_id: chat_id ?? null,
+      },
     });
-
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(500)
-        .json({ status: "Error", message: "Failed to create telegram info" });
-    }
 
     return res
       .status(201)
@@ -159,11 +140,10 @@ async function updatePut(req, res) {
   }
 
   try {
-    const existing = await database.execute({
-      sql: "SELECT * FROM telegram_info WHERE id = ?",
-      args: [id],
+    const existing = await prisma.telegramInfo.findUnique({
+      where: { id: Number(id) },
     });
-    if ((existing.rows ?? []).length === 0) {
+    if (!existing) {
       return res
         .status(404)
         .json({ status: "Error", message: "Telegram info not found" });
@@ -175,23 +155,16 @@ async function updatePut(req, res) {
         .json({ status: "Error", message: "User not found" });
     }
 
-    const result = await database.execute({
-      sql: "UPDATE telegram_info SET user_id = ?, username_telegram = ?, first_name = ?, last_name = ?, chat_id = ? WHERE id = ?",
-      args: [
+    await prisma.telegramInfo.update({
+      where: { id: Number(id) },
+      data: {
         user_id,
-        telegram_username ?? null,
+        username_telegram: telegram_username ?? null,
         first_name,
-        last_name ?? null,
-        chat_id ?? null,
-        id,
-      ],
+        last_name: last_name ?? null,
+        chat_id: chat_id ?? null,
+      },
     });
-
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(500)
-        .json({ status: "Error", message: "Failed to update telegram info" });
-    }
 
     return res
       .status(200)
@@ -216,20 +189,17 @@ async function updatePatch(req, res) {
   const { user_id, id: bodyId } = parsed.data;
 
   if (bodyId !== undefined && String(bodyId) !== String(id)) {
-    return res
-      .status(400)
-      .json({
-        status: "Error",
-        message: "Body id must match URL id when provided",
-      });
+    return res.status(400).json({
+      status: "Error",
+      message: "Body id must match URL id when provided",
+    });
   }
 
   try {
-    const existingRows = await database.execute({
-      sql: "SELECT * FROM telegram_info WHERE id = ?",
-      args: [id],
+    const existing = await prisma.telegramInfo.findUnique({
+      where: { id: Number(id) },
     });
-    if ((existingRows.rows ?? []).length === 0) {
+    if (!existing) {
       return res
         .status(404)
         .json({ status: "Error", message: "Telegram info not found" });
@@ -243,41 +213,27 @@ async function updatePatch(req, res) {
       }
     }
 
-    const allowedKeys = [
-      "user_id",
-      "telegram_username",
-      "first_name",
-      "last_name",
-      "chat_id",
-    ];
-    const fields = [];
-    const values = [];
+    const data = {};
+    if (user_id !== undefined) data.user_id = user_id;
+    if (parsed.data.telegram_username !== undefined)
+      data.username_telegram = parsed.data.telegram_username ?? null;
+    if (parsed.data.first_name !== undefined)
+      data.first_name = parsed.data.first_name;
+    if (parsed.data.last_name !== undefined)
+      data.last_name = parsed.data.last_name ?? null;
+    if (parsed.data.chat_id !== undefined)
+      data.chat_id = parsed.data.chat_id ?? null;
 
-    for (const k of allowedKeys) {
-      if (parsed.data[k] === undefined) continue;
-      const col = k === "telegram_username" ? "username_telegram" : k;
-      fields.push(`${col} = ?`);
-      values.push(parsed.data[k] ?? null);
-    }
-
-    if (fields.length === 0) {
+    if (Object.keys(data).length === 0) {
       return res
         .status(400)
         .json({ status: "Error", message: "No fields provided to update" });
     }
 
-    values.push(id);
-
-    const result = await database.execute({
-      sql: `UPDATE telegram_info SET ${fields.join(", ")} WHERE id = ?`,
-      args: values,
+    await prisma.telegramInfo.update({
+      where: { id: Number(id) },
+      data,
     });
-
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(500)
-        .json({ status: "Error", message: "Failed to update telegram info" });
-    }
 
     return res
       .status(200)
@@ -293,19 +249,16 @@ async function updatePatch(req, res) {
 async function remove(req, res) {
   const { id } = req.params;
   try {
-    const result = await database.execute({
-      sql: "DELETE FROM telegram_info WHERE id = ?",
-      args: [id],
-    });
-    if (!result || result.rowsAffected === 0) {
-      return res
-        .status(404)
-        .json({ status: "Error", message: "Telegram info not found" });
-    }
+    await prisma.telegramInfo.delete({ where: { id: Number(id) } });
     return res
       .status(200)
       .json({ status: "Success", message: "Telegram info deleted" });
   } catch (error) {
+    if (error?.code === "P2025") {
+      return res
+        .status(404)
+        .json({ status: "Error", message: "Telegram info not found" });
+    }
     console.error("Error deleting telegram_info:", error);
     return res
       .status(500)
@@ -320,13 +273,11 @@ async function bulkCreate(req, res) {
       ? req.body.items
       : null;
   if (!payload) {
-    return res
-      .status(400)
-      .json({
-        status: "Error",
-        message:
-          "Provide an array of telegram info items in the request body or under 'items'",
-      });
+    return res.status(400).json({
+      status: "Error",
+      message:
+        "Provide an array of telegram info items in the request body or under 'items'",
+    });
   }
 
   const results = {
@@ -365,30 +316,26 @@ async function bulkCreate(req, res) {
           continue;
         }
 
-        const existing = await database.execute({
-          sql: "SELECT id FROM telegram_info WHERE id = ?",
-          args: [id],
+        const existing = await prisma.telegramInfo.findUnique({
+          where: { id: Number(id) },
+          select: { id: true },
         });
-        if ((existing.rows ?? []).length > 0) {
+        if (existing) {
           results.skippedExisting++;
           continue;
         }
 
-        const insert = await database.execute({
-          sql: "INSERT INTO telegram_info (user_id, id, username_telegram, first_name, last_name, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
-          args: [
+        await prisma.telegramInfo.create({
+          data: {
             user_id,
-            id,
-            telegram_username ?? null,
+            id: Number(id),
+            username_telegram: telegram_username ?? null,
             first_name,
-            last_name ?? null,
-            chat_id ?? null,
-          ],
+            last_name: last_name ?? null,
+            chat_id: chat_id ?? null,
+          },
         });
-
-        if ((insert?.rowsAffected ?? 0) > 0) {
-          results.inserted++;
-        }
+        results.inserted++;
       } catch (e) {
         console.error("Error processing bulk item", index, e);
         results.errors++;
@@ -398,12 +345,10 @@ async function bulkCreate(req, res) {
     return res.status(207).json({ status: "Multi-Status", results });
   } catch (error) {
     console.error("Error in bulk creating telegram_info:", error);
-    return res
-      .status(500)
-      .json({
-        status: "Error",
-        message: "Failed to bulk create telegram info",
-      });
+    return res.status(500).json({
+      status: "Error",
+      message: "Failed to bulk create telegram info",
+    });
   }
 }
 
