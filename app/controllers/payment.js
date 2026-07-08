@@ -222,12 +222,10 @@ async function resumeCheckoutPaymentIntent(req, res) {
     });
 
     if (!dbPaymentIntent) {
-      return res
-        .status(404)
-        .send({
-          status: "Error",
-          message: "No payment intent found for this reservation",
-        });
+      return res.status(404).send({
+        status: "Error",
+        message: "No payment intent found for this reservation",
+      });
     }
 
     const paymentIntentId = dbPaymentIntent.stripe_payment_id;
@@ -235,12 +233,10 @@ async function resumeCheckoutPaymentIntent(req, res) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     if (!paymentIntent) {
-      return res
-        .status(404)
-        .send({
-          status: "Error",
-          message: "Payment intent not found in Stripe",
-        });
+      return res.status(404).send({
+        status: "Error",
+        message: "Payment intent not found in Stripe",
+      });
     }
 
     const piStatus = String(paymentIntent.status);
@@ -264,6 +260,22 @@ async function resumeCheckoutPaymentIntent(req, res) {
       });
     }
 
+    const destinationAccount =
+      paymentIntent?.metadata?.destination_account ||
+      dbPaymentIntent?.destination_account ||
+      null;
+    if (!destinationAccount) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Cannot determine destination account from original payment",
+      });
+    }
+
+    const recipient = await prisma.user.findFirst({
+      where: { stripe_account: destinationAccount },
+      select: { name: true },
+    });
+
     const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
       /\/$/,
       "",
@@ -276,9 +288,15 @@ async function resumeCheckoutPaymentIntent(req, res) {
       req.body?.cancel_url ||
       `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
 
+    const amount = paymentIntent.amount;
+    const trayectoId =
+      paymentIntent?.metadata?.id_trayecto ||
+      dbPaymentIntent?.description ||
+      null;
+    const recipientUserId = paymentIntent?.metadata?.recipient_user_id || null;
+
     const checkout_session = await stripe.checkout.sessions.create({
       customer: sender.stripe_customer_account,
-      payment_intent: paymentIntentId,
       line_items: [
         {
           price_data: {
@@ -286,17 +304,57 @@ async function resumeCheckoutPaymentIntent(req, res) {
             product_data: {
               name: "Reserva de trayecto (pago pendiente)",
               description:
-                paymentIntent.description || "Pago de reserva pendiente",
+                paymentIntent.description ||
+                `Pago a ${recipient?.name || "conductor"}`,
             },
-            unit_amount: paymentIntent.amount,
+            unit_amount: amount,
           },
           quantity: 1,
         },
       ],
+      payment_intent_data: {
+        application_fee_amount: Math.round(amount * 0.15),
+        capture_method: "manual",
+        transfer_data: {
+          destination: destinationAccount,
+        },
+        metadata: {
+          type: "reserva",
+          id_user: String(user.id),
+          id_reserva: String(id_reserva),
+          sender_account: String(sender.stripe_account ?? ""),
+          destination_account: String(destinationAccount),
+          id_trayecto: String(trayectoId ?? ""),
+          recipient_user_id: String(recipientUserId ?? ""),
+        },
+      },
+      metadata: {
+        type: "reserva",
+        id_user: String(user.id),
+        id_reserva: String(id_reserva),
+        sender_account: sender.stripe_account ?? "",
+        destination_account: String(destinationAccount),
+        id_trayecto: String(trayectoId ?? ""),
+        recipient_user_id: String(recipientUserId ?? ""),
+      },
       submit_type: "pay",
       mode: "payment",
       success_url: successUrl,
       cancel_url: cancelUrl,
+    });
+
+    await prisma.paymentIntent.create({
+      data: {
+        stripe_payment_id: checkout_session.payment_intent,
+        amount: amount,
+        currency: String(paymentIntent.currency || "eur"),
+        description: dbPaymentIntent?.description ?? undefined,
+        destination_account: destinationAccount,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
     });
 
     return res.status(200).send({
