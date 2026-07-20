@@ -354,6 +354,27 @@ async function oauthGoogleAndroid(req, res) {
 }
 
 async function logout(req, res) {
+  const rawRefreshToken = req?.cookies?.refresh_token;
+
+  if (rawRefreshToken) {
+    try {
+      const hashedRefresh = crypto
+        .createHash("sha256")
+        .update(rawRefreshToken)
+        .digest("hex");
+
+      await prisma.refreshToken.updateMany({
+        where: { token: hashedRefresh, revoked: false },
+        data: { revoked: true },
+      });
+    } catch (err) {
+      console.error(
+        "[auth] logout: error revoking refresh token:",
+        err?.message ?? err,
+      );
+    }
+  }
+
   res.clearCookie("access_token", {
     secure: process.env.NODE_ENV === "production",
     sameSite: "none",

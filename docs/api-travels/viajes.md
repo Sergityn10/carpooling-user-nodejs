@@ -58,7 +58,7 @@ GET /api/trayecto/search
 
 **Autenticación:** Opcional (`tryAuthenticate`)
 
-**Descripción:** Busca trayectos por origen, destino, fecha y número de pasajeros. Geocodifica las direcciones de origen y destino del usuario y busca trayectos cuyas coordenadas estén dentro de un radio de 200 metros. Devuelve resultados paginados.
+**Descripción:** Busca trayectos por origen, destino, fecha y número de pasajeros. Geocodifica las direcciones de origen y destino del usuario y busca trayectos cuyas coordenadas estén dentro de un radio de 200 metros. También busca trayectos cuyos **tramos intermedios** (pasos de ruta generados con Google Maps Directions) pasen cerca del origen o destino del usuario. Devuelve resultados paginados.
 
 **Query params:**
 
@@ -231,7 +231,7 @@ POST /api/trayecto
 
 **Autenticación:** Requerida (`authenticate`)
 
-**Descripción:** Crea un nuevo trayecto. Geocodifica origen y destino con Google Maps, calcula automáticamente el precio según el precio medio del gasoil de la provincia, e crea un chat asociado al trayecto en el microservicio de mensajes.
+**Descripción:** Crea un nuevo trayecto. Geocodifica origen y destino con Google Maps, calcula automáticamente el precio según el precio medio del gasoil de la provincia, genera los **tramos** (pasos de la ruta) mediante Google Maps Directions y los guarda en la tabla `tramos`, y crea un chat asociado al trayecto en el microservicio de mensajes.
 
 **Body (JSON):**
 
@@ -1389,6 +1389,30 @@ GET /api/cae/user/:userId
 - `401` — No autenticado.
 - `403` — El usuario no es admin.
 - `500` — Error al listar CAEs del usuario.
+
+---
+
+## Tramos de ruta
+
+Al crear un trayecto, se generan automáticamente los pasos de la ruta usando **Google Maps Directions API**. Cada paso se guarda en la tabla `tramos` con sus coordenadas y la indicación de la calle/maniobra.
+
+### Modelo de datos
+
+#### Tramo (`tramos`)
+
+| Campo         | Tipo     | Descripción                                                  |
+| ------------- | -------- | ------------------------------------------------------------ |
+| `id`          | UUID     | Identificador único del tramo                                |
+| `id_trayecto` | UUID     | ID del trayecto al que pertenece                             |
+| `lat`         | Float    | Latitud del punto final del paso                             |
+| `lng`         | Float    | Longitud del punto final del paso                            |
+| `address`     | String   | Indicación del paso (ej. "Gira a la derecha en Calle Mayor") |
+| `step_order`  | Int      | Orden del paso dentro de la ruta (0 = primer paso)           |
+| `created_at`  | DateTime | Fecha de creación                                            |
+
+### Búsqueda por tramos
+
+La búsqueda de trayectos (`GET /api/trayecto/search`) ahora también matches trayectos cuyos tramos intermedios pasan cerca (200m) del origen o destino del usuario. Esto permite encontrar viajes que pasan por zonas intermedias, no solo por el origen y destino exactos.
 
 ---
 
