@@ -574,7 +574,7 @@ app.get("/api/events/code/:code", authorization.isLoged, (req, res) =>
 app.get("/api/events/:id", authorization.isLoged, (req, res) =>
   events.getEventById(req, res),
 );
-app.post("/api/events", authorization.onlyAdmin, (req, res) =>
+app.post("/api/events", authorization.isLoged, (req, res) =>
   events.createEvent(req, res),
 );
 app.patch("/api/events/:id", authorization.onlyAdmin, (req, res) =>

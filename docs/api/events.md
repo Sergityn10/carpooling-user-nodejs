@@ -421,13 +421,13 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 
 ---
 
-### 11. Listar eventos a los que se ha unido el usuario
+### 11. Listar próximos eventos del usuario
 
 **URL:** `GET /api/events/me/joined`
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Devuelve los eventos a los que el usuario autenticado se ha unido, ordenados por fecha de unión (más recientes primero). Incluye la información completa del evento junto con `joined_at`.
+**Descripción:** Devuelve los próximos eventos a los que el usuario autenticado se ha unido (excluye eventos ya finalizados, `end_date >= ahora`), ordenados por fecha de inicio ascendente (los más cercanos primero). Incluye la información completa del evento junto con `joined_at`.
 
 **Salida (200):**
 ```json
@@ -468,6 +468,14 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 **URL:** `GET /api/tags`
 
 **Autenticación:** Requerida (`isLoged`).
+
+**Query params:**
+
+| Parámetro | Tipo   | Requerido | Descripción                                    |
+| --------- | ------ | --------- | ---------------------------------------------- |
+| `search`  | string | No        | Filtra etiquetas por nombre (búsqueda parcial) |
+
+**Descripción:** Devuelve todas las etiquetas ordenadas alfabéticamente. Si se proporciona `search`, filtra por nombre (coincidencia parcial, case-insensitive).
 
 **Salida (200):**
 ```json

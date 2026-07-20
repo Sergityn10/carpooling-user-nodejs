@@ -330,7 +330,15 @@ async function deleteEvent(req, res) {
 
 async function getAllTags(req, res) {
   try {
+    const { search } = req.query;
+
+    const where = {};
+    if (search) {
+      where.name = { contains: search };
+    }
+
     const tags = await prisma.tag.findMany({
+      where,
       orderBy: { name: "asc" },
     });
     return res.status(200).send({ status: "Success", tags });
@@ -583,7 +591,10 @@ async function getMyJoinedEvents(req, res) {
     const userId = req.user.id;
 
     const participations = await prisma.eventParticipant.findMany({
-      where: { user_id: userId },
+      where: {
+        user_id: userId,
+        event: { end_date: { gte: new Date() } },
+      },
       include: {
         event: {
           include: {
@@ -592,7 +603,7 @@ async function getMyJoinedEvents(req, res) {
           },
         },
       },
-      orderBy: { joined_at: "desc" },
+      orderBy: { event: { start_date: "asc" } },
     });
 
     const events = participations.map((p) => ({
