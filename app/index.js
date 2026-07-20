@@ -22,6 +22,7 @@ import { methods as enterprise } from "./controllers/enterprise.js";
 import { methods as enterpriseServiceEvents } from "./controllers/enterprise_service_events.js";
 import { methods as events } from "./controllers/events.js";
 import { methods as companies } from "./controllers/companies.js";
+import { methods as suggestions } from "./controllers/suggestions.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -75,6 +76,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:5173",
+      "http://localhost:5174",
       "http://localhost:4001",
       "http://localhost:3000",
       "https://www.youconnext.es",
@@ -163,6 +165,15 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
   }
 });
 app.get("/api/users/:id/info", (req, res) => user.getUserInfo(req, res));
+app.get("/api/users/:id/public", (req, res) =>
+  user.getPublicUserInfo(req, res),
+);
+app.get("/api/users/:id/profile", (req, res) =>
+  user.getPublicUserProfile(req, res),
+);
+app.post("/api/users/public/batch", (req, res) =>
+  user.getPublicUsersBatch(req, res),
+);
 app.patch("/api/users/:id", authorization.isLoged, (req, res) =>
   user.updateUserPatch(req, res),
 );
@@ -554,6 +565,9 @@ app.get("/api/events", authorization.isLoged, (req, res) =>
 app.get("/api/events/nearby", authorization.isLoged, (req, res) =>
   events.getNearbyEvents(req, res),
 );
+app.get("/api/events/me/joined", authorization.isLoged, (req, res) =>
+  events.getMyJoinedEvents(req, res),
+);
 app.get("/api/events/code/:code", authorization.isLoged, (req, res) =>
   events.getEventByCode(req, res),
 );
@@ -568,6 +582,15 @@ app.patch("/api/events/:id", authorization.onlyAdmin, (req, res) =>
 );
 app.delete("/api/events/:id", authorization.onlyAdmin, (req, res) =>
   events.deleteEvent(req, res),
+);
+app.post("/api/events/:id/join", authorization.isLoged, (req, res) =>
+  events.joinEvent(req, res),
+);
+app.delete("/api/events/:id/join", authorization.isLoged, (req, res) =>
+  events.leaveEvent(req, res),
+);
+app.get("/api/events/:id/participants", authorization.isLoged, (req, res) =>
+  events.getEventParticipants(req, res),
 );
 
 // --- Tags ---
@@ -596,6 +619,26 @@ app.patch("/api/companies/:id", authorization.onlyAdmin, (req, res) =>
 );
 app.delete("/api/companies/:id", authorization.onlyAdmin, (req, res) =>
   companies.deleteCompany(req, res),
+);
+
+// --- Promoter Suggestions ---
+app.get("/api/suggestions", authorization.onlyAdmin, (req, res) =>
+  suggestions.listSuggestions(req, res),
+);
+app.get("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
+  suggestions.getSuggestionById(req, res),
+);
+app.post("/api/suggestions", authorization.isLoged, (req, res) =>
+  suggestions.createSuggestion(req, res),
+);
+app.patch("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
+  suggestions.updateSuggestion(req, res),
+);
+app.delete("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
+  suggestions.deleteSuggestion(req, res),
+);
+app.post("/api/suggestions/:id/accept", authorization.onlyAdmin, (req, res) =>
+  suggestions.acceptSuggestion(req, res),
 );
 
 app.use((req, res) => {

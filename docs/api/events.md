@@ -7,20 +7,23 @@ Endpoints para gestión de eventos de plataforma, etiquetas (tags) y sus relacio
 ## Modelos de datos
 
 ### PlatformEvent
-| Campo         | Tipo          | Descripción                                        |
-| ------------- | ------------- | -------------------------------------------------- |
-| `id`          | UUID          | Identificador único                                |
-| `name`        | String        | Nombre del evento                                  |
-| `company_id`  | UUID (FK)     | Empresa que genera el evento                       |
-| `latitude`    | Decimal(10,7) | Latitud de la ubicación                            |
-| `longitude`   | Decimal(10,7) | Longitud de la ubicación                           |
-| `image`       | MediumText    | Imagen del evento (base64 o URL)                   |
-| `unique_code` | String(20)    | Código único para unirse al evento (auto-generado) |
-| `description` | Text          | Descripción general del evento                     |
-| `url`         | String(500)   | URL del evento                                     |
-| `ticket_url`  | String(500)   | URL para comprar entradas                          |
-| `created_at`  | DateTime      | Fecha de creación                                  |
-| `updated_at`  | DateTime      | Fecha de actualización                             |
+| Campo         | Tipo          | Descripción                                          |
+| ------------- | ------------- | ---------------------------------------------------- |
+| `id`          | UUID          | Identificador único                                  |
+| `name`        | String        | Nombre del evento                                    |
+| `company_id`  | UUID (FK)     | Empresa que genera el evento                         |
+| `latitude`    | Decimal(10,7) | Latitud de la ubicación                              |
+| `longitude`   | Decimal(10,7) | Longitud de la ubicación                             |
+| `image`       | MediumText    | Imagen del evento (base64 o URL)                     |
+| `unique_code` | String(20)    | Código único para unirse al evento (auto-generado)   |
+| `description` | Text          | Descripción general del evento                       |
+| `url`         | String(500)   | URL del evento                                       |
+| `ticket_url`  | String(500)   | URL para comprar entradas                            |
+| `start_date`  | DateTime      | Fecha de inicio del evento                           |
+| `end_date`    | DateTime      | Fecha de finalización del evento                     |
+| `chat_id`     | Int?          | ID del chat grupal asociado (microservicio mensajes) |
+| `created_at`  | DateTime      | Fecha de creación                                    |
+| `updated_at`  | DateTime      | Fecha de actualización                               |
 
 ### Tag
 | Campo         | Tipo        | Descripción                 |
@@ -29,6 +32,15 @@ Endpoints para gestión de eventos de plataforma, etiquetas (tags) y sus relacio
 | `name`        | String(50)  | Nombre único de la etiqueta |
 | `description` | String(255) | Descripción de la etiqueta  |
 | `created_at`  | DateTime    | Fecha de creación           |
+
+### EventParticipant
+| Campo       | Tipo      | Descripción                         |
+| ----------- | --------- | ----------------------------------- |
+| `user_id`   | UUID (FK) | ID del usuario que se une al evento |
+| `event_id`  | UUID (FK) | ID del evento                       |
+| `joined_at` | DateTime  | Fecha en la que el usuario se unió  |
+
+> **Clave primaria compuesta:** `(user_id, event_id)` — un usuario no puede unirse dos veces al mismo evento.
 
 ### Company
 | Campo         | Tipo        | Descripción            |
@@ -228,9 +240,11 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 }
 ```
 
-**Campos requeridos:** `name`, `company_id`.
+**Campos requeridos:** `name`, `company_id`, `start_date`, `end_date`.
 **Campos opcionales:** `latitude`, `longitude`, `image`, `description`, `url`, `ticket_url`, `tags` (array de IDs de etiquetas).
 **Auto-generado:** `unique_code` (12 caracteres alfanuméricos).
+
+> **Chat automático:** Al crear un evento, se crea automáticamente un chat grupal en el microservicio de mensajes (`chat_type: "EVENT"`, `trip_id: eventId`). El admin del evento es el admin del chat y el primer participante. El ID del chat se guarda en `chat_id`.
 
 **Salida (201):**
 ```json
@@ -241,6 +255,7 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
     "id": "uuid",
     "name": "Hackathon YouConnext 2025",
     "unique_code": "A1B2C3D4E5F6",
+    "chat_id": 3,
     "company": { "id": "uuid", "name": "YouConnext" },
     "tags": [
       { "tag": { "id": 1, "name": "programacion", "description": "..." } }
@@ -276,6 +291,8 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
   "description": "Nueva descripción",
   "url": "https://nueva-url.com",
   "ticket_url": "https://nueva-url.com/entradas",
+  "start_date": "2025-09-01T09:00:00Z",
+  "end_date": "2025-09-01T18:00:00Z",
   "tags": [1, 2, 3]
 }
 ```
@@ -318,13 +335,135 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 - `404` — Evento no encontrado.
 - `403` — No es admin.
 
-> **Nota:** Al eliminar un evento, se eliminan en cascada todas sus relaciones con etiquetas (`event_tags`).
+> **Nota:** Al eliminar un evento, se eliminan en cascada todas sus relaciones con etiquetas (`event_tags`) y participantes (`event_participants`). También se elimina el chat grupal asociado en el microservicio de mensajes.
+
+---
+
+## Participación en eventos
+
+### 8. Unirse a un evento
+
+**URL:** `POST /api/events/:id/join`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Parámetros de URL:**
+- `id` — UUID del evento.
+
+**Descripción:** El usuario autenticado se une al evento. No se puede unir dos veces al mismo evento (clave primaria compuesta `user_id` + `event_id`). Si el evento tiene un chat asociado (`chat_id`), el usuario se añade automáticamente como participante del chat grupal en el microservicio de mensajes.
+
+**Salida (201):**
+```json
+{
+  "status": "Success",
+  "message": "Joined event successfully"
+}
+```
+
+**Errores:**
+- `404` — Evento no encontrado.
+- `409` — El usuario ya se había unido a este evento.
+
+---
+
+### 9. Salirse de un evento
+
+**URL:** `DELETE /api/events/:id/join`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Parámetros de URL:**
+- `id` — UUID del evento.
+
+**Descripción:** El usuario autenticado se sale del evento al que estaba apuntado. Si el evento tiene un chat asociado (`chat_id`), el usuario se elimina del chat grupal en el microservicio de mensajes.
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "message": "Left event successfully"
+}
+```
+
+**Errores:**
+- `404` — El usuario no estaba apuntado a este evento.
+
+---
+
+### 10. Listar participantes de un evento
+
+**URL:** `GET /api/events/:id/participants`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Parámetros de URL:**
+- `id` — UUID del evento.
+
+**Descripción:** Devuelve la lista de usuarios apuntados a un evento, ordenados por fecha de unión (más recientes primero). Incluye información pública de cada usuario (`id`, `name`, `img_perfil`) y la fecha en la que se unió (`joined_at`).
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "participants": [
+    {
+      "id": "uuid",
+      "name": "Nombre del usuario",
+      "img_perfil": "base64... o null",
+      "joined_at": "2025-07-15T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+**Errores:**
+- `404` — Evento no encontrado.
+
+---
+
+### 11. Listar eventos a los que se ha unido el usuario
+
+**URL:** `GET /api/events/me/joined`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Descripción:** Devuelve los eventos a los que el usuario autenticado se ha unido, ordenados por fecha de unión (más recientes primero). Incluye la información completa del evento junto con `joined_at`.
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "events": [
+    {
+      "id": "uuid",
+      "name": "Hackathon YouConnext 2025",
+      "company_id": "uuid",
+      "latitude": 40.416775,
+      "longitude": -3.703790,
+      "image": "base64...",
+      "unique_code": "A1B2C3D4E5F6",
+      "description": "Descripción del evento",
+      "url": "https://evento.com",
+      "ticket_url": "https://evento.com/entradas",
+      "start_date": "2025-09-01T09:00:00Z",
+      "end_date": "2025-09-01T18:00:00Z",
+      "created_at": "2025-07-03T10:00:00Z",
+      "updated_at": "2025-07-03T10:00:00Z",
+      "joined_at": "2025-07-15T10:30:00.000Z",
+      "company": { "id": "uuid", "name": "YouConnext", "logo": null },
+      "tags": [
+        { "tag": { "id": 1, "name": "programacion", "description": "..." } }
+      ]
+    }
+  ]
+}
+```
 
 ---
 
 ## Etiquetas (Tags)
 
-### 8. Listar etiquetas
+### 12. Listar etiquetas
 
 **URL:** `GET /api/tags`
 
@@ -343,7 +482,7 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 
 ---
 
-### 9. Crear etiqueta
+### 13. Crear etiqueta
 
 **URL:** `POST /api/tags`
 
@@ -373,7 +512,7 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 
 ---
 
-### 10. Eliminar etiqueta
+### 14. Eliminar etiqueta
 
 **URL:** `DELETE /api/tags/:id`
 
@@ -428,7 +567,8 @@ El seed crea automáticamente las siguientes etiquetas:
 - **Código único:** Se genera automáticamente al crear un evento usando `crypto.randomBytes` (12 caracteres hexadecimales en mayúsculas).
 - **Paginación:** Los endpoints de listado soportan paginación con `page` y `limit`.
 - **Filtrado:** Se puede filtrar por nombre (`search`) y por etiqueta (`tag`) en `GET /api/events`.
-- **Relaciones:** Al eliminar un evento o etiqueta, las relaciones en `event_tags` se eliminan en cascada.
+- **Relaciones:** Al eliminar un evento o etiqueta, las relaciones en `event_tags` y `event_participants` se eliminan en cascada.
+- **Participación:** Cualquier usuario autenticado puede unirse o salirse de un evento mediante `POST /api/events/:id/join` y `DELETE /api/events/:id/join`. Un usuario no puede unirse dos veces al mismo evento (clave primaria compuesta).
 - **Orden de rutas:** `/api/events/nearby` y `/api/events/code/:code` están registradas antes de `/api/events/:id` para evitar conflictos de routing en Express.
 - **Imagen en base64:** El campo `image` de `PlatformEvent` es de tipo `MediumText` y almacena la imagen codificada en base64 (igual que `img_perfil` en usuarios y `logo` en empresas).
 - **Evento no encontrado:** `GET /api/events/:id` devuelve `200` con `event: null` en lugar de un error `404` cuando el evento no existe.

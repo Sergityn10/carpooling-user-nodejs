@@ -297,3 +297,151 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
 - **Sincronización con Stripe:** Al actualizar el perfil, se sincronizan automáticamente los datos con la cuenta Stripe Connect del usuario (`individual.first_name`, `individual.last_name`, `individual.email`, `individual.phone`, `individual.address`, `individual.dob`, `business_profile`).
 - **Preferencias:** Se almacenan en la tabla `user_preferences` con claves definidas en `preference_definitions`.
 - **Valoración media:** Calculada desde la tabla `comments` donde `user_id_trayect` = ID del usuario.
+
+---
+
+## 10. Obtener información pública básica de un usuario
+
+**URL:** `GET /api/users/:id/public`
+
+**Autenticación:** No requerida.
+
+**Descripción:** Devuelve información pública mínima de un usuario: `id`, `name` (descifrado) e `img_perfil`. Pensado para mostrar avatares y nombres en chats, listas de participantes, etc.
+
+**Parámetros de URL:**
+- `id` — UUID del usuario.
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "user": {
+    "id": "uuid",
+    "name": "Juan",
+    "img_perfil": "base64... o null"
+  }
+}
+```
+
+**Errores:**
+- `404` — Usuario no encontrado.
+
+---
+
+## 11. Obtener información pública de múltiples usuarios (batch)
+
+**URL:** `POST /api/users/public/batch`
+
+**Autenticación:** No requerida.
+
+**Descripción:** Devuelve información pública básica (`id`, `name` descifrado, `img_perfil`) para un conjunto de usuarios en una sola petición. Útil para chats y listas.
+
+**Entrada (body JSON):**
+```json
+{
+  "ids": ["uuid-1", "uuid-2", "uuid-3"]
+}
+```
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "users": [
+    { "id": "uuid-1", "name": "Juan", "img_perfil": "base64..." },
+    { "id": "uuid-2", "name": "María", "img_perfil": null }
+  ]
+}
+```
+
+**Errores:**
+- `400` — `ids` debe ser un array no vacío.
+
+---
+
+## 12. Obtener perfil público completo de un usuario
+
+**URL:** `GET /api/users/:id/profile`
+
+**Autenticación:** No requerida.
+
+**Descripción:** Devuelve el perfil público completo de un usuario, incluyendo datos personales públicos, coches (sin matrícula), estadísticas (valoración media, total de comentarios, eventos a los que asiste, viajes realizados y energía generada) y los 5 comentarios más recientes recibidos. Las estadísticas de viajes y energía se obtienen del microservicio de trayectos.
+
+**Parámetros de URL:**
+- `id` — UUID del usuario.
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "user": {
+    "id": "uuid",
+    "name": "Juan",
+    "img_perfil": "base64... o null",
+    "about_me": "Texto descriptivo del usuario",
+    "genero": "M",
+    "fecha_nacimiento": "1990-01-15",
+    "ciudad": "Madrid",
+    "provincia": "Madrid",
+    "pais": "España",
+    "created_at": "2024-01-01T00:00:00.000Z",
+    "cars": [
+      {
+        "id_coche": "uuid",
+        "marca": "Toyota",
+        "modelo": "Corolla",
+        "color": "Rojo",
+        "tipo_combustible": "GASOLINA",
+        "num_plazas": 5,
+        "year": 2022
+      }
+    ],
+    "stats": {
+      "avg_rating": 4.5,
+      "total_comments": 12,
+      "events_joined": 3,
+      "completed_trips": 15,
+      "kwh_generated": 59.64,
+      "eur_generated": 3.41
+    },
+    "recent_comments": [
+      {
+        "id_comment": "uuid",
+        "opinion": "Muy buen conductor",
+        "rating": 5,
+        "id_trayecto": "uuid-trayecto",
+        "user_id_commentator": "uuid-comentarista",
+        "created_at": "2025-07-10T12:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+**Campos devueltos:**
+
+| Campo                   | Tipo             | Descripción                            |
+| ----------------------- | ---------------- | -------------------------------------- |
+| `id`                    | UUID             | Identificador del usuario              |
+| `name`                  | String           | Nombre (descifrado)                    |
+| `img_perfil`            | MediumText\|null | Foto de perfil (base64)                |
+| `about_me`              | Text\|null       | Biografía/descripción                  |
+| `genero`                | Enum\|null       | Género (`M`, `F`, `O`)                 |
+| `fecha_nacimiento`      | String\|null     | Fecha de nacimiento (descifrada)       |
+| `ciudad`                | String\|null     | Ciudad                                 |
+| `provincia`             | String\|null     | Provincia (descifrada)                 |
+| `pais`                  | String\|null     | País                                   |
+| `created_at`            | DateTime         | Fecha de registro                      |
+| `cars`                  | Array            | Coches del usuario (sin matrícula)     |
+| `stats.avg_rating`      | Number           | Media de valoraciones (0-5, 1 decimal) |
+| `stats.total_comments`  | Number           | Total de comentarios recibidos         |
+| `stats.events_joined`   | Number           | Total de eventos a los que asiste      |
+| `stats.completed_trips` | Number           | Viajes finalizados como conductor      |
+| `stats.kwh_generated`   | Number           | kWh totales generados (2 decimales)    |
+| `stats.eur_generated`   | Number           | EUR totales generados (2 decimales)    |
+| `recent_comments`       | Array            | Últimos 5 comentarios recibidos        |
+
+**Campos sensibles excluidos:** `email`, `password`, `phone`, `dni`, `direccion`, `codigo_postal`, `stripe_account`, `stripe_customer_account`, `google_id`, `auth_method`, `role_id`, `onboarding_ended`.
+
+**Errores:**
+- `404` — Usuario no encontrado.

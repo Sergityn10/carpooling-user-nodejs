@@ -7,6 +7,7 @@ import { methods as utils } from "../utils/hashing.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
+import { trayectosService } from "../services/trayectosService.js";
 
 async function countUserViajes(conductor) {
   // trayectos table is managed by another microservice.
@@ -385,6 +386,161 @@ async function getMyUserInfo(req, res) {
   });
 }
 
+async function getPublicUserInfo(req, res) {
+  try {
+    const { id } = req.params;
+    const rawUser = await prisma.user.findUnique({
+      where: { id: String(id) },
+      select: { id: true, name: true, img_perfil: true },
+    });
+
+    if (!rawUser) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "User not found" });
+    }
+
+    const user = cryptoUtils.decryptFields(rawUser, ["name"]);
+
+    return res.status(200).send({ status: "Success", user });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
+async function getPublicUsersBatch(req, res) {
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "ids must be a non-empty array" });
+    }
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: ids.map(String) } },
+      select: { id: true, name: true, img_perfil: true },
+    });
+
+    const decryptedUsers = users.map((u) =>
+      cryptoUtils.decryptFields(u, ["name"]),
+    );
+
+    return res.status(200).send({ status: "Success", users: decryptedUsers });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
+async function getPublicUserProfile(req, res) {
+  try {
+    const { id } = req.params;
+
+    const rawUser = await prisma.user.findUnique({
+      where: { id: String(id) },
+      select: {
+        id: true,
+        name: true,
+        img_perfil: true,
+        about_me: true,
+        genero: true,
+        fecha_nacimiento: true,
+        ciudad: true,
+        provincia: true,
+        pais: true,
+        created_at: true,
+        cars: {
+          select: {
+            id_coche: true,
+            marca: true,
+            modelo: true,
+            color: true,
+            tipo_combustible: true,
+            num_plazas: true,
+            year: true,
+          },
+        },
+        commentsReceived: {
+          select: {
+            id_comment: true,
+            opinion: true,
+            rating: true,
+            id_trayecto: true,
+            user_id_commentator: true,
+          },
+        },
+        _count: {
+          select: {
+            eventParticipations: true,
+          },
+        },
+      },
+    });
+
+    if (!rawUser) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "User not found" });
+    }
+
+    const user = cryptoUtils.decryptFields(rawUser, [
+      "name",
+      "fecha_nacimiento",
+      "provincia",
+    ]);
+
+    const comments = user.commentsReceived ?? [];
+    const totalComments = comments.length;
+    const avgRating =
+      totalComments > 0
+        ? Math.round(
+            (comments.reduce((sum, c) => sum + (c.rating ?? 0), 0) /
+              totalComments) *
+              10,
+          ) / 10
+        : 0;
+
+    const { commentsReceived, _count, ...publicFields } = user;
+
+    const bearerToken = req.headers.authorization?.split(" ")[1];
+    const cookieToken = req.cookies?.access_token;
+    const userToken = bearerToken || cookieToken;
+
+    const driverStats = await trayectosService.getDriverStats(
+      String(id),
+      userToken,
+    );
+
+    return res.status(200).send({
+      status: "Success",
+      user: {
+        ...publicFields,
+        cars: user.cars,
+        stats: {
+          avg_rating: avgRating,
+          total_comments: totalComments,
+          events_joined: _count?.eventParticipations ?? 0,
+          completed_trips: driverStats.completed_trips,
+          kwh_generated: driverStats.kwh_generated,
+          eur_generated: driverStats.eur_generated,
+        },
+        recent_comments: comments
+          .sort((a, b) => b.id_comment.localeCompare(a.id_comment))
+          .slice(0, 5),
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
 export const methods = {
   updateUserPatch,
   removeUser,
@@ -392,4 +548,7 @@ export const methods = {
   updateMyUserPatch,
   getMyUserInfo,
   getUniqueUsersByLocation,
+  getPublicUserInfo,
+  getPublicUsersBatch,
+  getPublicUserProfile,
 };
