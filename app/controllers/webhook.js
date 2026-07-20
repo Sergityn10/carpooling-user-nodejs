@@ -1,5 +1,6 @@
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import Stripe from "stripe";
+import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 export const status = {
   1: "pending",
@@ -61,30 +62,6 @@ function parseStripeEventFromRequest(req) {
   return { event, verified: true };
 }
 
-function isNoSuchTableError(error, tableName) {
-  const expected = `no such table: ${String(tableName ?? "").toLowerCase()}`;
-  const msg = String(
-    error?.message ??
-      error?.cause?.message ??
-      error?.cause?.proto?.message ??
-      "",
-  ).toLowerCase();
-
-  return msg.includes(expected);
-}
-
-function isNoSuchColumnError(error, columnName) {
-  const expected = `no such column: ${String(columnName ?? "").toLowerCase()}`;
-  const msg = String(
-    error?.message ??
-      error?.cause?.message ??
-      error?.cause?.proto?.message ??
-      "",
-  ).toLowerCase();
-
-  return msg.includes(expected);
-}
-
 async function createEvent(req, res) {
   const { source } = req.params;
 
@@ -111,34 +88,41 @@ async function createEvent(req, res) {
         : (stripeObj?.payment_intent ?? null)) ?? null;
 
   try {
-    await database.execute({
-      sql: `INSERT INTO events (event_id, event_type, payment_intent_id, data, source, status)
-                  VALUES (?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(event_id) DO UPDATE SET
-                    event_type = excluded.event_type,
-                    payment_intent_id = COALESCE(excluded.payment_intent_id, events.payment_intent_id),
-                    data = excluded.data,
-                    source = excluded.source,
-                    status = excluded.status,
-                    updated_at = CURRENT_TIMESTAMP`,
-      args: [eventId, eventType, paymentIntentId, data, source, status[1]],
+    await prisma.event.upsert({
+      where: { event_id: eventId },
+      create: {
+        event_id: eventId,
+        event_type: eventType,
+        payment_intent_id: paymentIntentId,
+        data: data,
+        source: source,
+        status: status[1],
+      },
+      update: {
+        event_type: eventType,
+        payment_intent_id: paymentIntentId ?? undefined,
+        data: data,
+        source: source,
+        status: status[1],
+      },
     });
 
     if (source === "stripe") {
-      // Ensure downstream handlers always see the parsed event
       req.body = parsedBody;
       await handleStripeEvent(req, res);
     }
   } catch (error) {
     console.error("Webhook processing error:", error);
     try {
-      await database.execute({
-        sql: "UPDATE events SET status = ?, processing_error = ?, updated_at = CURRENT_TIMESTAMP WHERE event_id = ?",
-        args: [status[3], error?.message ?? String(error), eventId],
+      await prisma.event.update({
+        where: { event_id: eventId },
+        data: {
+          status: status[3],
+          processing_error: error?.message ?? String(error),
+        },
       });
     } catch (_e) {}
 
-    // For Stripe, return 500 so it can retry (idempotency via events table)
     if (source === "stripe") {
       return res.status(500).send({
         status: "Error",
@@ -152,9 +136,9 @@ async function createEvent(req, res) {
     });
   }
 
-  await database.execute({
-    sql: "UPDATE events SET status = ? WHERE event_id = ?",
-    args: [status[2], eventId],
+  await prisma.event.update({
+    where: { event_id: eventId },
+    data: { status: status[2] },
   });
 
   return res
@@ -247,173 +231,126 @@ async function handlePayoutEvent(stripeEvent) {
     return;
   }
 
-  let tx;
   try {
-    tx = await database.transaction("write");
-
-    if (stripeEventId) {
-      const already = await tx.execute({
-        sql: "SELECT id FROM wallet_payouts WHERE stripe_event_id = ?",
-        args: [stripeEventId],
-      });
-      if (already.rows.length > 0) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-        return;
-      }
-    }
-
-    let payoutRes = await tx.execute({
-      sql: `SELECT id, wallet_account_id, wallet_transaction_id, user_id, currency, amount, status, stripe_payout_status
-                  FROM wallet_payouts
-                  WHERE stripe_payout_id = ?
-                  LIMIT 1`,
-      args: [stripePayoutId],
-    });
-
-    if (payoutRes.rows.length === 0) {
-      const walletPayoutIdRaw = payout?.metadata?.wallet_payout_id;
-      const walletPayoutId =
-        walletPayoutIdRaw != null ? Number(walletPayoutIdRaw) : null;
-
-      if (Number.isFinite(walletPayoutId)) {
-        payoutRes = await tx.execute({
-          sql: `SELECT id, wallet_account_id, wallet_transaction_id, user_id, currency, amount, status, stripe_payout_status
-                          FROM wallet_payouts
-                          WHERE id = ?
-                          LIMIT 1`,
-          args: [walletPayoutId],
+    await prisma.$transaction(async (tx) => {
+      if (stripeEventId) {
+        const already = await tx.walletPayout.findUnique({
+          where: { stripe_event_id: stripeEventId },
+          select: { id: true },
         });
-
-        if (payoutRes.rows.length > 0) {
-          await tx.execute({
-            sql: `UPDATE wallet_payouts
-                              SET stripe_payout_id = COALESCE(?, stripe_payout_id), updated_at = CURRENT_TIMESTAMP
-                              WHERE id = ?`,
-            args: [stripePayoutId, walletPayoutId],
-          });
+        if (already) {
+          return;
         }
       }
-    }
 
-    if (payoutRes.rows.length === 0) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return;
-    }
-
-    const walletPayout = payoutRes.rows[0];
-    const prevStatus = String(walletPayout.status ?? "");
-    const isFinal =
-      prevStatus === "succeeded" ||
-      prevStatus === "failed" ||
-      prevStatus === "canceled";
-    if (isFinal) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return;
-    }
-
-    await tx.execute({
-      sql: `UPDATE wallet_payouts
-                  SET stripe_payout_status = ?, status = ?, stripe_event_id = COALESCE(?, stripe_event_id), failure_reason = COALESCE(?, failure_reason), updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?`,
-      args: [
-        stripeStatus,
-        localStatus,
-        stripeEventId,
-        failureReason,
-        walletPayout.id,
-      ],
-    });
-
-    if (localStatus === "succeeded") {
-      await tx.execute({
-        sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
-        args: ["succeeded", walletPayout.wallet_transaction_id],
+      let walletPayout = await tx.walletPayout.findFirst({
+        where: { stripe_payout_id: stripePayoutId },
       });
 
-      await tx.commit();
-      return;
-    }
+      if (!walletPayout) {
+        const walletPayoutIdRaw = payout?.metadata?.wallet_payout_id;
+        if (walletPayoutIdRaw) {
+          walletPayout = await tx.walletPayout.findUnique({
+            where: { id: String(walletPayoutIdRaw) },
+          });
 
-    if (localStatus === "failed" || localStatus === "canceled") {
-      const txStatus = localStatus === "canceled" ? "canceled" : "failed";
-      await tx.execute({
-        sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
-        args: [txStatus, walletPayout.wallet_transaction_id],
-      });
-
-      const amount = Number(walletPayout.amount ?? 0);
-      const accountRes = await tx.execute({
-        sql: "SELECT id, balance FROM wallet_accounts WHERE id = ?",
-        args: [walletPayout.wallet_account_id],
-      });
-
-      if (accountRes.rows.length > 0 && Number.isFinite(amount) && amount > 0) {
-        const acc = accountRes.rows[0];
-        const balanceBefore = Number(acc.balance ?? 0);
-        const upd = await tx.execute({
-          sql: `UPDATE wallet_accounts
-                          SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-                          WHERE id = ?
-                          RETURNING balance`,
-          args: [amount, acc.id],
-        });
-        const balanceAfter = Number(
-          upd.rows?.[0]?.balance ?? balanceBefore + amount,
-        );
-
-        await tx.execute({
-          sql: `INSERT INTO wallet_transactions (
-                            wallet_account_id,
-                            user_id,
-                            currency,
-                            type,
-                            amount,
-                            status,
-                            balance_before,
-                            balance_after,
-                            description,
-                            stripe_event_id,
-                            stripe_payment_status
-                          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                          ON CONFLICT(stripe_event_id) DO NOTHING`,
-          args: [
-            walletPayout.wallet_account_id,
-            walletPayout.user_id,
-            walletPayout.currency,
-            "credit",
-            amount,
-            "succeeded",
-            balanceBefore,
-            balanceAfter,
-            "Payout reversed",
-            stripeEventId,
-            stripeStatus,
-          ],
-        });
+          if (walletPayout) {
+            await tx.walletPayout.update({
+              where: { id: walletPayout.id },
+              data: { stripe_payout_id: stripePayoutId },
+            });
+          }
+        }
       }
 
-      await tx.commit();
-      return;
-    }
+      if (!walletPayout) {
+        return;
+      }
 
-    await tx.execute({
-      sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
-      args: ["pending", walletPayout.wallet_transaction_id],
+      const prevStatus = String(walletPayout.status ?? "");
+      const isFinal =
+        prevStatus === "succeeded" ||
+        prevStatus === "failed" ||
+        prevStatus === "canceled";
+      if (isFinal) {
+        return;
+      }
+
+      await tx.walletPayout.update({
+        where: { id: walletPayout.id },
+        data: {
+          stripe_payout_status: stripeStatus,
+          status: localStatus,
+          stripe_event_id: stripeEventId ?? undefined,
+          failure_reason: failureReason ?? undefined,
+        },
+      });
+
+      if (localStatus === "succeeded") {
+        await tx.walletTransaction.update({
+          where: { id: walletPayout.wallet_transaction_id },
+          data: { status: "succeeded" },
+        });
+        return;
+      }
+
+      if (localStatus === "failed" || localStatus === "canceled") {
+        const txStatus = localStatus === "canceled" ? "canceled" : "failed";
+        await tx.walletTransaction.update({
+          where: { id: walletPayout.wallet_transaction_id },
+          data: { status: txStatus },
+        });
+
+        const amount = Number(walletPayout.amount ?? 0);
+        const account = await tx.walletAccount.findUnique({
+          where: { id: walletPayout.wallet_account_id },
+          select: { id: true, balance: true },
+        });
+
+        if (account && Number.isFinite(amount) && amount > 0) {
+          const balanceBefore = Number(account.balance ?? 0);
+          const updated = await tx.walletAccount.update({
+            where: { id: account.id },
+            data: { balance: { increment: amount } },
+            select: { balance: true },
+          });
+          const balanceAfter = Number(
+            updated.balance ?? balanceBefore + amount,
+          );
+
+          if (stripeEventId) {
+            const existing = await tx.walletTransaction.findUnique({
+              where: { stripe_event_id: stripeEventId },
+              select: { id: true },
+            });
+            if (!existing) {
+              await tx.walletTransaction.create({
+                data: {
+                  wallet_account_id: walletPayout.wallet_account_id,
+                  user_id: walletPayout.user_id,
+                  currency: walletPayout.currency,
+                  type: "credit",
+                  amount: amount,
+                  status: "succeeded",
+                  balance_before: balanceBefore,
+                  balance_after: balanceAfter,
+                  description: "Payout reversed",
+                  stripe_event_id: stripeEventId,
+                  stripe_payment_status: stripeStatus,
+                },
+              });
+            }
+          }
+        }
+        return;
+      }
+
+      await tx.walletTransaction.update({
+        where: { id: walletPayout.wallet_transaction_id },
+        data: { status: "pending" },
+      });
     });
-
-    await tx.commit();
   } catch (error) {
-    if (tx) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-    }
     throw error;
   }
 }
@@ -435,82 +372,78 @@ async function handlePaymentIntentCreated(jsonData) {
   const description = paymentIntent?.description ?? null;
   const id_reserva = paymentIntent?.metadata?.id_reserva ?? null;
 
-  await database.execute({
-    sql: `INSERT INTO payment_intents (
-            stripe_payment_id,
-            amount,
-            currency,
-            description,
-            destination_account,
-            sender_account,
-            state,
-            client_secret,
-            checkout_session_id,
-            id_reserva
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(stripe_payment_id) DO UPDATE SET
-            amount = excluded.amount,
-            currency = excluded.currency,
-            description = COALESCE(excluded.description, payment_intents.description),
-            destination_account = COALESCE(excluded.destination_account, payment_intents.destination_account),
-            sender_account = COALESCE(excluded.sender_account, payment_intents.sender_account),
-            state = excluded.state,
-            client_secret = COALESCE(excluded.client_secret, payment_intents.client_secret),
-            id_reserva = COALESCE(excluded.id_reserva, payment_intents.id_reserva),
-            updated_at = CURRENT_TIMESTAMP`,
-    args: [
-      stripePaymentIntentId,
+  await prisma.paymentIntent.upsert({
+    where: { stripe_payment_id: stripePaymentIntentId },
+    create: {
+      stripe_payment_id: stripePaymentIntentId,
       amount,
       currency,
       description,
-      destinationAccount,
-      senderAccount,
+      destination_account: destinationAccount,
+      sender_account: senderAccount,
       state,
-      clientSecret,
-      null,
+      client_secret: clientSecret,
       id_reserva,
-    ],
+    },
+    update: {
+      amount,
+      currency,
+      description: description ?? undefined,
+      destination_account: destinationAccount ?? undefined,
+      sender_account: senderAccount ?? undefined,
+      state,
+      client_secret: clientSecret ?? undefined,
+      id_reserva: id_reserva ?? undefined,
+    },
   });
 
   if (id_reserva) {
-    await database.execute({
-      sql: `UPDATE reservas
-                  SET stripe_payment_intent_id = CASE
-                        WHEN stripe_payment_intent_id IS NULL OR stripe_payment_intent_id = ? THEN ?
-                        ELSE stripe_payment_intent_id
-                      END
-                  WHERE id_reserva = ?`,
-      args: [stripePaymentIntentId, stripePaymentIntentId, id_reserva],
-    });
+    const mappedStatus = state === "succeeded" ? "completed" : "pending";
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      mappedStatus,
+      stripePaymentIntentId,
+    );
   }
 }
+
 async function handlePaymentIntentUpdated(jsonData) {
   const paymentIntent = jsonData.object;
 
-  await database.execute({
-    sql: "UPDATE reservas SET stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [paymentIntent.status, paymentIntent.id],
+  try {
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
+    });
+  } catch (_) {}
+
+  await prisma.walletRecharge.updateMany({
+    where: { stripe_payment_intent_id: paymentIntent.id },
+    data: { stripe_payment_status: paymentIntent.status },
   });
 
-  await database.execute({
-    sql: "UPDATE wallet_recharges SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [paymentIntent.status, paymentIntent.id],
-  });
-
-  await database.execute({
-    sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [paymentIntent.status, paymentIntent.id],
+  await prisma.walletTransaction.updateMany({
+    where: { stripe_payment_intent_id: paymentIntent.id },
+    data: { stripe_payment_status: paymentIntent.status },
   });
 }
 async function handlePaymentIntentSucceeded(jsonData) {
   const paymentIntent = jsonData.object;
+
+  try {
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
+    });
+  } catch (_) {}
+
   let id_reserva = paymentIntent?.metadata?.id_reserva;
   if (!id_reserva) {
-    let paymentIntentRes = await database.execute({
-      sql: "SELECT * FROM payment_intents WHERE stripe_payment_id = ?",
-      args: [paymentIntent.id],
+    const paymentIntentRow = await prisma.paymentIntent.findUnique({
+      where: { stripe_payment_id: paymentIntent.id },
+      select: { id_reserva: true },
     });
-    id_reserva = paymentIntentRes.rows[0].id_reserva;
+    id_reserva = paymentIntentRow?.id_reserva;
   }
   const stripePaymentIntentId = paymentIntent?.id ?? null;
   const currency = String(paymentIntent?.currency ?? "eur").toLowerCase();
@@ -526,45 +459,38 @@ async function handlePaymentIntentSucceeded(jsonData) {
     return;
   }
 
-  const paymentIntentRowRes = await database.execute({
-    sql: `SELECT sender_account, destination_account, description
-              FROM payment_intents
-              WHERE stripe_payment_id = ?
-              LIMIT 1`,
-    args: [stripePaymentIntentId],
+  const paymentIntentRow = await prisma.paymentIntent.findUnique({
+    where: { stripe_payment_id: stripePaymentIntentId },
+    select: {
+      sender_account: true,
+      destination_account: true,
+      description: true,
+    },
   });
-  const senderAccount = paymentIntentRowRes.rows?.[0]?.sender_account ?? null;
-  const destinationAccount =
-    paymentIntentRowRes.rows?.[0]?.destination_account ?? null;
-  const paymentDescription = String(
-    paymentIntentRowRes.rows?.[0]?.description ?? "",
-  );
+  const senderAccount = paymentIntentRow?.sender_account ?? null;
+  const destinationAccount = paymentIntentRow?.destination_account ?? null;
+  const paymentDescription = String(paymentIntentRow?.description ?? "");
 
   if (!senderAccount || !destinationAccount) {
     return;
   }
 
-  const payerRes = await database.execute({
-    sql: "SELECT id FROM users WHERE stripe_account = ? LIMIT 1",
-    args: [senderAccount],
+  const payerUser = await prisma.user.findFirst({
+    where: { stripe_account: senderAccount },
+    select: { id: true },
   });
-  const receiverRes = await database.execute({
-    sql: "SELECT id FROM users WHERE stripe_account = ? LIMIT 1",
-    args: [destinationAccount],
+  const receiverUser = await prisma.user.findFirst({
+    where: { stripe_account: destinationAccount },
+    select: { id: true },
   });
 
-  const payerUserId = Number(payerRes.rows?.[0]?.id);
-  const receiverUserId = Number(receiverRes.rows?.[0]?.id);
+  const payerUserId = payerUser?.id ?? null;
+  const receiverUserId = receiverUser?.id ?? null;
 
-  const platformUserIdRaw =
-    process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? "";
-  const platformUserId = Number(platformUserIdRaw);
+  const platformUserId =
+    process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? null;
 
-  if (
-    !Number.isFinite(payerUserId) ||
-    !Number.isFinite(receiverUserId) ||
-    !Number.isFinite(platformUserId)
-  ) {
+  if (!payerUserId || !receiverUserId || !platformUserId) {
     throw new Error(
       "Missing payer/receiver/platform user id for wallet transactions",
     );
@@ -577,229 +503,206 @@ async function handlePaymentIntentSucceeded(jsonData) {
     throw new Error("Invalid commission calculation (net < 0)");
   }
 
-  let tx;
   try {
-    tx = await database.transaction("write");
-
-    await tx.execute({
-      sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
-      args: [status[8], id_reserva],
-    });
-
-    const ensureWalletAccount = async (userId) => {
-      await tx.execute({
-        sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
-                      VALUES (?, ?, 0)
-                      ON CONFLICT(user_id, currency) DO NOTHING`,
-        args: [userId, currency],
-      });
-
-      const res = await tx.execute({
-        sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ? LIMIT 1",
-        args: [userId, currency],
-      });
-
-      if (res.rows.length === 0) {
-        throw new Error("Wallet account not found");
-      }
-
-      const acc = res.rows[0];
-      if (String(acc.status ?? "active") === "blocked") {
-        throw new Error("Wallet blocked");
-      }
-
-      return {
-        id: Number(acc.id),
-        balance: Number(acc.balance ?? 0),
-      };
-    };
-
-    const applyWalletTx = async ({ userId, type, amount, description }) => {
-      const already = await tx.execute({
-        sql: `SELECT id
-                      FROM wallet_transactions
-                      WHERE stripe_payment_intent_id = ? AND id_reserva = ? AND type = ?
-                      LIMIT 1`,
-        args: [stripePaymentIntentId, id_reserva, type],
-      });
-      if (already.rows.length > 0) {
-        return;
-      }
-
-      const acc = await ensureWalletAccount(userId);
-      const balanceBefore = Number(acc.balance ?? 0);
-
-      const upd = await tx.execute({
-        sql: `UPDATE wallet_accounts
-                      SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-                      WHERE id = ?
-                      RETURNING balance`,
-        args: [amount, acc.id],
-      });
-
-      const balanceAfter = Number(
-        upd.rows?.[0]?.balance ?? balanceBefore + amount,
+    if (id_reserva) {
+      await trayectosService.updateReservaStatus(
+        id_reserva,
+        "completed",
+        stripePaymentIntentId,
       );
-
-      await tx.execute({
-        sql: `INSERT INTO wallet_transactions (
-                        wallet_account_id,
-                        user_id,
-                        currency,
-                        id_reserva,
-                        type,
-                        amount,
-                        balance_before,
-                        balance_after,
-                        description,
-                        stripe_payment_intent_id
-                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          acc.id,
-          userId,
-          currency,
-          id_reserva,
-          type,
-          amount,
-          balanceBefore,
-          balanceAfter,
-          description,
-          stripePaymentIntentId,
-        ],
-      });
-    };
-
-    const baseDesc = paymentDescription
-      ? `Reserva: ${paymentDescription}`
-      : "Reserva";
-
-    await applyWalletTx({
-      userId: payerUserId,
-      type: "reservation_payment",
-      amount: -grossAmountCents,
-      description: `${baseDesc} (pago)`,
-    });
-
-    await applyWalletTx({
-      userId: receiverUserId,
-      type: "reservation_revenue",
-      amount: netAmountCents,
-      description: `${baseDesc} (ingreso)`,
-    });
-
-    await applyWalletTx({
-      userId: platformUserId,
-      type: "commision",
-      amount: commissionAmountCents,
-      description: `${baseDesc} (comisión 15%)`,
-    });
-
-    await tx.commit();
-  } catch (error) {
-    if (tx) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
     }
+
+    await prisma.$transaction(async (tx) => {
+      const ensureWalletAccount = async (userId) => {
+        await tx.walletAccount.upsert({
+          where: { user_id_currency: { user_id: userId, currency } },
+          create: { user_id: userId, currency, balance: 0 },
+          update: {},
+        });
+
+        const acc = await tx.walletAccount.findUnique({
+          where: { user_id_currency: { user_id: userId, currency } },
+          select: { id: true, balance: true, status: true },
+        });
+
+        if (!acc) {
+          throw new Error("Wallet account not found");
+        }
+
+        if (String(acc.status ?? "active") === "blocked") {
+          throw new Error("Wallet blocked");
+        }
+
+        return {
+          id: acc.id,
+          balance: Number(acc.balance ?? 0),
+        };
+      };
+
+      const applyWalletTx = async ({ userId, type, amount, description }) => {
+        const already = await tx.walletTransaction.findFirst({
+          where: {
+            stripe_payment_intent_id: stripePaymentIntentId,
+            id_reserva,
+            type,
+          },
+          select: { id: true },
+        });
+        if (already) {
+          return;
+        }
+
+        const acc = await ensureWalletAccount(userId);
+        const balanceBefore = Number(acc.balance ?? 0);
+
+        const updated = await tx.walletAccount.update({
+          where: { id: acc.id },
+          data: { balance: { increment: amount } },
+          select: { balance: true },
+        });
+
+        const balanceAfter = Number(updated.balance ?? balanceBefore + amount);
+
+        await tx.walletTransaction.create({
+          data: {
+            wallet_account_id: acc.id,
+            user_id: userId,
+            currency,
+            id_reserva,
+            type,
+            amount,
+            balance_before: balanceBefore,
+            balance_after: balanceAfter,
+            description,
+            stripe_payment_intent_id: stripePaymentIntentId,
+          },
+        });
+      };
+
+      const baseDesc = paymentDescription
+        ? `Reserva: ${paymentDescription}`
+        : "Reserva";
+
+      await applyWalletTx({
+        userId: payerUserId,
+        type: "reservation_payment",
+        amount: -grossAmountCents,
+        description: `${baseDesc} (pago)`,
+      });
+
+      await applyWalletTx({
+        userId: receiverUserId,
+        type: "reservation_revenue",
+        amount: netAmountCents,
+        description: `${baseDesc} (ingreso)`,
+      });
+
+      await applyWalletTx({
+        userId: platformUserId,
+        type: "commision",
+        amount: commissionAmountCents,
+        description: `${baseDesc} (comisión 15%)`,
+      });
+    });
+  } catch (error) {
     throw error;
   }
 }
 async function handlePaymentIntentFailed(jsonData) {
   const paymentIntent = jsonData.object;
 
-  await database.execute({
-    sql: "UPDATE reservas SET status = ?, stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [status[3], paymentIntent.status, paymentIntent.id],
-  });
-
-  await database.execute({
-    sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [status[3], paymentIntent.status, paymentIntent.id],
-  });
-
   try {
-    await database.execute({
-      sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-      args: [status[3], paymentIntent.status, paymentIntent.id],
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntent.id },
+      data: { state: String(paymentIntent.status) },
     });
-  } catch (error) {
-    if (!isNoSuchColumnError(error, "status")) {
-      throw error;
-    }
-    await database.execute({
-      sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-      args: [paymentIntent.status, paymentIntent.id],
+  } catch (_) {}
+
+  let id_reserva = paymentIntent?.metadata?.id_reserva;
+  if (!id_reserva) {
+    const piRow = await prisma.paymentIntent.findUnique({
+      where: { stripe_payment_id: paymentIntent.id },
+      select: { id_reserva: true },
     });
+    id_reserva = piRow?.id_reserva;
   }
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      "canceled",
+      paymentIntent.id,
+    );
+  }
+
+  await prisma.walletRecharge.updateMany({
+    where: { stripe_payment_intent_id: paymentIntent.id },
+    data: { status: status[3], stripe_payment_status: paymentIntent.status },
+  });
+
+  await prisma.walletTransaction.updateMany({
+    where: { stripe_payment_intent_id: paymentIntent.id },
+    data: { status: status[3], stripe_payment_status: paymentIntent.status },
+  });
 }
 async function handlePaymentIntentCanceled(jsonData) {
   const paymentIntent = jsonData.object;
 
-  await database.execute({
-    sql: "UPDATE payment_intents SET state = ? WHERE stripe_payment_id = ?",
-    args: [paymentIntent.status, paymentIntent.id],
+  await prisma.paymentIntent.update({
+    where: { stripe_payment_id: paymentIntent.id },
+    data: { state: paymentIntent.status },
   });
 
-  await database.execute({
-    sql: "UPDATE reservas SET status = ?, stripe_payment_intent_status = ? WHERE stripe_payment_intent_id = ?",
-    args: [status[4], paymentIntent.status, paymentIntent.id],
-  });
-
-  // await database.execute({
-  //   sql: "UPDATE wallet_recharges SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-  //   args: [status[4], paymentIntent.status, paymentIntent.id],
-  // });
-
-  // try {
-  //   await database.execute({
-  //     sql: "UPDATE wallet_transactions SET status = ?, stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-  //     args: [status[4], paymentIntent.status, paymentIntent.id],
-  //   });
-  // } catch (error) {
-  //   if (!isNoSuchColumnError(error, "status")) {
-  //     throw error;
-  //   }
-  //   await database.execute({
-  //     sql: "UPDATE wallet_transactions SET stripe_payment_status = ? WHERE stripe_payment_intent_id = ?",
-  //     args: [paymentIntent.status, paymentIntent.id],
-  //   });
-  // }
+  let id_reserva = paymentIntent?.metadata?.id_reserva;
+  if (!id_reserva) {
+    const piRow = await prisma.paymentIntent.findUnique({
+      where: { stripe_payment_id: paymentIntent.id },
+      select: { id_reserva: true },
+    });
+    id_reserva = piRow?.id_reserva;
+  }
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(
+      id_reserva,
+      "canceled",
+      paymentIntent.id,
+    );
+  }
 }
 async function handleCustomerUpdated(jsonData) {
   const customer = jsonData.object;
-  const userIdRaw =
+  const userId =
     customer?.metadata?.userId ??
     customer?.metadata?.user_id ??
     customer?.metadata?.id_user ??
     null;
-  const userId = userIdRaw != null ? Number(userIdRaw) : null;
-  if (!Number.isFinite(userId)) {
+  if (!userId) {
     return;
   }
-  const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
-    args: [customer.id, userId],
-  });
-  if (result.rowsAffected === 0) {
+  try {
+    await prisma.user.update({
+      where: { id: String(userId) },
+      data: { stripe_customer_account: customer.id },
+    });
+  } catch (_e) {
     return;
   }
 }
 async function handleCustomerCreated(jsonData) {
   const customer = jsonData.object;
-  const userIdRaw =
+  const userId =
     customer?.metadata?.userId ??
     customer?.metadata?.user_id ??
     customer?.metadata?.id_user ??
     null;
-  const userId = userIdRaw != null ? Number(userIdRaw) : null;
-  if (!Number.isFinite(userId)) {
+  if (!userId) {
     return;
   }
-  const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
-    args: [customer.id, userId],
-  });
-  if (result.rowsAffected === 0) {
+  try {
+    await prisma.user.update({
+      where: { id: String(userId) },
+      data: { stripe_customer_account: customer.id },
+    });
+  } catch (_e) {
     return;
   }
 }
@@ -822,360 +725,46 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
 
   const type =
     checkout_session?.metadata?.type ?? checkout_session?.metadata?.typo;
-  let paymentIntent = checkout_session.payment_intent;
+  const paymentIntentId =
+    typeof checkout_session?.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : (checkout_session?.payment_intent?.id ?? null);
+
+  if (paymentIntentId) {
+    try {
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: paymentIntentId },
+        data: {
+          state: "checkout_completed",
+          checkout_session_id: checkout_session?.id ?? undefined,
+        },
+      });
+    } catch (_) {}
+  }
+
   if (type === "recharge") {
-    const userIdRaw = checkout_session?.metadata?.userId;
-    const userId = userIdRaw != null ? Number(userIdRaw) : null;
-
-    // if(Number.isFinite(userId)){
-    //     const amount = Number(checkout_session.amount_total ?? 0);
-    //     const currency = (checkout_session.currency ?? "eur").toLowerCase();
-    //     const description = checkout_session?.metadata?.description ?? null;
-    //     const typePaymente = checkout_session?.metadata?.type ?? null
-
-    //     const rechargeStatus = checkout_session.payment_status === "paid" ? "succeeded" : "pending";
-
-    //     await database.execute({
-    //         sql: `INSERT INTO wallet_recharges (
-    //                 user_id,
-    //                 amount,
-    //                 currency,
-    //                 description,
-    //                 status,
-    //                 stripe_checkout_session_id,
-    //                 stripe_payment_intent_id,
-    //                 stripe_event_id,
-    //                 stripe_payment_status
-    //             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    //             ON CONFLICT(stripe_checkout_session_id) DO UPDATE SET
-    //                 user_id = excluded.user_id,
-    //                 amount = excluded.amount,
-    //                 currency = excluded.currency,
-    //                 description = excluded.description,
-    //                 status = excluded.status,
-    //                 stripe_payment_intent_id = excluded.stripe_payment_intent_id,
-    //                 stripe_event_id = COALESCE(excluded.stripe_event_id, wallet_recharges.stripe_event_id),
-    //                 stripe_payment_status = excluded.stripe_payment_status,
-    //                 updated_at = CURRENT_TIMESTAMP`,
-    //         args: [
-    //             userId,
-    //             amount,
-    //             currency,
-    //             description,
-    //             rechargeStatus,
-    //             checkout_session.id,
-    //             checkout_session.payment_intent ?? null,
-    //             stripeEvent.id ?? null,
-    //             checkout_session.payment_status ?? null
-    //         ]
-    //     });
-
-    //     // Monedero (wallet_accounts + wallet_transactions)
-    //     // Solo aumentamos el saldo cuando el pago está realmente completado
-    //     if(rechargeStatus === "succeeded"){
-    //         let tx;
-    //         try{
-    //             tx = await database.transaction("write");
-
-    //             await tx.execute({
-    //                 sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
-    //                       VALUES (?, ?, 0)
-    //                       ON CONFLICT(user_id, currency) DO NOTHING`,
-    //                 args: [userId, currency]
-    //             });
-
-    //             const walletAccountRes = await tx.execute({
-    //                 sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ?",
-    //                 args: [userId, currency]
-    //             });
-
-    //             if(walletAccountRes.rows.length === 0){
-    //                 try{ await tx.rollback(); } catch(_){ }
-    //                 return;
-    //             }
-
-    //             const walletAccount = walletAccountRes.rows[0];
-    //             if(walletAccount.status === "blocked"){
-    //                 try{ await tx.rollback(); } catch(_){ }
-    //                 return;
-    //             }
-
-    //             const alreadyTx = await tx.execute({
-    //                 sql: "SELECT id FROM wallet_transactions WHERE stripe_checkout_session_id = ?",
-    //                 args: [checkout_session.id]
-    //             });
-    //             if(alreadyTx.rows.length > 0){
-    //                 try{ await tx.rollback(); } catch(_){ }
-    //                 return;
-    //             }
-
-    //             const balanceBefore = Number(walletAccount.balance ?? 0);
-
-    //             const updateBalanceRes = await tx.execute({
-    //                 sql: `UPDATE wallet_accounts
-    //                       SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-    //                       WHERE id = ?
-    //                       RETURNING balance`,
-    //                 args: [amount, walletAccount.id]
-    //             });
-
-    //             const balanceAfter = Number(updateBalanceRes.rows?.[0]?.balance ?? (balanceBefore + amount));
-
-    //             await tx.execute({
-    //                 sql: `INSERT INTO wallet_transactions (
-    //                         wallet_account_id,
-    //                         user_id,
-    //                         currency,
-    //                         type,
-    //                         amount,
-    //                         status,
-    //                         balance_before,
-    //                         balance_after,
-    //                         description,
-    //                         stripe_checkout_session_id,
-    //                         stripe_payment_intent_id,
-    //                         stripe_event_id,
-    //                         stripe_payment_status
-    //                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    //                       ON CONFLICT(stripe_checkout_session_id) DO NOTHING`,
-    //                 args: [
-    //                     walletAccount.id,
-    //                     userId,
-    //                     currency,
-    //                     "recharge",
-    //                     amount,
-    //                     "succeeded",
-    //                     balanceBefore,
-    //                     balanceAfter,
-    //                     description,
-    //                     checkout_session.id,
-    //                     checkout_session.payment_intent ?? null,
-    //                     stripeEvent.id ?? null,
-    //                     checkout_session.payment_status ?? null
-    //                 ]
-    //             });
-
-    //             await tx.commit();
-    //         }
-    //         catch(error){
-    //             if(tx){
-    //                 try{ await tx.rollback(); } catch(_){ }
-    //             }
-    //             throw error;
-    //         }
-    //     }
-    // }
-
     return;
   }
 
   if (type === "reserva") {
-    const id_user = checkout_session?.metadata?.id_user ?? null;
-    const id_reserva = checkout_session?.metadata?.id_reserva ?? null;
-    const trayectoIdRaw = checkout_session?.metadata?.id_trayecto;
-    const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
-
-    if (!id_user || !Number.isFinite(trayectoId)) {
-      return;
-    }
-
-    const runNoTx = async () => {
-      const userRes = await database.execute({
-        sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-        args: [id_user],
-      });
-      if (userRes.rows.length === 0) {
-        return;
-      }
-
-      const trayectoRes = await database.execute({
-        sql: "SELECT 1 FROM trayectos WHERE id = ? LIMIT 1",
-        args: [trayectoId],
-      });
-      if (trayectoRes.rows.length === 0) {
-        return;
-      }
-
-      const existingReserva = await database.execute({
-        sql: "SELECT id_reserva FROM reservas WHERE id_reserva = ? LIMIT 1",
-        args: [id_reserva],
-      });
-      if (existingReserva.rows.length === 0) {
-        return;
-      }
-
-      const availableRes = await database.execute({
-        sql: "SELECT disponible FROM trayectos WHERE id = ?",
-        args: [trayectoId],
-      });
-      const disponible = Number(availableRes.rows?.[0]?.disponible ?? 0);
-      if (!Number.isFinite(disponible) || disponible <= 0) {
-        return;
-      }
-
-      const decRes = await database.execute({
-        sql: "UPDATE trayectos SET disponible = disponible - 1 WHERE id = ? AND disponible > 0",
-        args: [trayectoId],
-      });
-      if (Number(decRes.rowsAffected ?? 0) === 0) {
-        return;
-      }
-
-      await database.execute({
-        sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
-        args: [status[8], id_reserva],
-      });
-
-      const paymentIntentId =
-        (typeof paymentIntent === "string"
-          ? paymentIntent
-          : paymentIntent?.id) ?? null;
-      if (paymentIntentId) {
-        await database.execute({
-          sql: `UPDATE reservas
-                        SET stripe_payment_intent_id = CASE
-                              WHEN stripe_payment_intent_id IS NULL OR stripe_payment_intent_id = ? THEN ?
-                              ELSE stripe_payment_intent_id
-                            END
-                        WHERE id_reserva = ?`,
-          args: [paymentIntentId, paymentIntentId, id_reserva],
-        });
-      }
-    };
-
-    let tx;
-    try {
-      tx = await database.transaction("write");
-
-      const userRes = await tx.execute({
-        sql: "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-        args: [id_user],
-      });
-      if (userRes.rows.length === 0) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-        return;
-      }
-
-      const trayectoRes = await tx.execute({
-        sql: "SELECT 1 FROM trayectos WHERE id = ? LIMIT 1",
-        args: [trayectoId],
-      });
-      if (trayectoRes.rows.length === 0) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-        return;
-      }
-
-      const existingReserva = await tx.execute({
-        sql: "SELECT id_reserva FROM reservas WHERE id_reserva = ? LIMIT 1",
-        args: [id_reserva],
-      });
-
-      const existed = existingReserva.rows.length > 0;
-
-      if (!existed) return;
-
-      const availableRes = await tx.execute({
-        sql: "SELECT disponible FROM trayectos WHERE id = ?",
-        args: [trayectoId],
-      });
-
-      const disponible = Number(availableRes.rows?.[0]?.disponible ?? 0);
-      if (!Number.isFinite(disponible) || disponible <= 0) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-        return;
-      }
-
-      const decRes = await tx.execute({
-        sql: "UPDATE trayectos SET disponible = disponible - 1 WHERE id = ? AND disponible > 0",
-        args: [trayectoId],
-      });
-
-      if (Number(decRes.rowsAffected ?? 0) === 0) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-        return;
-      }
-
-      await tx.execute({
-        sql: "UPDATE reservas SET status = ? WHERE id_reserva = ?",
-        args: [status[8], id_reserva],
-      });
-
-      const paymentIntentId =
-        (typeof paymentIntent === "string"
-          ? paymentIntent
-          : paymentIntent?.id) ?? null;
-
-      if (paymentIntentId) {
-        await tx.execute({
-          sql: `UPDATE reservas
-                        SET stripe_payment_intent_id = CASE
-                              WHEN stripe_payment_intent_id IS NULL OR stripe_payment_intent_id = ? THEN ?
-                              ELSE stripe_payment_intent_id
-                            END
-                        WHERE id_reserva = ?`,
-          args: [paymentIntentId, paymentIntentId, id_reserva],
-        });
-      }
-
-      await tx.commit();
-    } catch (error) {
-      if (tx) {
-        try {
-          await tx.rollback();
-        } catch (_) {}
-      }
-      const msg = String(
-        error?.message ??
-          error?.cause?.message ??
-          error?.cause?.proto?.message ??
-          "",
+    const id_reserva = checkout_session?.metadata?.id_reserva;
+    if (id_reserva) {
+      await trayectosService.updateReservaStatus(
+        id_reserva,
+        "completed",
+        paymentIntentId,
       );
-      if (msg.includes("HTTP status 404")) {
-        await runNoTx();
-        return;
-      }
-      throw error;
     }
-
     return;
   }
 }
 
 async function handleCheckoutSessionExpired(jsonData) {
-  let checkout_session = jsonData.object;
-  const reservaQuery = await database.execute({
-    sql: "SELECT id_reserva, id_trayecto FROM reservas WHERE stripe_checkout_session_id = ?",
-    args: [checkout_session.id],
-  });
-  if (reservaQuery.rows.length === 0) {
-    return;
+  const session = jsonData?.object;
+  const id_reserva = session?.metadata?.id_reserva;
+  if (id_reserva) {
+    await trayectosService.updateReservaStatus(id_reserva, "canceled", null);
   }
-  let reserva = reservaQuery.rows[0];
-
-  await database.execute({
-    sql: "DELETE FROM reservas WHERE id_reserva = ?",
-    args: [reserva.id_reserva],
-  });
-
-  const disponibleQuery = await database.execute({
-    sql: "SELECT disponible FROM trayectos WHERE id = ?",
-    args: [reserva.id_trayecto],
-  });
-  let disponible = disponibleQuery.rows[0].disponible;
-  disponible++;
-
-  await database.execute({
-    sql: "UPDATE trayectos SET disponible = ? WHERE id = ?",
-    args: [disponible, reserva.id_trayecto],
-  });
 }
 async function handleAccountUpdated(jsonData) {
   const stripeAccount = jsonData?.object;
@@ -1189,7 +778,7 @@ async function handleAccountUpdated(jsonData) {
     stripeAccount?.metadata?.user_id ??
     stripeAccount?.metadata?.id_user ??
     null;
-  let userId = userIdRaw != null ? Number(userIdRaw) : null;
+  let userId = userIdRaw ? String(userIdRaw) : null;
 
   const chargesEnabled = Boolean(stripeAccount.charges_enabled);
   const transfersEnabled =
@@ -1197,111 +786,97 @@ async function handleAccountUpdated(jsonData) {
     "active";
   const detailsSubmitted = Boolean(stripeAccount.details_submitted);
 
-  // const onboardingComplete = (detailsSubmitted && chargesEnabled && transfersEnabled);
   const onboardingComplete = detailsSubmitted;
-  let tx;
+
   try {
-    tx = await database.transaction("write");
-
-    if (!Number.isFinite(userId)) {
-      const userRes = await tx.execute({
-        sql: "SELECT id FROM users WHERE stripe_account = ?",
-        args: [stripeAccountId],
-      });
-      if (userRes.rows.length > 0) {
-        userId = Number(userRes.rows[0].id);
+    await prisma.$transaction(async (tx) => {
+      if (!userId) {
+        const userByAccount = await tx.user.findFirst({
+          where: { stripe_account: stripeAccountId },
+          select: { id: true },
+        });
+        if (userByAccount) {
+          userId = userByAccount.id;
+        }
       }
-    }
 
-    if (!Number.isFinite(userId)) {
-      // Sin userId no podemos asociar la cuenta al usuario de la BD
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return;
-    }
+      if (!userId) {
+        return;
+      }
 
-    const userRowRes = await tx.execute({
-      sql: "SELECT name, email, stripe_customer_account FROM users WHERE id = ?",
-      args: [userId],
+      const userRow = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, stripe_customer_account: true },
+      });
+      if (!userRow) {
+        return;
+      }
+
+      let stripeCustomerAccountId = userRow.stripe_customer_account ?? null;
+
+      if (
+        !stripeCustomerAccountId &&
+        typeof userRow.name === "string" &&
+        typeof userRow.email === "string"
+      ) {
+        const customer_account = await stripe.customers.create({
+          name: userRow.name,
+          individual_name: userRow.name,
+          email: userRow.email,
+        });
+        stripeCustomerAccountId = customer_account.id;
+        await tx.user.update({
+          where: { id: userId },
+          data: { stripe_customer_account: stripeCustomerAccountId },
+        });
+      }
+
+      await tx.account.upsert({
+        where: { stripe_account_id: stripeAccountId },
+        create: {
+          stripe_account_id: stripeAccountId,
+          user_id: userId,
+          charges_enabled: chargesEnabled,
+          transfers_enabled: transfersEnabled,
+          details_submitted: detailsSubmitted,
+        },
+        update: {
+          user_id: userId,
+          charges_enabled: chargesEnabled,
+          transfers_enabled: transfersEnabled,
+          details_submitted: detailsSubmitted,
+        },
+      });
+
+      if (onboardingComplete) {
+        const currentUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { stripe_account: true },
+        });
+        if (
+          currentUser &&
+          (!currentUser.stripe_account ||
+            currentUser.stripe_account === stripeAccountId)
+        ) {
+          await tx.user.update({
+            where: { id: userId },
+            data: { stripe_account: stripeAccountId, onboarding_ended: true },
+          });
+        } else {
+          await tx.user.update({
+            where: { id: userId },
+            data: { onboarding_ended: true },
+          });
+        }
+      } else {
+        await tx.user.updateMany({
+          where: { id: userId, onboarding_ended: { not: true } },
+          data: { onboarding_ended: false },
+        });
+      }
     });
-    if (userRowRes.rows.length === 0) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return;
-    }
-
-    const userRow = userRowRes.rows[0];
-    let stripeCustomerAccountId = userRow?.stripe_customer_account ?? null;
-
-    if (
-      !stripeCustomerAccountId &&
-      typeof userRow?.name === "string" &&
-      typeof userRow?.email === "string"
-    ) {
-      const customer_account = await stripe.customers.create({
-        name: userRow.name,
-        individual_name: userRow.name,
-        email: userRow.email,
-      });
-      stripeCustomerAccountId = customer_account.id;
-      await tx.execute({
-        sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
-        args: [stripeCustomerAccountId, userId],
-      });
-    }
-
-    await tx.execute({
-      sql: `INSERT INTO accounts (
-                    stripe_account_id,
-                    user_id,
-                    charges_enabled,
-                    transfers_enabled,
-                    details_submitted
-                  ) VALUES (?, ?, ?, ?, ?)
-                  ON CONFLICT(stripe_account_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    charges_enabled = excluded.charges_enabled,
-                    transfers_enabled = excluded.transfers_enabled,
-                    details_submitted = excluded.details_submitted`,
-      args: [
-        stripeAccountId,
-        userId,
-        chargesEnabled ? 1 : 0,
-        transfersEnabled ? 1 : 0,
-        detailsSubmitted ? 1 : 0,
-      ],
-    });
-
-    if (onboardingComplete) {
-      await tx.execute({
-        sql: `UPDATE users
-                      SET stripe_account = CASE
-                            WHEN stripe_account IS NULL OR stripe_account = ? THEN ?
-                            ELSE stripe_account
-                          END,
-                          onboarding_ended = 1
-                      WHERE id = ?`,
-        args: [stripeAccountId, stripeAccountId, userId],
-      });
-    } else {
-      await tx.execute({
-        sql: `UPDATE users
-                      SET onboarding_ended = 0
-                      WHERE id = ? AND onboarding_ended != 1`,
-        args: [userId],
-      });
-    }
-
-    await tx.commit();
   } catch (error) {
     console.error("handleAccountUpdated error:", error);
-    if (tx) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-    }
     throw error;
   }
 }

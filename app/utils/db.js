@@ -1,37 +1,20 @@
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { methods as utils } from "../utils/hashing.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 async function existUser(data) {
-  const { rows: emailRow } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [data],
+  const user = await prisma.user.findFirst({
+    where: { OR: [{ email: data }, { google_id: data }] },
   });
-  if (emailRow.length > 0) return true;
-
-  const { rows: googleRow } = await database.execute({
-    sql: "SELECT * FROM users WHERE google_id = ?",
-    args: [data],
-  });
-  if (googleRow.length > 0) return true;
-  return null;
+  return user ? true : null;
 }
 
 async function getUser(data) {
-  const { rows: emailRow } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ? ",
-    args: [data],
+  return await prisma.user.findFirst({
+    where: { OR: [{ email: data }, { google_id: data }] },
   });
-  if (emailRow.length > 0) return emailRow[0];
-
-  const { rows: googleRow } = await database.execute({
-    sql: "SELECT * FROM users WHERE google_id = ?",
-    args: [data],
-  });
-  if (googleRow.length > 0) return googleRow[0];
-  return null;
 }
 
 async function createUser(
@@ -43,65 +26,89 @@ async function createUser(
   if (comprobarUser) {
     return { status: "Error", message: "Email already created" };
   }
-  const customer_account = await stripe.customers.create({
-    name: name,
-    individual_name: name,
-    email: email,
-  });
-  const hash = await utils.hashValue(10, password);
 
+  const customer_account = await stripe.customers.create({
+    name,
+    individual_name: name,
+    email,
+  });
+
+  const hash = await utils.hashValue(10, password);
   const encryptedUserFields = cryptoUtils.encryptFields(
     { name },
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
-  switch (auth_method) {
-    case "password":
-      const insertResult = await database.execute({
-        sql: "INSERT INTO users (email, password, name, stripe_customer_account,auth_method) VALUES (?, ?, ?, ?, ?)",
-        args: [
-          email,
-          hash,
-          encryptedUserFields.name,
-          customer_account.id,
-          auth_method,
-        ],
-      });
+  const created = await prisma.user.create({
+    data: {
+      email,
+      password: hash,
+      name: encryptedUserFields.name,
+      stripe_customer_account: customer_account.id,
+      auth_method,
+      ...(google_id ? { google_id } : {}),
+    },
+    include: { role: true },
+  });
 
-      if (insertResult.rowsAffected === 0) {
-        return { status: "Error", message: "Failed to register user" };
-      }
-      break;
-    case "google":
-      const googleResult = await database.execute({
-        sql: "INSERT INTO users (email, password, name, stripe_customer_account,auth_method,google_id) VALUES (?, ?, ?, ?, ?, ?)",
-        args: [
-          email,
-          hash,
-          encryptedUserFields.name,
-          customer_account.id,
-          auth_method,
-          google_id,
-        ],
-      });
-
-      if (googleResult.rowsAffected === 0) {
-        return { status: "Error", message: "Failed to register user" };
-      }
-      break;
-    default:
-      break;
+  let stripeAccountId = null;
+  try {
+    const nameParts = (name || "").trim().split(/\s+/);
+    const stripeAccount = await stripe.accounts.create({
+      type: "express",
+      country: "ES",
+      email,
+      business_type: "individual",
+      individual: {
+        ...(nameParts[0] ? { first_name: nameParts[0] } : {}),
+        ...(nameParts[1] ? { last_name: nameParts[1] } : {}),
+      },
+      business_profile: {
+        mcc: "4121",
+        product_description:
+          "Conductor de carpooling en la plataforma YouConnext",
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
+      metadata: { userId: created.id },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+    await prisma.account.create({
+      data: {
+        stripe_account_id: stripeAccount.id,
+        user_id: created.id,
+        charges_enabled: stripeAccount.charges_enabled ?? false,
+        transfers_enabled:
+          String(stripeAccount.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: stripeAccount.details_submitted ?? false,
+      },
+    });
+    stripeAccountId = stripeAccount.id;
+    await prisma.user.update({
+      where: { id: created.id },
+      data: { stripe_account: stripeAccountId },
+    });
+  } catch (error) {
+    console.error("Error creating Stripe Connect account:", error);
   }
 
-  const created = await getUser(email);
-
-  await database.execute({
-    sql: `INSERT OR IGNORE INTO user_preferences (user_id, pref_key, value)
-          SELECT ?, pd.pref_key, pd.default_value
-          FROM preference_definitions pd
-          WHERE pd.is_active = 1`,
-    args: [created?.id],
+  const activeDefs = await prisma.preferenceDefinition.findMany({
+    where: { is_active: true },
   });
+
+  if (activeDefs.length > 0) {
+    await prisma.userPreference.createMany({
+      data: activeDefs.map((pd) => ({
+        user_id: created.id,
+        pref_key: pd.pref_key,
+        value: pd.default_value,
+      })),
+      skipDuplicates: true,
+    });
+  }
 
   return { status: "Success", user: created };
 }

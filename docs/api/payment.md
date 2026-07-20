@@ -67,7 +67,11 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario autenticado. Útil para reanudar el onboarding si no se completó.
+**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario autenticado. Útil para reanudar el onboarding si no se completó. Acepta `return_url` y `refresh_url` opcionales como query params; si no se proporcionan, se usa `process.env.ORIGIN`.
+
+**Query params (opcionales):**
+- `return_url` — URL de retorno tras completar el onboarding (default: `process.env.ORIGIN`).
+- `refresh_url` — URL de refresco si el link expira (default: `process.env.ORIGIN`).
 
 **Salida (200):**
 ```json
@@ -168,7 +172,7 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario.
+**Descripción:** Genera un link de onboarding para la cuenta Stripe Connect del usuario. Acepta `return_url` y `refresh_url` opcionales; si no se proporcionan, se usa `process.env.ORIGIN`.
 
 **Entrada (body JSON):**
 ```json
@@ -296,7 +300,7 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Devuelve el balance del monedero virtual del usuario desde la tabla local `wallet_accounts`. Si no existe, hace fallback a `wallet_recharges` con status `succeeded`.
+**Descripción:** Devuelve el balance del monedero virtual del usuario desde la tabla local `wallet_accounts`. Si no existe, hace fallback a `wallet_recharges` con status `succeeded`. Adicionalmente, consulta el microservicio de trayectos para obtener el balance de informes CAE (Certificados de Ahorro de Energía) del conductor.
 
 **Salida (200):**
 ```json
@@ -304,9 +308,31 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
   "status": "Success",
   "balances": [
     { "currency": "eur", "balance_cents": 15000 }
-  ]
+  ],
+  "cae": {
+    "status": "Success",
+    "en_revision": 12.50,
+    "disponible": 45.30,
+    "cancelado": 2.00,
+    "total": 57.80,
+    "detalles": [
+      {
+        "id": "uuid",
+        "id_trayecto": "uuid",
+        "km_recorridos": 120.5,
+        "km_with_company": 85.2,
+        "kwh_generated": 59.64,
+        "eur_generated": 3.41,
+        "status": "completed",
+        "created_at": "2026-07-18T10:00:00Z",
+        "updated_at": "2026-07-18T10:05:00Z"
+      }
+    ]
+  }
 }
 ```
+
+> **Nota:** El campo `cae` puede ser `null` si el microservicio de trayectos no está disponible o el usuario no tiene informes CAE. Los importes de CAE (`en_revision`, `disponible`, `cancelado`, `total`) están en euros (no en céntimos), a diferencia del balance del monedero que está en céntimos.
 
 ---
 
@@ -630,9 +656,54 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 ---
 
+## 23. Obtener cuentas vinculadas (tarjetas y bancos)
+
+**URL:** `GET /api/monedero/cuenta-vinculada`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Descripción:** Devuelve las cuentas externas vinculadas a la cuenta Stripe Connect del usuario (tarjetas y cuentas bancarias). Útil para mostrar al usuario sus métodos de cobro disponibles en el frontend.
+
+**Parámetros:** Ninguno.
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "cuentas": [
+    {
+      "tipo": "tarjeta",
+      "marca": "Visa",
+      "ultimos4": "4242",
+      "caducidad": "12/2027"
+    },
+    {
+      "tipo": "banco",
+      "banco": "BBVA",
+      "ultimos4": "1234",
+      "moneda": "eur",
+      "estado": "validated"
+    }
+  ]
+}
+```
+
+**Errores:**
+- `404` — El usuario no tiene cuenta de Stripe.
+- `500` — No se pudo obtener la información de cobro.
+
+**Notas:**
+- Se devuelven hasta 3 cuentas externas.
+- Las tarjetas incluyen `marca`, `ultimos4` y `caducidad`.
+- Las cuentas bancarias incluyen `banco`, `ultimos4`, `moneda` y `estado` (`new`, `validated`, `errored`).
+- Si el usuario no tiene ninguna cuenta vinculada, se devuelve `cuentas: []`.
+
+---
+
 ## Notas generales
 
-- **Stripe Connect:** Los usuarios tienen cuentas tipo "express" para recibir pagos.
+- **Stripe Connect:** Los usuarios tienen cuentas tipo "express" con `business_type: individual`. Se crean automáticamente al registrarse (tanto password como Google OAuth) con `capabilities: card_payments` y `transfers` habilitadas, y `business_profile` pre-rellenado (MCC `4121`, descripción del producto, URL de la plataforma). El usuario debe completar el onboarding mediante `GET /api/payment/stripe-connect-link`.
+- **Sincronización de perfil:** Al actualizar el perfil de usuario (`PATCH /api/users` o `PATCH /api/users/:id`), se sincronizan automáticamente los datos con la cuenta Stripe Connect (`individual.first_name`, `individual.last_name`, `individual.email`, `individual.phone`, `individual.address`, `individual.dob`, `business_profile`).
 - **Comisión de plataforma:** 10% en payment intents directos, 15% en checkout de reservas.
 - **Monedero virtual:** Tablas `wallet_accounts`, `wallet_transactions`, `wallet_recharges`, `wallet_payouts`.
 - **Idempotencia:** Los payouts del monedero soportan idempotencia via `idempotency_key` (header o body).

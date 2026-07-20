@@ -7,13 +7,22 @@
     "dev": "nodemon --exec node app/index.js",
     "runDocker": "docker run --rm -it -p 4000:4000 carpooling-user",
     "buildDocker": "docker build -t carpooling-user .",
-    "up-stripe": "stripe listen --forward-to http://localhost:4000/api/webhook/stripe --forward-connect-to http://localhost:4000/api/webhook/stripe"
+    "up-stripe": "stripe listen --forward-to http://localhost:4000/api/webhook/stripe --forward-connect-to http://localhost:4000/api/webhook/stripe",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:push": "prisma db push",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "node prisma/seed.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@prisma/client": "^6.0.0",
     "@libsql/client": "^0.15.15",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
@@ -30,6 +39,7 @@
   },
   "devDependencies": {
     "morgan": "^1.10.0",
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.10",
+    "prisma": "^6.0.0"
   }
 }

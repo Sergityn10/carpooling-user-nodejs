@@ -2,7 +2,7 @@ import bcrypt from "bcrypt";
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
 import crypto from "crypto";
-import database from "../database.js";
+import prisma from "../lib/prisma.js";
 import { schemas } from "../schemas.js";
 import { UserSchemas } from "../schemas/user.js";
 import { TelegramInfo } from "../schemas/Telegram/telegramInfo.js";
@@ -13,55 +13,45 @@ import { methods as cryptoUtils } from "../utils/crypto.js";
 import Stripe from "stripe";
 import { OAuth2Client } from "google-auth-library";
 import { authMethods } from "../schemas/auth_methods.js";
+import { methods as paymentServices } from "./payment.js";
+import { PRIVATE_KEY, PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
+import {
+  buildCookieOptions,
+  buildAccessCookieOptions,
+  issueRefreshToken,
+} from "../middlewares/authorization.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
 const android_client_id = process.env.GOOGLE_CLIENT_ID_ANDROID;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const isProduction = process.env.NODE_ENV === "production";
-const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-const ACCESS_COOKIE_DAYS = Number(process.env.JWT_COOKIES_EXPIRATION_TIME || 1);
 
-function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
-  const maxAge = expiresAt.getTime() - Date.now();
-  return {
-    httpOnly,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    path: "/",
-    expires: expiresAt,
-    maxAge,
-  };
-}
+async function createStripeAccountForUser(userId, email) {
+  try {
+    const account = await stripe.accounts.create({
+      type: "express",
+      email,
+      metadata: { userId },
+    });
 
-function buildAccessCookieOptions() {
-  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_DAYS * 60 * 1000);
-  return buildCookieOptions(expiresAt);
-}
+    await prisma.account.create({
+      data: {
+        stripe_account_id: account.id,
+        user_id: userId,
+        charges_enabled: account.charges_enabled ?? false,
+        transfers_enabled:
+          String(account.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: account.details_submitted ?? false,
+      },
+    });
 
-async function persistRefreshToken(userId, rawToken, expiresAt) {
-  const hashedToken = crypto
-    .createHash("sha256")
-    .update(rawToken)
-    .digest("hex");
-
-  await database.execute({
-    sql: "DELETE FROM refresh_tokens WHERE user_id = ?",
-    args: [userId],
-  });
-
-  await database.execute({
-    sql: "INSERT INTO refresh_tokens (user_id, token, expires_at, revoked) VALUES (?, ?, ?, 0)",
-    args: [userId, hashedToken, expiresAt.toISOString()],
-  });
-}
-
-async function issueRefreshToken(res, userId) {
-  const rawToken = crypto.randomBytes(40).toString("hex");
-  const expiresAt = new Date(Date.now() + ONE_MONTH_MS);
-
-  await persistRefreshToken(userId, rawToken, expiresAt);
-  res.cookie("refresh_token", rawToken, buildCookieOptions(expiresAt));
+    return account.id;
+  } catch (error) {
+    console.error("Error creating Stripe account:", error);
+    return null;
+  }
 }
 
 async function login(req, res) {
@@ -74,12 +64,12 @@ async function login(req, res) {
 
   const { email, password } = result.data;
 
-  const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
+  const rawUser = await prisma.user.findUnique({
+    where: { email },
+    include: { role: true },
   });
   const comprobarUser = cryptoUtils.decryptFields(
-    rows[0],
+    rawUser,
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
@@ -102,10 +92,11 @@ async function login(req, res) {
     return res.status(404).send({ status: "Error", message: "Login failed" });
   }
 
+  const role = comprobarUser.role?.name ?? "user";
   const token = jsonwebtoken.sign(
-    { userId: comprobarUser.id, email },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: process.env.EXPIRATION_TIME },
+    { userId: comprobarUser.id, email, role },
+    PRIVATE_KEY,
+    { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
 
   res.cookie("access_token", token, buildAccessCookieOptions());
@@ -115,6 +106,7 @@ async function login(req, res) {
     message: `Login successful`,
     userId: comprobarUser.id,
     token,
+    role,
     img_perfil: comprobarUser.img_perfil,
     onboarding_ended: comprobarUser.onboarding_ended,
   });
@@ -132,11 +124,7 @@ async function register(req, res) {
 
   const { email, password } = result.data;
 
-  const { rows: userRows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
-  });
-  const comprobarUser = userRows[0];
+  const comprobarUser = await prisma.user.findUnique({ where: { email } });
 
   if (comprobarUser) {
     return res
@@ -146,45 +134,42 @@ async function register(req, res) {
 
   const hash = await utils.hashValue(10, password);
 
-  const { rows: emailRows } = await database.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
+  const createdUser = await prisma.user.create({
+    data: { email, password: hash, auth_method: authMethods.PASSWORD },
+    include: { role: true },
   });
-  if (emailRows.length > 0) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: "Email already exists" });
+
+  const activeDefs = await prisma.preferenceDefinition.findMany({
+    where: { is_active: true },
+  });
+  if (activeDefs.length > 0) {
+    await prisma.userPreference.createMany({
+      data: activeDefs.map((pd) => ({
+        user_id: createdUser.id,
+        pref_key: pd.pref_key,
+        value: pd.default_value,
+      })),
+      skipDuplicates: true,
+    });
   }
-  const insertResult = await database.execute({
-    sql: "INSERT INTO users (email, password, auth_method) VALUES (?, ?, ?)",
-    args: [email, hash, authMethods.PASSWORD],
-  });
 
-  if (insertResult.rowsAffected === 0) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to register user" });
+  const stripeAccountId = await paymentServices.createStripeAccountForUserEmpty(
+    createdUser.id,
+    email,
+    result.data.name || "",
+  );
+  if (stripeAccountId) {
+    await prisma.user.update({
+      where: { id: createdUser.id },
+      data: { stripe_account: stripeAccountId },
+    });
   }
 
-  const { rows: createdRows } = await database.execute({
-    sql: "SELECT id, email FROM users WHERE email = ?",
-    args: [email],
-  });
-
-  const createdUser = createdRows?.[0];
-
-  await database.execute({
-    sql: `INSERT OR IGNORE INTO user_preferences (user_id, pref_key, value)
-          SELECT ?, pd.pref_key, pd.default_value
-          FROM preference_definitions pd
-          WHERE pd.is_active = 1`,
-    args: [createdUser?.id],
-  });
-
+  const role = createdUser?.role?.name ?? "user";
   const token = jsonwebtoken.sign(
-    { userId: createdUser?.id, email },
-    process.env.JWT_SECRET_KEY,
-    { expiresIn: process.env.EXPIRATION_TIME },
+    { userId: createdUser?.id, email, role },
+    PRIVATE_KEY,
+    { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
   );
 
   res.cookie("access_token", token, buildAccessCookieOptions());
@@ -193,6 +178,7 @@ async function register(req, res) {
     status: "Success",
     message: "User registered successfully",
     token,
+    role,
     userId: createdUser?.id,
   });
 }
@@ -200,7 +186,10 @@ async function register(req, res) {
 async function oauthGoogle(req, res) {
   res.header("Access-Control-Allow-origin", `${process.env.ORIGIN}`);
   res.header("Referrer-Policy", "no-referrer-when-downgrade");
+  // Example query: GET /api/auth/oauth/google?method=login
+  // or: GET /api/auth/oauth/google?method=register
   const method = req.query.method;
+  console.log("Entra");
   let redirectUrl;
   let origin = process.env.MY_ORIGIN;
   switch (method) {
@@ -236,12 +225,10 @@ async function oauthGoogleAndroid(req, res) {
     }
 
     if (method !== "login" && method !== "register") {
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message: "Invalid method, must be 'login' or 'register'",
-        });
+      return res.status(400).send({
+        status: "Error",
+        message: "Invalid method, must be 'login' or 'register'",
+      });
     }
 
     const oauth2Client = new OAuth2Client();
@@ -259,12 +246,10 @@ async function oauthGoogleAndroid(req, res) {
     }
 
     if (!payload) {
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message: "Failed to extract payload from id_token",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "Failed to extract payload from id_token",
+      });
     }
 
     const googleId = payload.sub;
@@ -278,11 +263,10 @@ async function oauthGoogleAndroid(req, res) {
         .send({ status: "Error", message: "Google account has no email" });
     }
 
-    const { rows: existingRows } = await database.execute({
-      sql: "SELECT * FROM users WHERE email = ? OR google_id = ?",
-      args: [email, googleId],
+    const existingUser = await prisma.user.findFirst({
+      where: { OR: [{ email }, { google_id: googleId }] },
+      include: { role: true },
     });
-    const existingUser = existingRows?.[0];
 
     if (method === "register") {
       if (existingUser) {
@@ -305,10 +289,11 @@ async function oauthGoogleAndroid(req, res) {
       }
 
       const newUser = userResult.user;
+      const role = newUser.role?.name ?? "user";
       const token = jsonwebtoken.sign(
-        { userId: newUser.id, email },
-        process.env.JWT_SECRET_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME },
+        { userId: newUser.id, email, role },
+        PRIVATE_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
 
       res.cookie("access_token", token, buildAccessCookieOptions());
@@ -318,6 +303,7 @@ async function oauthGoogleAndroid(req, res) {
         status: "Success",
         message: "User registered successfully",
         token,
+        role,
         userId: newUser.id,
         img_perfil: picture,
         onboarding_ended: 0,
@@ -332,18 +318,17 @@ async function oauthGoogleAndroid(req, res) {
       }
 
       if (existingUser.auth_method !== authMethods.GOOGLE) {
-        return res
-          .status(404)
-          .send({
-            status: "Error",
-            message: "Authentication method not valid",
-          });
+        return res.status(404).send({
+          status: "Error",
+          message: "Authentication method not valid",
+        });
       }
 
+      const role = existingUser.role?.name ?? "user";
       const token = jsonwebtoken.sign(
-        { userId: existingUser.id, email },
-        process.env.JWT_SECRET_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME },
+        { userId: existingUser.id, email, role },
+        PRIVATE_KEY,
+        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
       );
 
       res.cookie("access_token", token, buildAccessCookieOptions());
@@ -353,6 +338,7 @@ async function oauthGoogleAndroid(req, res) {
         status: "Success",
         message: "Login successful",
         token,
+        role,
         userId: existingUser.id,
         img_perfil: existingUser.img_perfil || picture,
         onboarding_ended: existingUser.onboarding_ended,
@@ -360,12 +346,10 @@ async function oauthGoogleAndroid(req, res) {
     }
   } catch (error) {
     console.error("Error in Android OAuth:", error);
-    return res
-      .status(500)
-      .send({
-        status: "Error",
-        message: "Android OAuth authentication failed",
-      });
+    return res.status(500).send({
+      status: "Error",
+      message: "Android OAuth authentication failed",
+    });
   }
 }
 
@@ -399,14 +383,12 @@ async function refresh(req, res) {
       .update(rawRefreshToken)
       .digest("hex");
 
-    const { rows } = await database.execute({
-      sql: "SELECT user_id, expires_at, revoked FROM refresh_tokens WHERE token = ? LIMIT 1",
-      args: [hashedRefresh],
+    const stored = await prisma.refreshToken.findFirst({
+      where: { token: hashedRefresh, revoked: false },
+      select: { user_id: true, expires_at: true, revoked: true },
     });
 
-    const stored = rows?.[0];
-
-    if (!stored || stored.revoked) {
+    if (!stored) {
       res.clearCookie(
         "refresh_token",
         buildCookieOptions(new Date(), { httpOnly: true }),
@@ -430,11 +412,10 @@ async function refresh(req, res) {
         .send({ status: "Error", message: "Refresh token expired" });
     }
 
-    const { rows: userRows } = await database.execute({
-      sql: "SELECT id, email FROM users WHERE id = ? LIMIT 1",
-      args: [stored.user_id],
+    const user = await prisma.user.findUnique({
+      where: { id: stored.user_id },
+      include: { role: true },
     });
-    const user = userRows?.[0];
 
     if (!user) {
       res.clearCookie(
@@ -446,20 +427,25 @@ async function refresh(req, res) {
         .send({ status: "Error", message: "User not found" });
     }
 
+    const role = user.role?.name ?? "user";
     // Rotate refresh token and issue new access token
     const accessToken = jsonwebtoken.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET_KEY,
-      { expiresIn: process.env.EXPIRATION_TIME },
+      { userId: user.id, email: user.email, role },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
     );
 
     res.cookie("access_token", accessToken, buildAccessCookieOptions());
-    await issueRefreshToken(res, user.id);
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
 
     return res.status(200).send({
       status: "Success",
       message: "Token refreshed",
       token: accessToken,
+      role,
       userId: user.id,
     });
   } catch (error) {
@@ -486,7 +472,6 @@ async function validate(req, res) {
         bearerToken = tokenFromHeader;
       }
     }
-
     const cookieToken = req?.cookies?.access_token;
     if (!bearerToken && !cookieToken) {
       return res
@@ -495,11 +480,13 @@ async function validate(req, res) {
     }
 
     const token = bearerToken || cookieToken;
+    console.log(token);
 
     // Verificar explícitamente el token
     try {
-      jsonwebtoken.verify(token, process.env.JWT_SECRET_KEY);
+      jsonwebtoken.verify(token, PUBLIC_KEY, { algorithms: [JWT_ALGORITHM] });
     } catch (jwtError) {
+      console.error("[validate] JWT error:", jwtError.name, jwtError.message);
       res.clearCookie("access_token", {
         secure: process.env.NODE_ENV === "production",
         sameSite: "none",
@@ -508,6 +495,7 @@ async function validate(req, res) {
       return res.status(401).send({
         status: "Error",
         message: "Invalid or expired token",
+        detail: jwtError.name,
       });
     }
 
@@ -532,7 +520,7 @@ async function validate(req, res) {
       img_perfil: findUser.img_perfil,
       ciudad: findUser.ciudad,
       onboarding_ended: findUser.onboarding_ended,
-      role: findUser.role,
+      role: findUser.role?.name ?? "user",
     };
     return res.status(200).send({
       status: "Success",
@@ -552,11 +540,7 @@ async function validate(req, res) {
 
 async function existEmail(req, res) {
   const { email } = req.query;
-  const { rows: emailCheckRows } = await db.execute({
-    sql: "SELECT * FROM users WHERE email = ?",
-    args: [email],
-  });
-  const comprobarUser = emailCheckRows[0];
+  const comprobarUser = await prisma.user.findUnique({ where: { email } });
   if (comprobarUser) {
     return res
       .status(404)

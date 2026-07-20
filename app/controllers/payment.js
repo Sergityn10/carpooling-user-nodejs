@@ -1,8 +1,9 @@
 import Stripe from "stripe";
 import dotenv from "dotenv";
 dotenv.config();
-import database from "../database.js";
 import crypto from "crypto";
+import prisma from "../lib/prisma.js";
+import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const createSession = async (req, res) => {
@@ -76,84 +77,312 @@ const rechargeWalletUser = async (req, res) => {
 };
 
 async function createCheckoutPaymentIntent(req, res) {
-  const {
-    amount,
-    id_reserva,
-    description,
-    destination,
-    success_url,
-    cancel_url,
-  } = req.body;
-  const user = req.user;
+  try {
+    const { amount, id_reserva, description, recipient_user_id } = req.body;
+    const user = req.user;
 
-  const trayectoIdRaw =
-    req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
-  const trayectoId = trayectoIdRaw != null ? Number(trayectoIdRaw) : null;
-  if (!Number.isFinite(trayectoId)) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: "Missing or invalid id_trayecto" });
-  }
+    const trayectoIdRaw =
+      req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
+    const trayectoId = trayectoIdRaw != null ? String(trayectoIdRaw) : null;
+    if (!trayectoId) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "Missing or invalid id_trayecto" });
+    }
 
-  const checkout_session = await stripe.checkout.sessions.create({
-    customer: user.stripe_customer_account,
-    line_items: [
-      {
-        price_data: {
-          currency: "eur",
-          product_data: {
-            name: "Reserva de trayecto",
-            description: description,
+    if (!recipient_user_id) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "Missing recipient_user_id" });
+    }
+
+    if (!amount || amount <= 0) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "Missing or invalid amount" });
+    }
+
+    const sender = await prisma.user.findUnique({
+      where: { id: String(user.id) },
+      select: { stripe_customer_account: true, stripe_account: true },
+    });
+
+    if (!sender) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Sender user not found" });
+    }
+
+    if (!sender.stripe_customer_account) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Sender does not have a Stripe customer account",
+      });
+    }
+
+    const recipient = await prisma.user.findUnique({
+      where: { id: String(recipient_user_id) },
+      select: { stripe_account: true, name: true },
+    });
+
+    if (!recipient) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Recipient user not found" });
+    }
+
+    if (!recipient.stripe_account) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Recipient does not have a Stripe Connect account",
+      });
+    }
+
+    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+      /\/$/,
+      "",
+    );
+    const deepLink = req.body?.return_url || "youconnext://perfil";
+    const successUrl =
+      req.body?.success_url ||
+      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+    const cancelUrl =
+      req.body?.cancel_url ||
+      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+
+    const checkout_session = await stripe.checkout.sessions.create({
+      customer: sender.stripe_customer_account,
+      line_items: [
+        {
+          price_data: {
+            currency: "eur",
+            product_data: {
+              name: "Reserva de trayecto",
+              description:
+                description || `Pago a ${recipient.name || "conductor"}`,
+            },
+            unit_amount: amount,
           },
-          unit_amount: amount,
+          quantity: 1,
         },
-        quantity: 1,
+      ],
+      payment_intent_data: {
+        application_fee_amount: Math.round(amount * 0.15),
+        capture_method: "manual",
+        transfer_data: {
+          destination: recipient.stripe_account,
+        },
+        metadata: {
+          type: "reserva",
+          id_user: String(user.id),
+          id_reserva: String(id_reserva || ""),
+          sender_account: String(sender.stripe_account ?? ""),
+          destination_account: String(recipient.stripe_account),
+          id_trayecto: trayectoId,
+          recipient_user_id: String(recipient_user_id),
+        },
       },
-    ],
-    payment_intent_data: {
-      application_fee_amount: amount * 0.15,
-      capture_method: "manual", // <--- ESTO ACTIVA LA RETENCIÓN (AUTH)
-      transfer_data: {
-        destination: destination,
+      metadata: {
+        type: "reserva",
+        id_user: user.id,
+        id_reserva: id_reserva || "",
+        sender_account: sender.stripe_account ?? "",
+        destination_account: recipient.stripe_account,
+        id_trayecto: trayectoId,
+        recipient_user_id: String(recipient_user_id),
+      },
+      submit_type: "pay",
+      mode: "payment",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
+
+    return res.status(200).send(checkout_session);
+  } catch (error) {
+    console.error("Error creating checkout payment intent:", error);
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
+async function resumeCheckoutPaymentIntent(req, res) {
+  try {
+    const { id_reserva } = req.body;
+    const user = req.user;
+
+    if (!id_reserva) {
+      return res
+        .status(400)
+        .send({ status: "Error", message: "Missing id_reserva" });
+    }
+
+    const dbPaymentIntent = await prisma.paymentIntent.findFirst({
+      where: { id_reserva: String(id_reserva) },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (!dbPaymentIntent) {
+      return res.status(404).send({
+        status: "Error",
+        message: "No payment intent found for this reservation",
+      });
+    }
+
+    const paymentIntentId = dbPaymentIntent.stripe_payment_id;
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (!paymentIntent) {
+      return res.status(404).send({
+        status: "Error",
+        message: "Payment intent not found in Stripe",
+      });
+    }
+
+    const piStatus = String(paymentIntent.status);
+    if (piStatus === "succeeded" || piStatus === "canceled") {
+      return res.status(409).send({
+        status: "Error",
+        message: `Payment intent is already ${piStatus}`,
+        paymentIntent,
+      });
+    }
+
+    const sender = await prisma.user.findUnique({
+      where: { id: String(user.id) },
+      select: { stripe_customer_account: true, stripe_account: true },
+    });
+
+    if (!sender?.stripe_customer_account) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Sender does not have a Stripe customer account",
+      });
+    }
+
+    const destinationAccount =
+      paymentIntent?.metadata?.destination_account ||
+      dbPaymentIntent?.destination_account ||
+      null;
+    if (!destinationAccount) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Cannot determine destination account from original payment",
+      });
+    }
+
+    const recipient = await prisma.user.findFirst({
+      where: { stripe_account: destinationAccount },
+      select: { name: true },
+    });
+
+    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+      /\/$/,
+      "",
+    );
+    const deepLink = req.body?.return_url || "youconnext://perfil";
+    const successUrl =
+      req.body?.success_url ||
+      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+    const cancelUrl =
+      req.body?.cancel_url ||
+      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+
+    const amount = paymentIntent.amount;
+    const trayectoId =
+      paymentIntent?.metadata?.id_trayecto ||
+      dbPaymentIntent?.description ||
+      null;
+    const recipientUserId = paymentIntent?.metadata?.recipient_user_id || null;
+
+    const checkout_session = await stripe.checkout.sessions.create({
+      customer: sender.stripe_customer_account,
+      line_items: [
+        {
+          price_data: {
+            currency: paymentIntent.currency || "eur",
+            product_data: {
+              name: "Reserva de trayecto (pago pendiente)",
+              description:
+                paymentIntent.description ||
+                `Pago a ${recipient?.name || "conductor"}`,
+            },
+            unit_amount: amount,
+          },
+          quantity: 1,
+        },
+      ],
+      payment_intent_data: {
+        application_fee_amount: Math.round(amount * 0.15),
+        capture_method: "manual",
+        transfer_data: {
+          destination: destinationAccount,
+        },
+        metadata: {
+          type: "reserva",
+          id_user: String(user.id),
+          id_reserva: String(id_reserva),
+          sender_account: String(sender.stripe_account ?? ""),
+          destination_account: String(destinationAccount),
+          id_trayecto: String(trayectoId ?? ""),
+          recipient_user_id: String(recipientUserId ?? ""),
+        },
       },
       metadata: {
         type: "reserva",
         id_user: String(user.id),
         id_reserva: String(id_reserva),
-        sender_account: String(user.stripe_account ?? ""),
-        destination_account: String(destination ?? ""),
-        id_trayecto: String(trayectoId),
+        sender_account: sender.stripe_account ?? "",
+        destination_account: String(destinationAccount),
+        id_trayecto: String(trayectoId ?? ""),
+        recipient_user_id: String(recipientUserId ?? ""),
       },
-    },
-    metadata: {
-      type: "reserva",
-      id_user: user.id,
-      id_reserva,
-      sender_account: user.stripe_account,
-      destination_account: destination,
-      id_trayecto: String(trayectoId),
-    },
-    submit_type: "pay",
-    mode: "payment",
-    success_url: success_url,
-    cancel_url: cancel_url,
-  });
+      submit_type: "pay",
+      mode: "payment",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
 
-  const paymentIntentId = checkout_session.payment_intent;
+    await prisma.paymentIntent.create({
+      data: {
+        stripe_payment_id: checkout_session.payment_intent,
+        amount: amount,
+        currency: String(paymentIntent.currency || "eur"),
+        description: dbPaymentIntent?.description ?? undefined,
+        destination_account: destinationAccount,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
+    });
 
-  return res.status(200).send(checkout_session);
+    return res.status(200).send({
+      status: "Success",
+      message: "Checkout session created for pending payment",
+      checkout_session,
+      payment_intent_status: piStatus,
+      id_reserva: String(id_reserva),
+    });
+  } catch (error) {
+    console.error("Error resuming checkout payment intent:", error);
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
 }
 
 async function createStripeConnectAccount(req, res) {
   const { email, country, name } = req.body;
   const user = req.user;
   console.log("Creando cuaenta de stripe a ", user.name);
-  const existingUser = await database.execute({
-    sql: "SELECT stripe_account, onboarding_ended FROM users WHERE id = ?",
-    args: [user.id],
+  const existingUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_account: true, onboarding_ended: true },
   });
-  const existingStripeAccount = existingUser.rows?.[0]?.stripe_account;
-  const onboardingEnded = Boolean(existingUser.rows?.[0]?.onboarding_ended);
+  const existingStripeAccount = existingUser?.stripe_account;
+  const onboardingEnded = Boolean(existingUser?.onboarding_ended);
   const normalizeOriginUrl = (originRaw) => {
     const raw = String(originRaw ?? "").trim();
     const withProto = /^https?:\/\//i.test(raw)
@@ -272,9 +501,9 @@ async function createStripeConnectAccount(req, res) {
     */
   });
 
-  await database.execute({
-    sql: "UPDATE users SET stripe_account = ?, onboarding_ended = 0 WHERE id = ?",
-    args: [account.id, user.id],
+  await prisma.user.update({
+    where: { id: String(user.id) },
+    data: { stripe_account: account.id, onboarding_ended: false },
   });
 
   const accountLink = await stripe.accountLinks.create({
@@ -292,18 +521,159 @@ async function createStripeConnectAccount(req, res) {
   });
 }
 
+async function updateStripeAccountFromProfile(userId, updates) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { stripe_account: true, email: true },
+    });
+    if (!user?.stripe_account) return null;
+
+    const businessProfile = {
+      mcc: "4121",
+      product_description:
+        "Conductor de carpooling en la plataforma YouConnext",
+      url: "https://carpooling-webapp-ten.vercel.app",
+    };
+
+    const individualUpdate = {};
+
+    if (updates.name) {
+      const nameParts = String(updates.name).trim().split(/\s+/);
+      individualUpdate.first_name = nameParts[0] || undefined;
+      individualUpdate.last_name = nameParts[1] || undefined;
+      businessProfile.name = updates.name;
+    }
+
+    if (updates.email) {
+      individualUpdate.email = updates.email;
+    }
+
+    if (updates.phone) {
+      individualUpdate.phone = updates.phone;
+    }
+
+    if (updates.direccion) {
+      individualUpdate.address = {
+        line1: updates.direccion,
+        ...(updates.codigo_postal
+          ? { postal_code: updates.codigo_postal }
+          : {}),
+        ...(updates.ciudad ? { city: updates.ciudad } : {}),
+        ...(updates.provincia ? { state: updates.provincia } : {}),
+      };
+    }
+
+    if (updates.fecha_nacimiento) {
+      const dob = new Date(updates.fecha_nacimiento);
+      if (!isNaN(dob.getTime())) {
+        individualUpdate.dob = {
+          day: dob.getDate(),
+          month: dob.getMonth() + 1,
+          year: dob.getFullYear(),
+        };
+      }
+    }
+
+    const hasBusinessProfile = Object.keys(businessProfile).length > 0;
+    const hasIndividual = Object.keys(individualUpdate).length > 0;
+
+    if (!hasBusinessProfile && !hasIndividual) return null;
+
+    let account;
+    try {
+      const fullUpdate = {};
+      if (hasBusinessProfile) fullUpdate.business_profile = businessProfile;
+      if (updates.email) fullUpdate.email = updates.email;
+      if (hasIndividual) fullUpdate.individual = individualUpdate;
+
+      account = await stripe.accounts.update(user.stripe_account, fullUpdate);
+    } catch (firstError) {
+      if (firstError.code === "oauth_not_supported" && hasIndividual) {
+        const safeUpdate = {};
+        if (hasBusinessProfile) safeUpdate.business_profile = businessProfile;
+        if (updates.email) safeUpdate.email = updates.email;
+
+        account = await stripe.accounts.update(user.stripe_account, safeUpdate);
+      } else {
+        throw firstError;
+      }
+    }
+
+    await prisma.account.update({
+      where: { stripe_account_id: user.stripe_account },
+      data: {
+        charges_enabled: account.charges_enabled ?? false,
+        transfers_enabled:
+          String(account.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: account.details_submitted ?? false,
+      },
+    });
+
+    return account.id;
+  } catch (error) {
+    console.error("Error updating Stripe account from profile:", error);
+    return null;
+  }
+}
+
+async function createStripeAccountForUserEmpty(userId, email, name = "") {
+  try {
+    const nameParts = name.trim().split(/\s+/);
+    const account = await stripe.accounts.create({
+      type: "express",
+      country: "ES",
+      email,
+      business_type: "individual",
+      individual: {
+        ...(nameParts[0] ? { first_name: nameParts[0] } : {}),
+        ...(nameParts[1] ? { last_name: nameParts[1] } : {}),
+      },
+      business_profile: {
+        mcc: "4121",
+        product_description:
+          "Conductor de carpooling en la plataforma YouConnext",
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
+      metadata: { userId },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+
+    await prisma.account.create({
+      data: {
+        stripe_account_id: account.id,
+        user_id: userId,
+        charges_enabled: account.charges_enabled ?? false,
+        transfers_enabled:
+          String(account.capabilities?.transfers ?? "").toLowerCase() ===
+          "active",
+        details_submitted: account.details_submitted ?? false,
+      },
+    });
+
+    return account.id;
+  } catch (error) {
+    console.error("Error creating Stripe account:", error);
+    return null;
+  }
+}
+
 const getMyStripeConnectAccount = async (req, res) => {
   const user = req.user;
-  const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE id = ?",
-    args: [user.id],
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_account: true },
   });
-  if (!rows[0]?.stripe_account) {
+  if (!dbUser?.stripe_account) {
     return res
       .status(404)
       .send({ status: "Error", message: "You dont have an account" });
   }
-  const stripe_account_id = req.user.stripe_account;
+  const stripe_account_id = dbUser.stripe_account;
   const account = await stripe.accounts.retrieve(stripe_account_id);
   return res.status(200).send({
     status: "Success",
@@ -328,15 +698,10 @@ const createStripeCustomer = async (req, res) => {
     },
   });
 
-  const result = await database.execute({
-    sql: "UPDATE users SET stripe_customer_account = ? WHERE id = ?",
-    args: [customer.id, user.id],
+  await prisma.user.update({
+    where: { id: String(user.id) },
+    data: { stripe_customer_account: customer.id },
   });
-  if (result.rowsAffected === 0) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to create stripe customer" });
-  }
 
   return res.status(200).send({
     status: "Success",
@@ -358,17 +723,18 @@ const createLoginLink = async (req, res) => {
   }
 
   const user = req.user;
-  const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE id = ?",
-    args: [user.id],
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_account: true },
   });
-  if (!rows[0]?.stripe_account) {
+  if (!dbUser?.stripe_account) {
     return res
       .status(404)
       .send({ status: "Error", message: "You dont have an account" });
   }
-  const stripe_account_id = rows[0].stripe_account;
-  const loginLink = await stripe.accounts.createLoginLink(stripe_account_id);
+  const loginLink = await stripe.accounts.createLoginLink(
+    dbUser.stripe_account,
+  );
   return res.status(200).send({
     status: "Success",
     message: "Stripe customer created successfully",
@@ -401,18 +767,19 @@ const createPaymentIntent = async (req, res) => {
 };
 const getMyStripeCustomerAccount = async (req, res) => {
   const user = req.user;
-  const { rows } = await database.execute({
-    sql: "SELECT * FROM users WHERE id = ?",
-    args: [user.id],
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_customer_account: true },
   });
 
-  if (!rows[0]?.stripe_customer_account) {
+  if (!dbUser?.stripe_customer_account) {
     return res
       .status(404)
       .send({ status: "Error", message: "You dont have an account" });
   }
-  const stripe_customer_account = rows[0].stripe_customer_account;
-  const customer = await stripe.customers.retrieve(stripe_customer_account);
+  const customer = await stripe.customers.retrieve(
+    dbUser.stripe_customer_account,
+  );
 
   return res.status(200).send({
     status: "Success",
@@ -422,32 +789,40 @@ const getMyStripeCustomerAccount = async (req, res) => {
 };
 
 const createStripeLinkAccount = async (req, res) => {
-  let return_url;
-  let refresh_url;
   try {
-    return_url = req.body.return_url;
-    refresh_url = req.body.refresh_url;
-  } catch (error) {
-    return res.status(400).send({
-      status: "Error",
-      message: "return_url or refresh_url is required",
-    });
-  }
+    const user = req.user;
+    if (!user?.stripe_account) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "You dont have an account" });
+    }
 
-  const user = req.user;
-  const stripe_account_id = user.stripe_account;
-  const accountLink = await stripe.accountLinks.create({
-    account: stripe_account_id,
-    refresh_url: refresh_url,
-    return_url: return_url,
-    type: "account_onboarding",
-    collect: "eventually_due",
-  });
-  return res.status(200).send({
-    status: "Success",
-    message: "Stripe account created successfully",
-    accountLink,
-  });
+    const return_url = req.body?.return_url ?? process.env.ORIGIN;
+    const refresh_url = req.body?.refresh_url ?? process.env.ORIGIN;
+    if (!return_url || !refresh_url) {
+      return res.status(400).send({
+        status: "Error",
+        message: "return_url or refresh_url is required",
+      });
+    }
+
+    const accountLink = await stripe.accountLinks.create({
+      account: user.stripe_account,
+      refresh_url,
+      return_url,
+      type: "account_onboarding",
+      collect: "eventually_due",
+    });
+    return res.status(200).send({
+      status: "Success",
+      message: "Stripe account link created successfully",
+      accountLink,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
 };
 
 const createStripeTransfer = async (req, res) => {
@@ -514,37 +889,45 @@ async function getCashBalance(req, res) {
 async function getWalletBalance(req, res) {
   const user = req.user;
 
-  const walletAccountRes = await database.execute({
-    sql: `SELECT currency, balance AS balance_cents
-              FROM wallet_accounts
-              WHERE user_id = ?
-              ORDER BY currency`,
-    args: [user.id],
+  const bearerToken = req.headers.authorization?.split(" ")[1];
+  const cookieToken = req.cookies?.access_token;
+  const userToken = bearerToken || cookieToken;
+
+  const walletAccounts = await prisma.walletAccount.findMany({
+    where: { user_id: String(user.id) },
+    orderBy: { currency: "asc" },
+    select: { currency: true, balance: true },
   });
 
-  if (walletAccountRes.rows.length > 0) {
-    const balances = walletAccountRes.rows.map((r) => ({
+  let balances;
+  if (walletAccounts.length > 0) {
+    balances = walletAccounts.map((r) => ({
       currency: r.currency,
-      balance_cents: Number(r.balance_cents ?? 0),
+      balance_cents: Number(r.balance ?? 0),
     }));
-    return res.status(200).send({ status: "Success", balances });
+  } else {
+    const recharges = await prisma.walletRecharge.groupBy({
+      by: ["currency"],
+      where: { user_id: String(user.id), status: "succeeded" },
+      _sum: { amount: true },
+    });
+
+    balances = recharges.map((r) => ({
+      currency: r.currency,
+      balance_cents: Number(r._sum.amount ?? 0),
+    }));
   }
 
-  // Fallback (por si aún no existe wallet_accounts en tu BD)
-  const { rows } = await database.execute({
-    sql: `SELECT currency, COALESCE(SUM(amount), 0) AS balance_cents
-              FROM wallet_recharges
-              WHERE user_id = ? AND status = 'succeeded'
-              GROUP BY currency`,
-    args: [user.id],
+  let caeBalance = null;
+  if (userToken) {
+    caeBalance = await trayectosService.getCAEBalance(userToken);
+  }
+
+  return res.status(200).send({
+    status: "Success",
+    balances,
+    cae: caeBalance,
   });
-
-  const balances = rows.map((r) => ({
-    currency: r.currency,
-    balance_cents: Number(r.balance_cents ?? 0),
-  }));
-
-  return res.status(200).send({ status: "Success", balances });
 }
 
 async function getWalletTransactions(req, res) {
@@ -558,33 +941,16 @@ async function getWalletTransactions(req, res) {
     ? Math.max(0, Number(offsetRaw))
     : 0;
 
-  const { rows } = await database.execute({
-    sql: `SELECT
-                id,
-                wallet_account_id,
-                user_id,
-                currency,
-                type,
-                amount,
-                status,
-                balance_before,
-                balance_after,
-                description,
-                stripe_checkout_session_id,
-                stripe_payment_intent_id,
-                stripe_event_id,
-                stripe_payment_status,
-                created_at
-              FROM wallet_transactions
-              WHERE user_id = ?
-              ORDER BY datetime(created_at) DESC
-              LIMIT ? OFFSET ?`,
-    args: [user.id, limit, offset],
+  const transactions = await prisma.walletTransaction.findMany({
+    where: { user_id: String(user.id) },
+    orderBy: { created_at: "desc" },
+    take: limit,
+    skip: offset,
   });
 
   return res
     .status(200)
-    .send({ status: "Success", transactions: rows, limit, offset });
+    .send({ status: "Success", transactions, limit, offset });
 }
 
 async function capturePaymentIntent(req, res) {
@@ -640,9 +1006,9 @@ async function cancelPaymentIntent(req, res) {
   const currentStatus = String(current?.status ?? "");
   if (currentStatus === "canceled") {
     try {
-      await database.execute({
-        sql: "UPDATE payment_intents SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_id = ?",
-        args: ["canceled", paymentIntentId],
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: paymentIntentId },
+        data: { state: "canceled" },
       });
     } catch (_) {}
 
@@ -677,9 +1043,9 @@ async function cancelPaymentIntent(req, res) {
   }
 
   try {
-    await database.execute({
-      sql: "UPDATE payment_intents SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_id = ?",
-      args: [String(canceled?.status ?? "canceled"), paymentIntentId],
+    await prisma.paymentIntent.update({
+      where: { stripe_payment_id: paymentIntentId },
+      data: { state: String(canceled?.status ?? "canceled") },
     });
   } catch (_) {}
 
@@ -786,304 +1152,223 @@ async function createWalletPayout(req, res) {
 
   let walletTransactionId;
   let walletPayoutId;
-  let tx;
 
   try {
-    tx = await database.transaction("write");
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.walletPayout.findFirst({
+        where: { idempotency_key: idempotencyKey, user_id: String(user.id) },
+      });
 
-    const existing = await tx.execute({
-      sql: `SELECT id, wallet_transaction_id, status, stripe_payout_id, stripe_payout_status, amount, currency, created_at
-                  FROM wallet_payouts
-                  WHERE idempotency_key = ? AND user_id = ?`,
-      args: [idempotencyKey, user.id],
+      if (existing) {
+        return { type: "idempotent", payout: existing };
+      }
+
+      await tx.walletAccount.upsert({
+        where: {
+          user_id_currency: {
+            user_id: String(user.id),
+            currency: payoutCurrency,
+          },
+        },
+        create: {
+          user_id: String(user.id),
+          currency: payoutCurrency,
+          balance: 0,
+        },
+        update: {},
+      });
+
+      const walletAccount = await tx.walletAccount.findFirst({
+        where: { user_id: String(user.id), currency: payoutCurrency },
+      });
+
+      if (!walletAccount) {
+        throw { statusCode: 500, message: "Wallet account not found" };
+      }
+
+      if (walletAccount.status === "blocked") {
+        throw { statusCode: 403, message: "Wallet blocked" };
+      }
+
+      const balanceBefore = Number(walletAccount.balance ?? 0);
+      if (balanceBefore < payoutAmount) {
+        throw { statusCode: 400, message: "Insufficient wallet balance" };
+      }
+
+      const updatedAccount = await tx.walletAccount.updateMany({
+        where: {
+          id: walletAccount.id,
+          balance: { gte: payoutAmount },
+        },
+        data: { balance: { decrement: payoutAmount } },
+      });
+
+      if (updatedAccount.count === 0) {
+        throw { statusCode: 409, message: "Balance changed, try again" };
+      }
+
+      const refreshedAccount = await tx.walletAccount.findUnique({
+        where: { id: walletAccount.id },
+        select: { balance: true },
+      });
+
+      const balanceAfter = Number(
+        refreshedAccount?.balance ?? balanceBefore - payoutAmount,
+      );
+
+      const walletTx = await tx.walletTransaction.create({
+        data: {
+          wallet_account_id: walletAccount.id,
+          user_id: String(user.id),
+          currency: payoutCurrency,
+          type: "credit",
+          amount: payoutAmount,
+          status: "pending",
+          balance_before: balanceBefore,
+          balance_after: balanceAfter,
+          description: `Wallet payout (${payoutMethod})`,
+        },
+      });
+
+      walletTransactionId = walletTx.id;
+
+      const walletPayout = await tx.walletPayout.create({
+        data: {
+          wallet_account_id: walletAccount.id,
+          wallet_transaction_id: walletTx.id,
+          user_id: String(user.id),
+          currency: payoutCurrency,
+          amount: payoutAmount,
+          status: "pending",
+          method: payoutMethod,
+          idempotency_key: idempotencyKey,
+        },
+      });
+
+      walletPayoutId = walletPayout.id;
+
+      return { type: "success" };
     });
 
-    if (existing.rows.length > 0) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
+    if (result.type === "idempotent") {
       return res.status(200).send({
         status: "Success",
-        payout: existing.rows[0],
+        payout: result.payout,
         idempotency_key: idempotencyKey,
       });
     }
-
-    await tx.execute({
-      sql: `INSERT INTO wallet_accounts (user_id, currency, balance)
-                  VALUES (?, ?, 0)
-                  ON CONFLICT(user_id, currency) DO NOTHING`,
-      args: [user.id, payoutCurrency],
-    });
-
-    const walletAccountRes = await tx.execute({
-      sql: "SELECT id, balance, status FROM wallet_accounts WHERE user_id = ? AND currency = ?",
-      args: [user.id, payoutCurrency],
-    });
-    if (walletAccountRes.rows.length === 0) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res
-        .status(500)
-        .send({ status: "Error", message: "Wallet account not found" });
-    }
-
-    const walletAccount = walletAccountRes.rows[0];
-    if (walletAccount.status === "blocked") {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res
-        .status(403)
-        .send({ status: "Error", message: "Wallet blocked" });
-    }
-
-    const balanceBefore = Number(walletAccount.balance ?? 0);
-    if (balanceBefore < payoutAmount) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res
-        .status(400)
-        .send({ status: "Error", message: "Insufficient wallet balance" });
-    }
-
-    const updateBalanceRes = await tx.execute({
-      sql: `UPDATE wallet_accounts
-                  SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ? AND balance >= ?
-                  RETURNING balance`,
-      args: [payoutAmount, walletAccount.id, payoutAmount],
-    });
-
-    if (updateBalanceRes.rows.length === 0) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res
-        .status(409)
-        .send({ status: "Error", message: "Balance changed, try again" });
-    }
-
-    const balanceAfter = Number(
-      updateBalanceRes.rows?.[0]?.balance ?? balanceBefore - payoutAmount,
-    );
-    const description = `Wallet payout (${payoutMethod})`;
-    const txInsert = await tx.execute({
-      sql: `INSERT INTO wallet_transactions (
-                    wallet_account_id,
-                    user_id,
-                    currency,
-                    type,
-                    amount,
-                    status,
-                    balance_before,
-                    balance_after,
-                    description
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  RETURNING id`,
-      args: [
-        walletAccount.id,
-        user.id,
-        payoutCurrency,
-        "debit",
-        payoutAmount,
-        "pending",
-        balanceBefore,
-        balanceAfter,
-        description,
-      ],
-    });
-
-    walletTransactionId = Number(txInsert.rows?.[0]?.id);
-
-    if (!Number.isFinite(walletTransactionId)) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res.status(500).send({
-        status: "Error",
-        message: "Failed to create wallet transaction",
-      });
-    }
-
-    const payoutInsert = await tx.execute({
-      sql: `INSERT INTO wallet_payouts (
-                    wallet_account_id,
-                    wallet_transaction_id,
-                    user_id,
-                    currency,
-                    amount,
-                    status,
-                    method,
-                    idempotency_key
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                  RETURNING id`,
-      args: [
-        walletAccount.id,
-        walletTransactionId,
-        user.id,
-        payoutCurrency,
-        payoutAmount,
-        "pending",
-        payoutMethod,
-        idempotencyKey,
-      ],
-    });
-
-    walletPayoutId = Number(payoutInsert.rows?.[0]?.id);
-    if (!Number.isFinite(walletPayoutId)) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
-      return res
-        .status(500)
-        .send({ status: "Error", message: "Failed to create payout" });
-    }
-
-    await tx.commit();
-
-    let stripePayout;
-    try {
-      stripePayout = await stripe.payouts.create(
-        {
-          amount: payoutAmount,
-          currency: payoutCurrency,
-          method: payoutMethod,
-          metadata: {
-            wallet_payout_id: String(walletPayoutId),
-            user_id: String(user.id),
-          },
-        },
-        {
-          stripeAccount: user.stripe_account,
-          idempotencyKey,
-        },
-      );
-    } catch (error) {
-      let refundTx;
-      try {
-        refundTx = await database.transaction("write");
-
-        const accountRes = await refundTx.execute({
-          sql: "SELECT id, balance FROM wallet_accounts WHERE user_id = ? AND currency = ?",
-          args: [user.id, payoutCurrency],
-        });
-
-        if (accountRes.rows.length > 0) {
-          const acc = accountRes.rows[0];
-          const before = Number(acc.balance ?? 0);
-          const upd = await refundTx.execute({
-            sql: `UPDATE wallet_accounts
-                              SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP
-                              WHERE id = ?
-                              RETURNING balance`,
-            args: [payoutAmount, acc.id],
-          });
-          const after = Number(upd.rows?.[0]?.balance ?? before + payoutAmount);
-
-          await refundTx.execute({
-            sql: `INSERT INTO wallet_transactions (
-                                wallet_account_id,
-                                user_id,
-                                currency,
-                                type,
-                                amount,
-                                status,
-                                balance_before,
-                                balance_after,
-                                description
-                              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            args: [
-              acc.id,
-              user.id,
-              payoutCurrency,
-              "credit",
-              payoutAmount,
-              "succeeded",
-              before,
-              after,
-              "Payout failed refund",
-            ],
-          });
-        }
-
-        await refundTx.execute({
-          sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
-          args: ["failed", walletTransactionId],
-        });
-
-        await refundTx.execute({
-          sql: `UPDATE wallet_payouts
-                          SET status = ?, failure_reason = ?, updated_at = CURRENT_TIMESTAMP
-                          WHERE id = ?`,
-          args: ["failed", error?.message ?? String(error), walletPayoutId],
-        });
-
-        await refundTx.commit();
-      } catch (_e) {
-        if (refundTx) {
-          try {
-            await refundTx.rollback();
-          } catch (_) {}
-        }
-      }
-
-      return res.status(502).send({
-        status: "Error",
-        message: "Stripe payout failed",
-        error: error?.message ?? String(error),
-      });
-    }
-
-    const localStatus = mapStripePayoutStatusToLocalStatus(
-      stripePayout?.status,
-    );
-    await database.execute({
-      sql: `UPDATE wallet_payouts
-                  SET stripe_payout_id = ?, stripe_payout_status = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?`,
-      args: [
-        stripePayout.id,
-        stripePayout.status ?? null,
-        localStatus,
-        walletPayoutId,
-      ],
-    });
-
-    const txStatus = localStatus === "succeeded" ? "succeeded" : "pending";
-    await database.execute({
-      sql: "UPDATE wallet_transactions SET status = ? WHERE id = ?",
-      args: [txStatus, walletTransactionId],
-    });
-
-    const payoutRes = await database.execute({
-      sql: `SELECT id, wallet_transaction_id, status, stripe_payout_id, stripe_payout_status, amount, currency, created_at
-                  FROM wallet_payouts
-                  WHERE id = ?`,
-      args: [walletPayoutId],
-    });
-
-    return res.status(200).send({
-      status: "Success",
-      payout: payoutRes.rows?.[0] ?? {
-        id: walletPayoutId,
-        stripe_payout_id: stripePayout.id,
-      },
-      idempotency_key: idempotencyKey,
-      stripe_payout: stripePayout,
-    });
   } catch (error) {
-    if (tx) {
-      try {
-        await tx.rollback();
-      } catch (_) {}
+    if (error?.statusCode) {
+      return res
+        .status(error.statusCode)
+        .send({ status: "Error", message: error.message });
     }
     return res
       .status(500)
       .send({ status: "Error", message: error?.message ?? String(error) });
   }
+
+  let stripePayout;
+  try {
+    stripePayout = await stripe.payouts.create(
+      {
+        amount: payoutAmount,
+        currency: payoutCurrency,
+        method: payoutMethod,
+        metadata: {
+          wallet_payout_id: String(walletPayoutId),
+          user_id: String(user.id),
+        },
+      },
+      {
+        stripeAccount: user.stripe_account,
+        idempotencyKey,
+      },
+    );
+  } catch (error) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        const account = await tx.walletAccount.findFirst({
+          where: { user_id: String(user.id), currency: payoutCurrency },
+        });
+
+        if (account) {
+          const before = Number(account.balance ?? 0);
+          const updated = await tx.walletAccount.update({
+            where: { id: account.id },
+            data: { balance: { increment: payoutAmount } },
+          });
+          const after = Number(updated.balance ?? before + payoutAmount);
+
+          await tx.walletTransaction.create({
+            data: {
+              wallet_account_id: account.id,
+              user_id: String(user.id),
+              currency: payoutCurrency,
+              type: "credit",
+              amount: payoutAmount,
+              status: "succeeded",
+              balance_before: before,
+              balance_after: after,
+              description: "Payout failed refund",
+            },
+          });
+        }
+
+        await tx.walletTransaction.update({
+          where: { id: walletTransactionId },
+          data: { status: "failed" },
+        });
+
+        await tx.walletPayout.update({
+          where: { id: walletPayoutId },
+          data: {
+            status: "failed",
+            failure_reason: error?.message ?? String(error),
+          },
+        });
+      });
+    } catch (_e) {
+      console.error("Refund failed:", _e);
+    }
+
+    return res.status(502).send({
+      status: "Error",
+      message: "Stripe payout failed",
+      error: error?.message ?? String(error),
+    });
+  }
+
+  const localStatus = mapStripePayoutStatusToLocalStatus(stripePayout?.status);
+
+  await prisma.walletPayout.update({
+    where: { id: walletPayoutId },
+    data: {
+      stripe_payout_id: stripePayout.id,
+      stripe_payout_status: stripePayout.status ?? null,
+      status: localStatus,
+    },
+  });
+
+  const txStatus = localStatus === "succeeded" ? "succeeded" : "pending";
+  await prisma.walletTransaction.update({
+    where: { id: walletTransactionId },
+    data: { status: txStatus },
+  });
+
+  const payoutRecord = await prisma.walletPayout.findUnique({
+    where: { id: walletPayoutId },
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    payout: payoutRecord ?? {
+      id: walletPayoutId,
+      stripe_payout_id: stripePayout.id,
+    },
+    idempotency_key: idempotencyKey,
+    stripe_payout: stripePayout,
+  });
 }
 
 async function getWalletPayouts(req, res) {
@@ -1097,55 +1382,89 @@ async function getWalletPayouts(req, res) {
     ? Math.max(0, Number(offsetRaw))
     : 0;
 
-  const { rows } = await database.execute({
-    sql: `SELECT
-                id,
-                wallet_account_id,
-                wallet_transaction_id,
-                user_id,
-                currency,
-                amount,
-                status,
-                method,
-                idempotency_key,
-                stripe_payout_id,
-                stripe_payout_status,
-                failure_reason,
-                created_at
-              FROM wallet_payouts
-              WHERE user_id = ?
-              ORDER BY datetime(created_at) DESC
-              LIMIT ? OFFSET ?`,
-    args: [user.id, limit, offset],
+  const payouts = await prisma.walletPayout.findMany({
+    where: { user_id: String(user.id) },
+    orderBy: { created_at: "desc" },
+    take: limit,
+    skip: offset,
   });
 
-  return res
-    .status(200)
-    .send({ status: "Success", payouts: rows, limit, offset });
+  return res.status(200).send({ status: "Success", payouts, limit, offset });
 }
 
 async function createAccountLink(req, res) {
   try {
     const user = req.user;
-    if (!user?.stripe_account) {
+
+    const deepLink = req.body?.return_url || "youconnext://perfil";
+    const refreshDeepLink = req.body?.refresh_url || deepLink;
+
+    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+      /\/$/,
+      "",
+    );
+    const returnUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+    const refreshUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(refreshDeepLink)}`;
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: String(user.id) },
+      select: {
+        stripe_account: true,
+        onboarding_ended: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    if (!dbUser) {
       return res
         .status(404)
-        .send({ status: "Error", message: "You dont have an account" });
+        .send({ status: "Error", message: "User not found" });
     }
 
-    const return_url = req.body?.return_url ?? process.env.ORIGIN;
-    const refresh_url = req.body?.refresh_url ?? process.env.ORIGIN;
-    if (!return_url || !refresh_url) {
-      return res.status(400).send({
-        status: "Error",
-        message: "return_url or refresh_url is required",
+    let stripeAccountId = dbUser.stripe_account;
+
+    if (!stripeAccountId) {
+      const account = await stripe.accounts.create({
+        type: "express",
+        country: "ES",
+        email: dbUser.email,
+        business_type: "individual",
+        individual: {
+          email: dbUser.email,
+          first_name: (dbUser.name || "").split(" ")[0] || "",
+          last_name: (dbUser.name || "").split(" ").slice(1).join(" ") || "",
+        },
+        metadata: {
+          name: dbUser.name || "",
+          email: dbUser.email,
+          id: String(user.id),
+        },
+        business_profile: {
+          mcc: "4121",
+          name: dbUser.name || dbUser.email,
+          product_description: "Usuario de la aplicación YouConnext",
+          support_email: dbUser.email,
+          url: "https://carpooling-webapp-ten.vercel.app",
+        },
+        capabilities: {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+      });
+
+      stripeAccountId = account.id;
+
+      await prisma.user.update({
+        where: { id: String(user.id) },
+        data: { stripe_account: stripeAccountId, onboarding_ended: false },
       });
     }
 
     const accountLink = await stripe.accountLinks.create({
-      account: user.stripe_account,
-      refresh_url,
-      return_url,
+      account: stripeAccountId,
+      refresh_url: refreshUrl,
+      return_url: returnUrl,
       type: "account_onboarding",
       collect: "eventually_due",
     });
@@ -1162,11 +1481,81 @@ async function createAccountLink(req, res) {
   }
 }
 
+async function stripeRedirect(req, res) {
+  const target = req.query?.target;
+  if (!target) {
+    return res.redirect("youconnext://perfil");
+  }
+  return res.redirect(String(target));
+}
+
+async function getLinkedExternalAccounts(req, res) {
+  try {
+    const user = req.user;
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: String(user.id) },
+      select: { stripe_account: true },
+    });
+
+    if (!dbUser?.stripe_account) {
+      return res.status(404).send({
+        status: "Error",
+        message: "El usuario no tiene cuenta de Stripe",
+      });
+    }
+
+    const externalAccounts = await stripe.accounts.listExternalAccounts(
+      dbUser.stripe_account,
+      { limit: 3 },
+    );
+
+    if (externalAccounts.data.length === 0) {
+      return res.status(200).send({ status: "Success", cuentas: [] });
+    }
+
+    const cuentasFormateadas = externalAccounts.data
+      .map((cuenta) => {
+        if (cuenta.object === "bank_account") {
+          return {
+            tipo: "banco",
+            banco: cuenta.bank_name,
+            ultimos4: cuenta.last4,
+            moneda: cuenta.currency,
+            estado: cuenta.status,
+          };
+        }
+        if (cuenta.object === "card") {
+          return {
+            tipo: "tarjeta",
+            marca: cuenta.brand,
+            ultimos4: cuenta.last4,
+            caducidad: `${cuenta.exp_month}/${cuenta.exp_year}`,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    return res.status(200).send({
+      status: "Success",
+      cuentas: cuentasFormateadas,
+    });
+  } catch (error) {
+    console.error("Error al obtener cuentas de Stripe:", error);
+    return res.status(500).send({
+      status: "Error",
+      message: "No se pudo obtener la información de cobro",
+    });
+  }
+}
+
 export const methods = {
   createSession,
   createStripeConnectAccount,
   createStripeLinkAccount,
   createAccountLink,
+  stripeRedirect,
   getMyStripeConnectAccount,
   createStripeCustomer,
   createStripeTransfer,
@@ -1184,5 +1573,9 @@ export const methods = {
   createWalletPayout,
   getWalletPayouts,
   createCheckoutPaymentIntent,
+  resumeCheckoutPaymentIntent,
   rechargeWalletUser,
+  createStripeAccountForUserEmpty,
+  updateStripeAccountFromProfile,
+  getLinkedExternalAccounts,
 };

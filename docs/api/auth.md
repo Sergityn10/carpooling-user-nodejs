@@ -27,10 +27,13 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "message": "Login successful",
   "userId": 1,
   "token": "<JWT>",
+  "role": "user",
   "img_perfil": "url o null",
   "onboarding_ended": 0
 }
 ```
+
+> **Nota:** El JWT incluye `userId`, `email` y `role` en el payload.
 
 **Errores:**
 - `400` — Validación de esquema fallida (email/password inválidos).
@@ -46,7 +49,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Registra un nuevo usuario con email y contraseña (método `password`). Hashea la contraseña con bcrypt, inserta el usuario en BD, crea preferencias por defecto y devuelve un JWT. También emite un `refresh_token`.
+**Descripción:** Registra un nuevo usuario con email y contraseña (método `password`). Hashea la contraseña con bcrypt, inserta el usuario en BD, crea preferencias por defecto, crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado con MCC `4121`, descripción de producto y URL de la plataforma) y la guarda en la tabla `accounts`, actualiza `stripe_account` en el usuario, y devuelve un JWT. También emite un `refresh_token`.
 
 **Entrada (body JSON):**
 ```json
@@ -62,6 +65,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "User registered successfully",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1
 }
 ```
@@ -72,6 +76,11 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 - `500` — Error al registrar usuario.
 
 **Cookies establecidas:** `access_token`, `refresh_token`.
+
+> **Nota:** Desde la versión actual, el registro (tanto password como Google OAuth) crea automáticamente:
+> - Un **Stripe Customer** para pagos como cliente.
+> - Una **Stripe Connect Account** (tipo `express`, `business_type: individual`) con `capabilities: card_payments` y `transfers` habilitadas, y `business_profile` pre-rellenado (MCC `4121`, descripción del producto, URL de la plataforma). La cuenta se guarda en la tabla `accounts` y se referencia en `users.stripe_account`.
+> - El usuario deberá completar el onboarding de Stripe mediante `POST /api/payment/stripe-connect-link` para poder recibir pagos.
 
 ---
 
@@ -135,6 +144,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "Token refreshed",
   "token": "<nuevo JWT>",
+  "role": "user",
   "userId": 1
 }
 ```
@@ -245,7 +255,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Autentica o registra a un usuario usando el `id_token` de Google obtenido desde el SDK de Google Sign-In en Android. A diferencia del flujo web (que usa redirects), este endpoint recibe el `id_token` directamente y devuelve una respuesta JSON con el JWT. El backend verifica el `id_token` usando `google-auth-library` con el client ID de Android (`GOOGLE_CLIENT_ID_ANDROID`).
+**Descripción:** Autentica o registra a un usuario usando el `id_token` de Google obtenido desde el SDK de Google Sign-In en Android. A diferencia del flujo web (que usa redirects), este endpoint recibe el `id_token` directamente y devuelve una respuesta JSON con el JWT. El backend verifica el `id_token` usando `google-auth-library` con el client ID de Android (`GOOGLE_CLIENT_ID_ANDROID`). En el registro, también se crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado) y se guarda en la tabla `accounts`.
 
 **Entrada (body JSON):**
 ```json
@@ -261,6 +271,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "User registered successfully",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1,
   "img_perfil": "https://lh3.googleusercontent.com/...",
   "onboarding_ended": 0
@@ -273,6 +284,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
   "status": "Success",
   "message": "Login successful",
   "token": "<JWT>",
+  "role": "user",
   "userId": 1,
   "img_perfil": "https://lh3.googleusercontent.com/...",
   "onboarding_ended": 1
@@ -297,7 +309,10 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 ## Notas generales
 
 - **JWT Secret:** `process.env.JWT_SECRET_KEY`
+- **JWT Payload:** Incluye `userId`, `email` y `role` (nombre del rol desde la tabla `roles`).
 - **Expiración del access token:** `process.env.EXPIRATION_TIME`
 - **Expiración de cookies:** `process.env.JWT_COOKIES_EXPIRATION_TIME` (en minutos)
-- **Refresh token:** Válido por 30 días, rotatorio (cada uso genera uno nuevo)
+- **Refresh token:** Válido por 30 días, rotatorio (cada uso genera uno nuevo).
+- **Refresh proactivo:** Si el access token es válido pero expira en menos de 5 minutos, se renueva silenciosamente sin que el cliente reciba un 401.
 - **Cookies:** `httpOnly`, `secure` en producción, `sameSite: none` en producción / `lax` en desarrollo.
+- **Roles:** Los roles se almacenan en la tabla `roles` (`user` id=1, `admin` id=2). El usuario se relaciona mediante `role_id`. El rol por defecto es `user`.

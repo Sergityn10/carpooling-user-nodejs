@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+mysql_data
+.git
+.gitignore
+docker-compose*.yml
+Dockerfile
+.dockerignore
+*.md
+prisma/migrations

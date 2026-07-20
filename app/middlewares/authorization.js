@@ -1,63 +1,271 @@
 import jsonwebtoken from "jsonwebtoken";
 import dotenv from "dotenv";
-import database from "../database.js";
+import crypto from "crypto";
+import prisma from "../lib/prisma.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
+import { PRIVATE_KEY, PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
 dotenv.config();
 
-async function isLoged(req, res, next) {
-  let logueado;
-  try {
-    logueado = (await reviseBearer(req)) || (await reviseCookie(req));
-  } catch (e) {
-    return res.status(403).send({
-      status: "Error",
-      message: `Access denied. Admins only. ${e.message}`,
+const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+const ACCESS_COOKIE_MINUTES = Number(
+  process.env.JWT_COOKIES_EXPIRATION_TIME || 15,
+);
+const PROACTIVE_REFRESH_MS = 5 * 60 * 1000; // Refresh access token if it expires within 5 min
+const isProduction = process.env.NODE_ENV === "production";
+
+function buildCookieOptions(expiresAt, { httpOnly = true } = {}) {
+  const maxAge = expiresAt.getTime() - Date.now();
+  return {
+    httpOnly,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    path: "/",
+    expires: expiresAt,
+    maxAge,
+  };
+}
+
+function buildAccessCookieOptions() {
+  const expiresAt = new Date(Date.now() + ACCESS_COOKIE_MINUTES * 60 * 1000);
+  return buildCookieOptions(expiresAt);
+}
+
+async function persistRefreshToken(
+  userId,
+  rawToken,
+  expiresAt,
+  { deleteAll = true, oldTokenHash = null } = {},
+) {
+  const hashedToken = crypto
+    .createHash("sha256")
+    .update(rawToken)
+    .digest("hex");
+
+  if (deleteAll) {
+    await prisma.refreshToken.deleteMany({ where: { user_id: userId } });
+  } else if (oldTokenHash) {
+    await prisma.refreshToken.deleteMany({
+      where: { user_id: userId, token: oldTokenHash },
     });
   }
-  if (!logueado) {
-    return res
-      .status(403)
-      .send({ status: "Error", message: "Access denied. Admins only." });
-  }
 
-  // Aquí podrías verificar si el usuario tiene el rol de administrador, accediendo a la base de datos
-  if (logueado) {
-    // Cambia esto a la lógica de verificación de administrador
-    req.user = logueado;
+  await prisma.refreshToken.create({
+    data: {
+      user_id: userId,
+      token: hashedToken,
+      expires_at: expiresAt,
+      revoked: false,
+    },
+  });
 
-    next(); // El usuario esta logueado, continuar con la siguiente función middleware
-  } else {
-    res
-      .status(403)
-      .send({ status: "Error", message: "Access denied. Admins only." });
+  return hashedToken;
+}
+
+async function issueRefreshToken(
+  res,
+  userId,
+  { rotate = false, oldTokenHash = null } = {},
+) {
+  const rawToken = crypto.randomBytes(40).toString("hex");
+  const expiresAt = new Date(Date.now() + ONE_MONTH_MS);
+
+  await persistRefreshToken(userId, rawToken, expiresAt, {
+    deleteAll: !rotate,
+    oldTokenHash: rotate ? oldTokenHash : null,
+  });
+  res.cookie("refresh_token", rawToken, buildCookieOptions(expiresAt));
+}
+
+function clearRefreshCookie(res) {
+  if (res?.clearCookie) {
+    res.clearCookie("refresh_token", {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+    });
   }
 }
 
-async function onlyAdmin(req, res, next) {
-  const logueado = (await reviseBearer(req)) || (await reviseCookie(req));
-  if (!logueado) {
-    return res
-      .status(403)
-      .send({ status: "Error", message: "Access denied. Admins only." });
+async function tryRefreshAccessToken(req, res) {
+  try {
+    const rawRefreshToken = req?.cookies?.refresh_token;
+    if (!rawRefreshToken) return null;
+
+    const hashedRefresh = crypto
+      .createHash("sha256")
+      .update(rawRefreshToken)
+      .digest("hex");
+
+    const stored = await prisma.refreshToken.findFirst({
+      where: { token: hashedRefresh, revoked: false },
+      select: { id: true, user_id: true, expires_at: true, revoked: true },
+    });
+
+    if (!stored) {
+      clearRefreshCookie(res);
+      return null;
+    }
+
+    const expiresAt = new Date(stored.expires_at);
+    if (
+      Number.isNaN(expiresAt.getTime()) ||
+      expiresAt.getTime() <= Date.now()
+    ) {
+      clearRefreshCookie(res);
+      return null;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: stored.user_id },
+      include: { role: true },
+    });
+
+    if (!user) {
+      clearRefreshCookie(res);
+      return null;
+    }
+
+    const accessToken = jsonwebtoken.sign(
+      { userId: user.id, email: user.email, role: user.role?.name ?? "user" },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+    );
+
+    if (res?.cookie) {
+      res.cookie("access_token", accessToken, buildAccessCookieOptions());
+    }
+
+    // Rotate refresh token: only delete the old one, not all tokens
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
+
+    return cryptoUtils.decryptFields(user, cryptoUtils.USER_SENSITIVE_FIELDS);
+  } catch (error) {
+    console.error("Error in tryRefreshAccessToken:", error);
+    return null;
+  }
+}
+
+function send401(res, message = "Token inválido o expirado.") {
+  res.clearCookie("access_token", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    path: "/",
+  });
+  return res.status(401).send({ status: "Error", message });
+}
+
+function shouldProactivelyRefresh(decoded) {
+  if (!decoded?.exp) return false;
+  const expiresAtMs = decoded.exp * 1000;
+  const nowMs = Date.now();
+  return expiresAtMs - nowMs <= PROACTIVE_REFRESH_MS;
+}
+
+async function silentlyRefreshAccessToken(req, res, user) {
+  try {
+    const rawRefreshToken = req?.cookies?.refresh_token;
+    if (!rawRefreshToken) return;
+
+    const hashedRefresh = crypto
+      .createHash("sha256")
+      .update(rawRefreshToken)
+      .digest("hex");
+
+    const exists = await prisma.refreshToken.findFirst({
+      where: { token: hashedRefresh, revoked: false },
+      select: { id: true },
+    });
+    if (!exists) return;
+
+    const accessToken = jsonwebtoken.sign(
+      { userId: user.id, email: user.email, role: user.role?.name ?? "user" },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+    );
+
+    if (res?.cookie) {
+      res.cookie("access_token", accessToken, buildAccessCookieOptions());
+    }
+
+    await issueRefreshToken(res, user.id, {
+      rotate: true,
+      oldTokenHash: hashedRefresh,
+    });
+  } catch (_e) {
+    // Silent failure — don't interrupt the request
+  }
+}
+
+async function authenticate(req, res) {
+  let user;
+  let expired = false;
+  let decoded = null;
+  try {
+    user = (await reviseBearer(req)) || (await reviseCookie(req));
+  } catch (e) {
+    if (e.isExpired) {
+      expired = true;
+    } else {
+      return {
+        user: null,
+        error: send401(res, `Token inválido: ${e.message}`),
+      };
+    }
   }
 
-  if (logueado.role === "admin") {
-    next(); // El usuario es un administrador, continuar con la siguiente función middleware
+  if (!user && expired) {
+    user = await tryRefreshAccessToken(req, res);
+  }
+
+  if (!user) {
+    return { user: null, error: send401(res, "Token inválido o expirado.") };
+  }
+
+  // Proactive refresh: if the access token is valid but expires soon,
+  // silently issue a new one so the client doesn't get 401 on the next request.
+  if (!expired) {
+    decoded = getDecodedToken(req);
+    if (decoded && shouldProactivelyRefresh(decoded)) {
+      await silentlyRefreshAccessToken(req, res, user);
+    }
+  }
+
+  return { user, error: null };
+}
+
+async function isLoged(req, res, next) {
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  req.user = user;
+  next();
+}
+
+async function onlyAdmin(req, res, next) {
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  if (user.role.name === "admin") {
+    req.user = user;
+    next();
   } else {
-    res
+    return res
       .status(403)
       .send({ status: "Error", message: "Access denied. Admins only." });
   }
 }
 
 async function onlyUser(req, res, next) {
-  const logueado = (await reviseBearer(req)) || (await reviseCookie(req));
-  // Aquí podrías verificar si el usuario tiene el rol de usuario
-  // Por ejemplo, podrías verificar un campo en el token JWT o en la sesión del usuario
-  if (logueado && logueado.role === "user") {
-    next(); // El usuario es un usuario normal, continuar con la siguiente función middleware
+  const { user, error } = await authenticate(req, res);
+  if (error) return error;
+  if (user.role.name === "user") {
+    req.user = user;
+    next();
   } else {
-    res
+    return res
       .status(403)
       .send({ status: "Error", message: "Access denied. Users only." });
   }
@@ -68,7 +276,6 @@ function getBearerTokenFromReq(req) {
   if (!rawHeader || typeof rawHeader !== "string") {
     return null;
   }
-  console.log(rawHeader);
 
   const [scheme, token] = rawHeader.split(" ");
   if (!scheme || !token) {
@@ -83,11 +290,22 @@ function getBearerTokenFromReq(req) {
 }
 
 function isValidJwtFormat(token) {
-  // JWT format: 3 base64url-encoded parts separated by dots
   const jwtPattern = /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
   return (
     typeof token === "string" && jwtPattern.test(token) && token.length > 100
   );
+}
+
+function getDecodedToken(req) {
+  const bearerToken = getBearerTokenFromReq(req);
+  const cookieToken = req?.cookies?.access_token;
+  const token = bearerToken || cookieToken;
+  if (!token || !isValidJwtFormat(token)) return null;
+  try {
+    return jsonwebtoken.decode(token);
+  } catch (_e) {
+    return null;
+  }
 }
 
 async function reviseBearer(req) {
@@ -106,26 +324,20 @@ async function reviseBearer(req) {
       return false;
     }
 
-    const decodificado = jsonwebtoken.verify(
-      bearerToken,
-      process.env.JWT_SECRET_KEY,
-    );
+    const decodificado = jsonwebtoken.verify(bearerToken, PUBLIC_KEY, {
+      algorithms: [JWT_ALGORITHM],
+    });
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
-    const resultado = await database.execute(
-      hasUserId
-        ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
-        : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
-    );
 
-    const findUser = resultado.rows[0];
+    const findUser = await prisma.user.findFirst({
+      where: hasUserId
+        ? { id: String(decodificado.userId) }
+        : { email: decodificado.email },
+      include: { role: true },
+    });
+
     if (!findUser) {
       return false;
     }
@@ -134,6 +346,11 @@ async function reviseBearer(req) {
       cryptoUtils.USER_SENSITIVE_FIELDS,
     );
   } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      const expiredError = new Error("Token expired");
+      expiredError.isExpired = true;
+      throw expiredError;
+    }
     console.error("Error al verificar el bearer token:", error);
     return false;
   }
@@ -156,26 +373,20 @@ async function reviseCookie(req) {
       return false;
     }
 
-    const decodificado = jsonwebtoken.verify(
-      cookieJWT,
-      process.env.JWT_SECRET_KEY,
-    );
+    const decodificado = jsonwebtoken.verify(cookieJWT, PUBLIC_KEY, {
+      algorithms: [JWT_ALGORITHM],
+    });
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
-    const resultado = await database.execute(
-      hasUserId
-        ? {
-            sql: "SELECT * FROM users WHERE id = ?",
-            args: [decodificado.userId],
-          }
-        : {
-            sql: "SELECT * FROM users WHERE email = ?",
-            args: [decodificado.email],
-          },
-    );
 
-    const findUser = resultado.rows[0];
+    const findUser = await prisma.user.findFirst({
+      where: hasUserId
+        ? { id: String(decodificado.userId) }
+        : { email: decodificado.email },
+      include: { role: true },
+    });
+
     if (!findUser) {
       if (typeof req?.res?.clearCookie === "function") {
         req.res.clearCookie("access_token", {
@@ -187,19 +398,28 @@ async function reviseCookie(req) {
         });
       }
       return false;
-    } else {
-      return cryptoUtils.decryptFields(
-        findUser,
-        cryptoUtils.USER_SENSITIVE_FIELDS,
-      );
     }
+    return cryptoUtils.decryptFields(
+      findUser,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
   } catch (error) {
-    if (error.name !== "TokenExpiredError") {
-      console.error("Error al verificar la cookie:", error);
+    if (error.name === "TokenExpiredError") {
+      const expiredError = new Error("Token expired");
+      expiredError.isExpired = true;
+      throw expiredError;
     }
+    console.error("Error al verificar la cookie:", error);
     return false;
   }
 }
+
+export {
+  buildCookieOptions,
+  buildAccessCookieOptions,
+  issueRefreshToken,
+  persistRefreshToken,
+};
 
 export const authorization = {
   isLoged,
@@ -207,4 +427,5 @@ export const authorization = {
   reviseCookie,
   onlyAdmin,
   onlyUser,
+  tryRefreshAccessToken,
 };
