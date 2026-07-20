@@ -128,6 +128,108 @@ async function getCAEBalance(userToken) {
   }
 }
 
+async function getAllCAEs(adminToken, status) {
+  try {
+    const params = new URLSearchParams({ limit: "10000" });
+    if (status) params.set("status", status);
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae?${params.toString()}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getAllCAEs ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getAllCAEs error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function getTripPassengers(travelId, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/reserva/trayectoId/${travelId}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getTripPassengers ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getTripPassengers error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function getTripRecorrido(travelId, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/trayecto/${travelId}/recorrido`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getTripRecorrido ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getTripRecorrido error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function getTripById(travelId, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/trayecto/${travelId}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getTripById ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getTripById error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
 async function getDriverStats(userId, userToken) {
   try {
     const [tripsResponse, caeResponse] = await Promise.all([
@@ -195,4 +297,8 @@ export const trayectosService = {
   cancelReserva,
   getCAEBalance,
   getDriverStats,
+  getAllCAEs,
+  getTripPassengers,
+  getTripRecorrido,
+  getTripById,
 };

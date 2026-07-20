@@ -259,3 +259,78 @@ POST /api/reserva/:id/issue
 - `401` — No tienes permiso (solo el conductor puede reclamar).
 - `404` — Reserva no encontrada.
 - `409` — El viaje ya fue confirmado como exitoso.
+
+---
+
+### 8. Reserva mediante QR (unión y recogida inmediata)
+
+```
+POST /api/reserva/qr
+```
+
+**Autenticación:** Requerida (`authenticate`)
+
+**Descripción:** Crea una reserva mediante código QR, donde el pasajero ya está físicamente con el conductor. El comportamiento depende de si el trayecto es gratuito o de pago:
+
+- **Trayecto gratuito (precio = 0):** La reserva se crea directamente con estado `completed` y se genera el evento de `recogida` inmediatamente.
+- **Trayecto de pago:** Se crea una sesión de Stripe Checkout e intenta confirmar el PaymentIntent automáticamente usando el método de pago guardado del pasajero (cargo directo `off_session`):
+  - **Si el pago se confirma:** La reserva se crea con estado `completed` y se genera el evento de `recogida`.
+  - **Si no hay método de pago guardado o falla el cargo:** La reserva se crea con estado `pending` y se devuelve la URL de Stripe Checkout para que el pasajero complete el pago manualmente. El evento de `recogida` se generará cuando el webhook confirme el pago.
+
+En todos los casos se decrementa la disponibilidad del trayecto y se crea el evento `reserva_creada`. Si el usuario ya tenía una reserva cancelada, la reactiva.
+
+**Body (JSON):**
+
+```json
+{
+  "trayecto_id": "550e8400-e29b-41d4-a716-446655440000",
+  "lat": 40.4168,
+  "lng": -3.7038
+}
+```
+
+| Campo         | Tipo          | Requerido | Descripción                          |
+| ------------- | ------------- | --------- | ------------------------------------ |
+| `trayecto_id` | string (UUID) | Sí        | ID del trayecto al que se une        |
+| `lat`         | number        | Sí        | Latitud de la ubicación de recogida  |
+| `lng`         | number        | Sí        | Longitud de la ubicación de recogida |
+
+**Respuesta 201 (pago confirmado o trayecto gratuito):**
+
+```json
+{
+  "status": "Success",
+  "message": "Reserva creada y recogida registrada correctamente",
+  "reserva": {
+    "id": "r1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "trayecto_id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "completed"
+  }
+}
+```
+
+**Respuesta 201 (pago pendiente — sin método de pago guardado):**
+
+```json
+{
+  "status": "Success",
+  "message": "Reserva creada en estado pendiente. Se requiere completar el pago.",
+  "requires_payment": true,
+  "stripe_url": "https://checkout.stripe.com/c/pay/cs_...",
+  "stripe_checkout_session_id": "cs_test_...",
+  "reserva": {
+    "id": "r1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "trayecto_id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "pending"
+  }
+}
+```
+
+**Errores:**
+
+- `400` — `trayecto_id`, `lat` o `lng` ausentes; el conductor no puede reservar su propio trayecto; sin asientos libres.
+- `401` — No autenticado.
+- `404` — Trayecto no encontrado.
+- `500` — Error al procesar la transacción (reserva, evento o disponibilidad).

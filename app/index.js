@@ -23,6 +23,7 @@ import { methods as enterpriseServiceEvents } from "./controllers/enterprise_ser
 import { methods as events } from "./controllers/events.js";
 import { methods as companies } from "./controllers/companies.js";
 import { methods as suggestions } from "./controllers/suggestions.js";
+import { methods as caeReports } from "./controllers/cae-reports.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -591,6 +592,11 @@ app.delete("/api/events/:id/join", authorization.isLoged, (req, res) =>
 );
 app.get("/api/events/:id/participants", authorization.isLoged, (req, res) =>
   events.getEventParticipants(req, res),
+);
+
+// --- CAE Reports ---
+app.get("/api/cae-reports/export", authorization.onlyAdmin, (req, res) =>
+  caeReports.generateCAEReport(req, res),
 );
 
 // --- Tags ---
