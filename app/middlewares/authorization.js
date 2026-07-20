@@ -276,7 +276,6 @@ function getBearerTokenFromReq(req) {
   if (!rawHeader || typeof rawHeader !== "string") {
     return null;
   }
-  console.log(rawHeader);
 
   const [scheme, token] = rawHeader.split(" ");
   if (!scheme || !token) {
@@ -331,7 +330,6 @@ async function reviseBearer(req) {
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;
-    console.log(decodificado);
 
     const findUser = await prisma.user.findFirst({
       where: hasUserId
@@ -365,7 +363,6 @@ async function reviseCookie(req) {
     if (!cookieJWT) {
       return false;
     }
-    console.log(cookieJWT);
 
     // Add format validation
     if (!isValidJwtFormat(cookieJWT)) {
@@ -379,7 +376,6 @@ async function reviseCookie(req) {
     const decodificado = jsonwebtoken.verify(cookieJWT, PUBLIC_KEY, {
       algorithms: [JWT_ALGORITHM],
     });
-    console.log(decodificado);
 
     const hasUserId =
       decodificado?.userId !== undefined && decodificado?.userId !== null;

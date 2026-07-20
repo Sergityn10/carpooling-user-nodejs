@@ -300,7 +300,7 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Devuelve el balance del monedero virtual del usuario desde la tabla local `wallet_accounts`. Si no existe, hace fallback a `wallet_recharges` con status `succeeded`.
+**Descripción:** Devuelve el balance del monedero virtual del usuario desde la tabla local `wallet_accounts`. Si no existe, hace fallback a `wallet_recharges` con status `succeeded`. Adicionalmente, consulta el microservicio de trayectos para obtener el balance de informes CAE (Certificados de Ahorro de Energía) del conductor.
 
 **Salida (200):**
 ```json
@@ -308,9 +308,31 @@ Endpoints para gestión de pagos, cuentas Stripe Connect, clientes Stripe, moned
   "status": "Success",
   "balances": [
     { "currency": "eur", "balance_cents": 15000 }
-  ]
+  ],
+  "cae": {
+    "status": "Success",
+    "en_revision": 12.50,
+    "disponible": 45.30,
+    "cancelado": 2.00,
+    "total": 57.80,
+    "detalles": [
+      {
+        "id": "uuid",
+        "id_trayecto": "uuid",
+        "km_recorridos": 120.5,
+        "km_with_company": 85.2,
+        "kwh_generated": 59.64,
+        "eur_generated": 3.41,
+        "status": "completed",
+        "created_at": "2026-07-18T10:00:00Z",
+        "updated_at": "2026-07-18T10:05:00Z"
+      }
+    ]
+  }
 }
 ```
+
+> **Nota:** El campo `cae` puede ser `null` si el microservicio de trayectos no está disponible o el usuario no tiene informes CAE. Los importes de CAE (`en_revision`, `disponible`, `cancelado`, `total`) están en euros (no en céntimos), a diferencia del balance del monedero que está en céntimos.
 
 ---
 

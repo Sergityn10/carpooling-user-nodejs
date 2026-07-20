@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
+import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const createSession = async (req, res) => {
@@ -888,32 +889,45 @@ async function getCashBalance(req, res) {
 async function getWalletBalance(req, res) {
   const user = req.user;
 
+  const bearerToken = req.headers.authorization?.split(" ")[1];
+  const cookieToken = req.cookies?.access_token;
+  const userToken = bearerToken || cookieToken;
+
   const walletAccounts = await prisma.walletAccount.findMany({
     where: { user_id: String(user.id) },
     orderBy: { currency: "asc" },
     select: { currency: true, balance: true },
   });
 
+  let balances;
   if (walletAccounts.length > 0) {
-    const balances = walletAccounts.map((r) => ({
+    balances = walletAccounts.map((r) => ({
       currency: r.currency,
       balance_cents: Number(r.balance ?? 0),
     }));
-    return res.status(200).send({ status: "Success", balances });
+  } else {
+    const recharges = await prisma.walletRecharge.groupBy({
+      by: ["currency"],
+      where: { user_id: String(user.id), status: "succeeded" },
+      _sum: { amount: true },
+    });
+
+    balances = recharges.map((r) => ({
+      currency: r.currency,
+      balance_cents: Number(r._sum.amount ?? 0),
+    }));
   }
 
-  const recharges = await prisma.walletRecharge.groupBy({
-    by: ["currency"],
-    where: { user_id: String(user.id), status: "succeeded" },
-    _sum: { amount: true },
+  let caeBalance = null;
+  if (userToken) {
+    caeBalance = await trayectosService.getCAEBalance(userToken);
+  }
+
+  return res.status(200).send({
+    status: "Success",
+    balances,
+    cae: caeBalance,
   });
-
-  const balances = recharges.map((r) => ({
-    currency: r.currency,
-    balance_cents: Number(r._sum.amount ?? 0),
-  }));
-
-  return res.status(200).send({ status: "Success", balances });
 }
 
 async function getWalletTransactions(req, res) {
