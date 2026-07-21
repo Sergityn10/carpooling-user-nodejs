@@ -254,7 +254,11 @@ async function onlyAdmin(req, res, next) {
   } else {
     return res
       .status(403)
-      .send({ status: "Error", message: "Access denied. Admins only." });
+      .send({
+        status: "Error",
+        message:
+          "Acceso denegado. Solo los administradores pueden acceder a este recurso.",
+      });
   }
 }
 
@@ -267,7 +271,11 @@ async function onlyUser(req, res, next) {
   } else {
     return res
       .status(403)
-      .send({ status: "Error", message: "Access denied. Users only." });
+      .send({
+        status: "Error",
+        message:
+          "Acceso denegado. Solo los usuarios pueden acceder a este recurso.",
+      });
   }
 }
 

@@ -53,8 +53,12 @@ async function register(req, res) {
 
   if (exists) {
     return res
-      .status(400)
-      .send({ status: "Error", message: "Enterprise already exists" });
+      .status(409)
+      .send({
+        status: "Error",
+        message:
+          "Ya existe una empresa registrada con este correo electrónico. Intenta iniciar sesión.",
+      });
   }
 
   const hash = await utils.hashValue(10, password);
@@ -95,7 +99,11 @@ async function register(req, res) {
   } catch (error) {
     return res
       .status(500)
-      .send({ status: "Error", message: "Failed to register enterprise" });
+      .send({
+        status: "Error",
+        message:
+          "No se pudo completar el registro de la empresa. Inténtalo de nuevo más tarde.",
+      });
   }
 }
 
@@ -114,12 +122,24 @@ async function login(req, res) {
   });
 
   if (!enterprise) {
-    return res.status(404).send({ status: "Error", message: "Login failed" });
+    return res
+      .status(404)
+      .send({
+        status: "Error",
+        message:
+          "No existe ninguna empresa con este correo electrónico. ¿Te has registrado ya?",
+      });
   }
 
   const ok = await bcrypt.compare(password, enterprise.password);
   if (!ok) {
-    return res.status(404).send({ status: "Error", message: "Login failed" });
+    return res
+      .status(401)
+      .send({
+        status: "Error",
+        message:
+          "La contraseña introducida no es correcta. Inténtalo de nuevo.",
+      });
   }
 
   const token = jsonwebtoken.sign(
@@ -156,7 +176,10 @@ async function validate(req, res) {
     if (!token) {
       return res
         .status(401)
-        .send({ status: "Error", message: "No token provided" });
+        .send({
+          status: "Error",
+          message: "No se ha proporcionado ningún token de autenticación.",
+        });
     }
 
     const enterprise =
@@ -164,7 +187,11 @@ async function validate(req, res) {
     if (!enterprise) {
       return res
         .status(401)
-        .send({ status: "Error", message: "Invalid token" });
+        .send({
+          status: "Error",
+          message:
+            "El token de acceso no es válido o ha expirado. Inicia sesión de nuevo.",
+        });
     }
 
     const data = {
@@ -189,7 +216,13 @@ async function validate(req, res) {
       .send({ status: "Success", message: "Token is valid", token, data });
   } catch (error) {
     res.clearCookie("enterprise_access_token");
-    return res.status(401).send({ status: "Error", message: "Invalid token" });
+    return res
+      .status(401)
+      .send({
+        status: "Error",
+        message:
+          "No se pudo verificar la autenticación. Inicia sesión de nuevo.",
+      });
   }
 }
 

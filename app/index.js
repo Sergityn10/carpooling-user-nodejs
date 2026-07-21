@@ -34,8 +34,10 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let origin = process.env.ORIGIN;
 origin = origin[origin.length - 1] !== "/" ? origin + "/" : origin;
+console.log(origin);
 let origin_without =
   origin[origin.length - 1] === "/" ? origin.slice(0, -1) : origin;
+console.log(origin_without);
 const trayectos_origin = process.env.TRAYECTOS_ORIGIN;
 const messsages_origin = process.env.MESSSAGES_ORIGIN;
 const app = express();
@@ -335,6 +337,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
   const backendRedirectUrl = `${process.env.MY_ORIGIN}api/auth/oauth/login`; // URL usada en el paso 1
   // 1. URL de tu frontend (ajusta según tu configuración)
   const successUrl = origin;
+  console.log();
   const frontendUrl = `${origin}`;
   const errorUrl = `${origin}login`;
   try {

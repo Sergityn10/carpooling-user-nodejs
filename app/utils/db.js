@@ -24,7 +24,10 @@ async function createUser(
 ) {
   const comprobarUser = await existUser(email);
   if (comprobarUser) {
-    return { status: "Error", message: "Email already created" };
+    return {
+      status: "Error",
+      message: "Ya existe una cuenta registrada con este correo electrónico.",
+    };
   }
 
   const customer_account = await stripe.customers.create({
