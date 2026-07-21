@@ -63,7 +63,7 @@ Endpoints para gestión de eventos de plataforma, etiquetas (tags) y sus relacio
 
 **URL:** `GET /api/events`
 
-**Autenticación:** Requerida (`isLoged`).
+**Autenticación:** No requerida.
 
 **Query params (opcionales):**
 - `search` — Buscar por nombre del evento.
@@ -110,7 +110,7 @@ Endpoints para gestión de eventos de plataforma, etiquetas (tags) y sus relacio
 
 **URL:** `GET /api/events/:id`
 
-**Autenticación:** Requerida (`isLoged`).
+**Autenticación:** No requerida.
 
 **Parámetros de URL:**
 - `id` — UUID del evento.
@@ -156,7 +156,7 @@ Endpoints para gestión de eventos de plataforma, etiquetas (tags) y sus relacio
 
 **URL:** `GET /api/events/nearby`
 
-**Autenticación:** Requerida (`isLoged`).
+**Autenticación:** No requerida.
 
 **Descripción:** Devuelve los eventos ordenados por distancia a la ubicación proporcionada. Usa la fórmula de Haversine para calcular la distancia entre coordenadas. Solo incluye eventos que tengan `latitude` y `longitude` definidas.
 
@@ -571,7 +571,7 @@ El seed crea automáticamente las siguientes etiquetas:
 
 ## Notas generales
 
-- **Permisos:** Las operaciones de lectura (`GET`) requieren autenticación (`isLoged`). Las operaciones de escritura (`POST`, `PATCH`, `DELETE`) requieren rol admin (`onlyAdmin`).
+- **Permisos:** Los endpoints de listado y búsqueda de eventos (`GET /api/events` y `GET /api/events/nearby`) son públicos. El resto de operaciones de lectura (`GET`) requieren autenticación (`isLoged`). Las operaciones de escritura (`POST`, `PATCH`, `DELETE`) requieren rol admin (`onlyAdmin`).
 - **Código único:** Se genera automáticamente al crear un evento usando `crypto.randomBytes` (12 caracteres hexadecimales en mayúsculas).
 - **Paginación:** Los endpoints de listado soportan paginación con `page` y `limit`.
 - **Filtrado:** Se puede filtrar por nombre (`search`) y por etiqueta (`tag`) en `GET /api/events`.

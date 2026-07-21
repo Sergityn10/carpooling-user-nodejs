@@ -560,21 +560,15 @@ app.get(
 );
 
 // --- Events ---
-app.get("/api/events", authorization.isLoged, (req, res) =>
-  events.getAllEvents(req, res),
-);
-app.get("/api/events/nearby", authorization.isLoged, (req, res) =>
-  events.getNearbyEvents(req, res),
-);
+app.get("/api/events", (req, res) => events.getAllEvents(req, res));
+app.get("/api/events/nearby", (req, res) => events.getNearbyEvents(req, res));
 app.get("/api/events/me/joined", authorization.isLoged, (req, res) =>
   events.getMyJoinedEvents(req, res),
 );
 app.get("/api/events/code/:code", authorization.isLoged, (req, res) =>
   events.getEventByCode(req, res),
 );
-app.get("/api/events/:id", authorization.isLoged, (req, res) =>
-  events.getEventById(req, res),
-);
+app.get("/api/events/:id", (req, res) => events.getEventById(req, res));
 app.post("/api/events", authorization.isLoged, (req, res) =>
   events.createEvent(req, res),
 );
@@ -595,8 +589,26 @@ app.get("/api/events/:id/participants", authorization.isLoged, (req, res) =>
 );
 
 // --- CAE Reports ---
-app.get("/api/cae-reports/export", authorization.onlyAdmin, (req, res) =>
-  caeReports.generateCAEReport(req, res),
+app.get("/api/cae-reports/summary", authorization.onlyAdmin, (req, res) =>
+  caeReports.getReportsSummary(req, res),
+);
+app.get("/api/cae-reports", authorization.onlyAdmin, (req, res) =>
+  caeReports.listReports(req, res),
+);
+app.post("/api/cae-reports", authorization.onlyAdmin, (req, res) =>
+  caeReports.createReport(req, res),
+);
+app.get("/api/cae-reports/:id", authorization.onlyAdmin, (req, res) =>
+  caeReports.getReportById(req, res),
+);
+app.patch("/api/cae-reports/:id/status", authorization.onlyAdmin, (req, res) =>
+  caeReports.updateReportStatus(req, res),
+);
+app.delete("/api/cae-reports/:id", authorization.onlyAdmin, (req, res) =>
+  caeReports.deleteReport(req, res),
+);
+app.get("/api/cae-reports/:id/export", authorization.onlyAdmin, (req, res) =>
+  caeReports.exportReportExcel(req, res),
 );
 
 // --- Tags ---
