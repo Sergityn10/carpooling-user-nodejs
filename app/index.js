@@ -339,6 +339,7 @@ app.get("/api/auth/oauth/login", async (req, res) => {
   const successUrl = origin;
   console.log();
   const frontendUrl = `${origin}`;
+  console.log(frontendUrl);
   const errorUrl = `${origin}login`;
   try {
     const oauth2Client = new OAuth2Client(
@@ -373,14 +374,17 @@ app.get("/api/auth/oauth/login", async (req, res) => {
       email: comprobarUser.email,
       role: comprobarUser.role?.name ?? "user",
     };
+    console.log(payload);
     const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
       expiresIn: process.env.EXPIRATION_TIME,
       algorithm: JWT_ALGORITHM,
     });
+    console.log(jwtToken);
 
     // 6. Construir la URL de Redirección con parámetros
     const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&userId=${encodeURIComponent(String(comprobarUser.id ?? ""))}&img_perfil=${encodeURIComponent(String(googleUserData.picture ?? ""))}`;
     // 7. Redirigir al frontend
+    console.log(finalRedirectUrl);
     res.cookie("access_token", jwtToken, {
       expires: new Date(
         Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
