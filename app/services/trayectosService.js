@@ -230,6 +230,168 @@ async function getTripById(travelId, adminToken) {
   }
 }
 
+async function getCAEReportsSummary(adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae/reports/summary`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getCAEReportsSummary ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getCAEReportsSummary error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function getCAEReports(adminToken, status, page = 1, limit = 50) {
+  try {
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+    });
+    if (status) params.set("status", status);
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae/reports?${params.toString()}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getCAEReports ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getCAEReports error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function createCAEReport(adminToken, name) {
+  try {
+    const body = {};
+    if (name) body.name = name;
+    const response = await fetch(`${TRAYECTOS_ORIGIN}/api/cae/reports`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] createCAEReport ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] createCAEReport error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function getCAEReportById(reportId, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae/reports/${reportId}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] getCAEReportById ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] getCAEReportById error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function updateCAEReportStatus(reportId, status, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae/reports/${reportId}/status`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status }),
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] updateCAEReportStatus ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] updateCAEReportStatus error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
+async function deleteCAEReport(reportId, adminToken) {
+  try {
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/cae/reports/${reportId}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] deleteCAEReport ${response.status}: ${await response.text()}`,
+      );
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(
+      "[trayectosService] deleteCAEReport error:",
+      error?.message ?? error,
+    );
+    return null;
+  }
+}
+
 async function getDriverStats(userId, userToken) {
   try {
     const [tripsResponse, caeResponse] = await Promise.all([
@@ -301,4 +463,10 @@ export const trayectosService = {
   getTripPassengers,
   getTripRecorrido,
   getTripById,
+  getCAEReportsSummary,
+  getCAEReports,
+  createCAEReport,
+  getCAEReportById,
+  updateCAEReportStatus,
+  deleteCAEReport,
 };
