@@ -76,7 +76,9 @@ async function updateUserPatch(req, res) {
 
   paymentServices
     .updateStripeAccountFromProfile(id, result.data)
-    .catch(() => {});
+    .catch((err) =>
+      console.error("[updateUserPatch] Error sincronizando con Stripe:", err),
+    );
 
   return res
     .status(200)
@@ -138,7 +140,9 @@ async function updateMyUserPatch(req, res) {
 
   paymentServices
     .updateStripeAccountFromProfile(findUser.id, result.data)
-    .catch(() => {});
+    .catch((err) =>
+      console.error("[updateMyUserPatch] Error sincronizando con Stripe:", err),
+    );
 
   return res
     .status(200)

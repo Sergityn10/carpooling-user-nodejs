@@ -522,100 +522,220 @@ async function createStripeConnectAccount(req, res) {
 }
 
 async function updateStripeAccountFromProfile(userId, updates) {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { stripe_account: true, email: true },
-    });
-    if (!user?.stripe_account) return null;
+  let results = { connectAccount: null, customerAccount: null };
 
-    const businessProfile = {
-      mcc: "4121",
-      product_description:
-        "Conductor de carpooling en la plataforma YouConnext",
-      url: "https://carpooling-webapp-ten.vercel.app",
-    };
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      stripe_account: true,
+      stripe_customer_account: true,
+      email: true,
+      onboarding_ended: true,
+    },
+  });
 
-    const individualUpdate = {};
-
-    if (updates.name) {
-      const nameParts = String(updates.name).trim().split(/\s+/);
-      individualUpdate.first_name = nameParts[0] || undefined;
-      individualUpdate.last_name = nameParts[1] || undefined;
-      businessProfile.name = updates.name;
-    }
-
-    if (updates.email) {
-      individualUpdate.email = updates.email;
-    }
-
-    if (updates.phone) {
-      individualUpdate.phone = updates.phone;
-    }
-
-    if (updates.direccion) {
-      individualUpdate.address = {
-        line1: updates.direccion,
-        ...(updates.codigo_postal
-          ? { postal_code: updates.codigo_postal }
-          : {}),
-        ...(updates.ciudad ? { city: updates.ciudad } : {}),
-        ...(updates.provincia ? { state: updates.provincia } : {}),
-      };
-    }
-
-    if (updates.fecha_nacimiento) {
-      const dob = new Date(updates.fecha_nacimiento);
-      if (!isNaN(dob.getTime())) {
-        individualUpdate.dob = {
-          day: dob.getDate(),
-          month: dob.getMonth() + 1,
-          year: dob.getFullYear(),
-        };
-      }
-    }
-
-    const hasBusinessProfile = Object.keys(businessProfile).length > 0;
-    const hasIndividual = Object.keys(individualUpdate).length > 0;
-
-    if (!hasBusinessProfile && !hasIndividual) return null;
-
-    let account;
-    try {
-      const fullUpdate = {};
-      if (hasBusinessProfile) fullUpdate.business_profile = businessProfile;
-      if (updates.email) fullUpdate.email = updates.email;
-      if (hasIndividual) fullUpdate.individual = individualUpdate;
-
-      account = await stripe.accounts.update(user.stripe_account, fullUpdate);
-    } catch (firstError) {
-      if (firstError.code === "oauth_not_supported" && hasIndividual) {
-        const safeUpdate = {};
-        if (hasBusinessProfile) safeUpdate.business_profile = businessProfile;
-        if (updates.email) safeUpdate.email = updates.email;
-
-        account = await stripe.accounts.update(user.stripe_account, safeUpdate);
-      } else {
-        throw firstError;
-      }
-    }
-
-    await prisma.account.update({
-      where: { stripe_account_id: user.stripe_account },
-      data: {
-        charges_enabled: account.charges_enabled ?? false,
-        transfers_enabled:
-          String(account.capabilities?.transfers ?? "").toLowerCase() ===
-          "active",
-        details_submitted: account.details_submitted ?? false,
-      },
-    });
-
-    return account.id;
-  } catch (error) {
-    console.error("Error updating Stripe account from profile:", error);
+  if (!user) {
+    console.error("[Stripe sync] Usuario no encontrado:", userId);
     return null;
   }
+
+  // --- 1. Actualizar Stripe Customer (sin restricciones) ---
+  if (user.stripe_customer_account) {
+    try {
+      const customerUpdate = {};
+      if (updates.name) customerUpdate.name = updates.name;
+      if (updates.email) customerUpdate.email = updates.email;
+      if (updates.phone) customerUpdate.phone = updates.phone;
+
+      if (Object.keys(customerUpdate).length > 0) {
+        customerUpdate.metadata = {
+          userId: String(userId),
+          lastSyncedAt: new Date().toISOString(),
+        };
+        await stripe.customers.update(
+          user.stripe_customer_account,
+          customerUpdate,
+        );
+        results.customerAccount = user.stripe_customer_account;
+      }
+    } catch (error) {
+      console.error(
+        "[Stripe sync] Error actualizando Customer account:",
+        error?.message ?? error,
+      );
+    }
+  }
+
+  // --- 2. Actualizar Stripe Connect Account ---
+  if (!user.stripe_account) return results;
+
+  const businessProfile = {
+    mcc: "4121",
+    product_description: "Conductor de carpooling en la plataforma YouConnext",
+    url: "https://carpooling-webapp-ten.vercel.app",
+  };
+
+  const individualUpdate = {};
+
+  if (updates.name) {
+    const nameParts = String(updates.name).trim().split(/\s+/);
+    individualUpdate.first_name = nameParts[0] || undefined;
+    individualUpdate.last_name = nameParts.slice(1).join(" ") || undefined;
+    businessProfile.name = updates.name;
+  }
+
+  if (updates.email) {
+    individualUpdate.email = updates.email;
+    businessProfile.support_email = updates.email;
+  }
+
+  if (updates.phone) {
+    individualUpdate.phone = updates.phone;
+  }
+
+  if (updates.direccion) {
+    individualUpdate.address = {
+      line1: updates.direccion,
+      ...(updates.codigo_postal ? { postal_code: updates.codigo_postal } : {}),
+      ...(updates.ciudad ? { city: updates.ciudad } : {}),
+      ...(updates.provincia ? { state: updates.provincia } : {}),
+      country: "ES",
+    };
+  }
+
+  if (updates.fecha_nacimiento) {
+    const dob = new Date(updates.fecha_nacimiento);
+    if (!isNaN(dob.getTime())) {
+      individualUpdate.dob = {
+        day: dob.getDate(),
+        month: dob.getMonth() + 1,
+        year: dob.getFullYear(),
+      };
+    }
+  }
+
+  if (updates.dni) {
+    individualUpdate.id_number = updates.dni;
+  }
+
+  if (updates.genero) {
+    const generoMap = {
+      Masculino: "male",
+      Femenino: "female",
+    };
+    if (generoMap[updates.genero]) {
+      individualUpdate.gender = generoMap[updates.genero];
+    }
+  }
+
+  const hasBusinessProfile = Object.keys(businessProfile).length > 3; // mcc, product_description, url always present
+  const hasIndividual = Object.keys(individualUpdate).length > 0;
+
+  if (!hasBusinessProfile && !hasIndividual) return results;
+
+  // Campos que SIEMPRE se pueden actualizar (incluso post-onboarding)
+  const safeUpdate = {};
+  if (hasBusinessProfile) safeUpdate.business_profile = businessProfile;
+  if (updates.email) safeUpdate.email = updates.email;
+
+  // Campos que SOLO se pueden actualizar ANTES del onboarding
+  // Para Express accounts, una vez creado un Account Link, individual queda bloqueado
+  const onboardingCompleted = Boolean(user.onboarding_ended);
+
+  try {
+    if (hasIndividual && !onboardingCompleted) {
+      // Pre-onboarding: podemos actualizar individual + business_profile + email
+      const fullUpdate = { ...safeUpdate };
+      fullUpdate.individual = individualUpdate;
+      const account = await stripe.accounts.update(
+        user.stripe_account,
+        fullUpdate,
+      );
+      results.connectAccount = account.id;
+
+      await prisma.account.update({
+        where: { stripe_account_id: user.stripe_account },
+        data: {
+          charges_enabled: account.charges_enabled ?? false,
+          transfers_enabled:
+            String(account.capabilities?.transfers ?? "").toLowerCase() ===
+            "active",
+          details_submitted: account.details_submitted ?? false,
+        },
+      });
+    } else if (hasIndividual && onboardingCompleted) {
+      // Post-onboarding: individual está bloqueado, pero business_profile y email sí se pueden actualizar
+      console.warn(
+        "[Stripe sync] Onboarding ya completado. Los campos individuales (nombre, DNI, dirección, etc.) no se pueden actualizar en Stripe Connect. Solo se actualiza business_profile y email.",
+      );
+      if (Object.keys(safeUpdate).length > 0) {
+        const account = await stripe.accounts.update(
+          user.stripe_account,
+          safeUpdate,
+        );
+        results.connectAccount = account.id;
+
+        await prisma.account.update({
+          where: { stripe_account_id: user.stripe_account },
+          data: {
+            charges_enabled: account.charges_enabled ?? false,
+            transfers_enabled:
+              String(account.capabilities?.transfers ?? "").toLowerCase() ===
+              "active",
+            details_submitted: account.details_submitted ?? false,
+          },
+        });
+      }
+    } else {
+      // Solo business_profile y/o email
+      if (Object.keys(safeUpdate).length > 0) {
+        const account = await stripe.accounts.update(
+          user.stripe_account,
+          safeUpdate,
+        );
+        results.connectAccount = account.id;
+
+        await prisma.account.update({
+          where: { stripe_account_id: user.stripe_account },
+          data: {
+            charges_enabled: account.charges_enabled ?? false,
+            transfers_enabled:
+              String(account.capabilities?.transfers ?? "").toLowerCase() ===
+              "active",
+            details_submitted: account.details_submitted ?? false,
+          },
+        });
+      }
+    }
+  } catch (error) {
+    // Si falla por restricciones post-onboarding, intentar solo con safeUpdate
+    if (
+      error.code === "invalid_request_error" &&
+      hasIndividual &&
+      onboardingCompleted &&
+      Object.keys(safeUpdate).length > 0
+    ) {
+      try {
+        const account = await stripe.accounts.update(
+          user.stripe_account,
+          safeUpdate,
+        );
+        results.connectAccount = account.id;
+      } catch (retryError) {
+        console.error(
+          "[Stripe sync] Error actualizando Connect account (retry):",
+          retryError?.message ?? retryError,
+        );
+      }
+    } else {
+      console.error(
+        "[Stripe sync] Error actualizando Connect account:",
+        error?.message ?? error,
+      );
+    }
+  }
+
+  return results;
 }
 
 async function createStripeAccountForUserEmpty(userId, email, name = "") {
