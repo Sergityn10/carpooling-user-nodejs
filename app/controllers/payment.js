@@ -459,31 +459,28 @@ async function createStripeConnectAccount(req, res) {
   // });
   const account = await stripe.accounts.create({
     type: "express",
-    country: country, // Asegúrate que sea 'ES' (o el país del usuario)
+    country: country,
     email: email,
 
-    // 1. Esto le dice a Stripe que NO es una S.L. o Inc.
     business_type: "individual",
 
-    // 2. Pre-llenamos datos de la persona para forzar el flujo individual
     individual: {
       email: user.email,
-      first_name: name.split(" ")[0], // Asumiendo que tienes estos datos
-      last_name: name.split(" ")[1],
+      first_name: user.name || name.split(" ")[0] || "",
+      last_name: user.surname || name.split(" ").slice(1).join(" ") || "",
     },
 
     metadata: {
       name: user.name,
+      surname: user.surname || "",
       email: user.email,
       id: user.id,
     },
     business_profile: {
       mcc: "4121",
-
-      name: name, // Nombre completo del conductor
+      name: name,
       product_description: "Usuario de la aplicación YouConnext",
       support_email: email,
-      // Si el usuario no tiene web, pon la URL de su perfil en tu app
       url: "https://carpooling-webapp-ten.vercel.app",
     },
 
@@ -491,14 +488,6 @@ async function createStripeConnectAccount(req, res) {
       card_payments: { requested: true },
       transfers: { requested: true },
     },
-
-    // 4. En cuentas Express, normalmente no necesitas forzar el TOS aquí
-    // porque el usuario lo acepta en la web de Stripe.
-    // Si te da error, prueba a quitar este bloque.
-    /* tos_acceptance: {
-      service_agreement: "full",
-    }, 
-    */
   });
 
   await prisma.user.update({
@@ -544,6 +533,10 @@ async function updateStripeAccountFromProfile(userId, updates) {
     try {
       const customerUpdate = {};
       if (updates.name) customerUpdate.name = updates.name;
+      if (updates.surname)
+        customerUpdate.name = [updates.name, updates.surname]
+          .filter(Boolean)
+          .join(" ");
       if (updates.email) customerUpdate.email = updates.email;
       if (updates.phone) customerUpdate.phone = updates.phone;
 
@@ -578,10 +571,12 @@ async function updateStripeAccountFromProfile(userId, updates) {
   const individualUpdate = {};
 
   if (updates.name) {
-    const nameParts = String(updates.name).trim().split(/\s+/);
-    individualUpdate.first_name = nameParts[0] || undefined;
-    individualUpdate.last_name = nameParts.slice(1).join(" ") || undefined;
+    individualUpdate.first_name = updates.name;
     businessProfile.name = updates.name;
+  }
+
+  if (updates.surname) {
+    individualUpdate.last_name = updates.surname;
   }
 
   if (updates.email) {
@@ -738,7 +733,12 @@ async function updateStripeAccountFromProfile(userId, updates) {
   return results;
 }
 
-async function createStripeAccountForUserEmpty(userId, email, name = "") {
+async function createStripeAccountForUserEmpty(
+  userId,
+  email,
+  name = "",
+  surname = "",
+) {
   try {
     const nameParts = name.trim().split(/\s+/);
     const account = await stripe.accounts.create({
@@ -748,7 +748,9 @@ async function createStripeAccountForUserEmpty(userId, email, name = "") {
       business_type: "individual",
       individual: {
         ...(nameParts[0] ? { first_name: nameParts[0] } : {}),
-        ...(nameParts[1] ? { last_name: nameParts[1] } : {}),
+        ...(surname || nameParts.slice(1).join(" ")
+          ? { last_name: surname || nameParts.slice(1).join(" ") }
+          : {}),
       },
       business_profile: {
         mcc: "4121",
@@ -1533,6 +1535,7 @@ async function createAccountLink(req, res) {
         onboarding_ended: true,
         email: true,
         name: true,
+        surname: true,
       },
     });
 
@@ -1552,17 +1555,20 @@ async function createAccountLink(req, res) {
         business_type: "individual",
         individual: {
           email: dbUser.email,
-          first_name: (dbUser.name || "").split(" ")[0] || "",
-          last_name: (dbUser.name || "").split(" ").slice(1).join(" ") || "",
+          first_name: dbUser.name || "",
+          last_name: dbUser.surname || "",
         },
         metadata: {
           name: dbUser.name || "",
+          surname: dbUser.surname || "",
           email: dbUser.email,
           id: String(user.id),
         },
         business_profile: {
           mcc: "4121",
-          name: dbUser.name || dbUser.email,
+          name:
+            [dbUser.name, dbUser.surname].filter(Boolean).join(" ") ||
+            dbUser.email,
           product_description: "Usuario de la aplicación YouConnext",
           support_email: dbUser.email,
           url: "https://carpooling-webapp-ten.vercel.app",

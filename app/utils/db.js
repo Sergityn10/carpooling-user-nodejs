@@ -18,7 +18,7 @@ async function getUser(data) {
 }
 
 async function createUser(
-  { email, password, name },
+  { email, password, name, surname },
   auth_method = "password",
   google_id = "",
 ) {
@@ -38,7 +38,7 @@ async function createUser(
 
   const hash = await utils.hashValue(10, password);
   const encryptedUserFields = cryptoUtils.encryptFields(
-    { name },
+    { name, surname },
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
@@ -47,6 +47,7 @@ async function createUser(
       email,
       password: hash,
       name: encryptedUserFields.name,
+      surname: encryptedUserFields.surname,
       stripe_customer_account: customer_account.id,
       auth_method,
       ...(google_id ? { google_id } : {}),
@@ -64,7 +65,9 @@ async function createUser(
       business_type: "individual",
       individual: {
         ...(nameParts[0] ? { first_name: nameParts[0] } : {}),
-        ...(nameParts[1] ? { last_name: nameParts[1] } : {}),
+        ...(surname || nameParts.slice(1).join(" ")
+          ? { last_name: surname || nameParts.slice(1).join(" ") }
+          : {}),
       },
       business_profile: {
         mcc: "4121",
