@@ -2,6 +2,7 @@ import z from "zod";
 
 const userSchema = z.object({
   name: z.string().optional(),
+  surname: z.string().optional(),
   phone: z.string().optional(),
   stripe_customer_id: z.string().optional(),
   img_perfil: z.string().optional(),

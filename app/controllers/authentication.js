@@ -211,12 +211,10 @@ async function oauthGoogle(req, res) {
       redirectUrl = `${origin}api/auth/oauth/register`;
       break;
     default:
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message: "Método no válido. Debe ser 'login' o 'register'.",
-        });
+      return res.status(400).send({
+        status: "Error",
+        message: "Método no válido. Debe ser 'login' o 'register'.",
+      });
   }
   const oauth2Client = new OAuth2Client(client_id, secret_id, redirectUrl);
 
@@ -233,13 +231,11 @@ async function oauthGoogleAndroid(req, res) {
     const { id_token, method } = req.body;
 
     if (!id_token) {
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message:
-            "Falta el token de Google (id_token). No se puede verificar la identidad.",
-        });
+      return res.status(400).send({
+        status: "Error",
+        message:
+          "Falta el token de Google (id_token). No se puede verificar la identidad.",
+      });
     }
 
     if (method !== "login" && method !== "register") {
@@ -258,13 +254,11 @@ async function oauthGoogleAndroid(req, res) {
       });
       payload = ticket.getPayload();
     } catch (verifyError) {
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message:
-            "El token de Google no es válido o ha expirado. Cierra sesión en Google e inténtalo de nuevo.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message:
+          "El token de Google no es válido o ha expirado. Cierra sesión en Google e inténtalo de nuevo.",
+      });
     }
 
     if (!payload) {
@@ -281,13 +275,11 @@ async function oauthGoogleAndroid(req, res) {
     const picture = payload.picture || "";
 
     if (!email) {
-      return res
-        .status(400)
-        .send({
-          status: "Error",
-          message:
-            "Tu cuenta de Google no tiene un correo asociado. Revisa la configuración de tu cuenta de Google.",
-        });
+      return res.status(400).send({
+        status: "Error",
+        message:
+          "Tu cuenta de Google no tiene un correo asociado. Revisa la configuración de tu cuenta de Google.",
+      });
     }
 
     const existingUser = await prisma.user.findFirst({
@@ -297,13 +289,11 @@ async function oauthGoogleAndroid(req, res) {
 
     if (method === "register") {
       if (existingUser) {
-        return res
-          .status(409)
-          .send({
-            status: "Error",
-            message:
-              "Ya existe una cuenta con este correo electrónico. Intenta iniciar sesión con Google.",
-          });
+        return res.status(409).send({
+          status: "Error",
+          message:
+            "Ya existe una cuenta con este correo electrónico. Intenta iniciar sesión con Google.",
+        });
       }
 
       const { methods: dbUtils } = await import("../utils/db.js");
@@ -314,13 +304,11 @@ async function oauthGoogleAndroid(req, res) {
       );
 
       if (userResult?.status !== "Success") {
-        return res
-          .status(500)
-          .send({
-            status: "Error",
-            message:
-              "No se pudo completar el registro. Inténtalo de nuevo más tarde.",
-          });
+        return res.status(500).send({
+          status: "Error",
+          message:
+            "No se pudo completar el registro. Inténtalo de nuevo más tarde.",
+        });
       }
 
       const newUser = userResult.user;
@@ -347,13 +335,11 @@ async function oauthGoogleAndroid(req, res) {
 
     if (method === "login") {
       if (!existingUser) {
-        return res
-          .status(404)
-          .send({
-            status: "Error",
-            message:
-              "No existe ninguna cuenta con este correo. ¿Te has registrado ya con Google?",
-          });
+        return res.status(404).send({
+          status: "Error",
+          message:
+            "No existe ninguna cuenta con este correo. ¿Te has registrado ya con Google?",
+        });
       }
 
       if (existingUser.auth_method !== authMethods.GOOGLE) {
@@ -434,12 +420,10 @@ async function refresh(req, res) {
   try {
     const rawRefreshToken = req?.cookies?.refresh_token;
     if (!rawRefreshToken) {
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message: "No hay sesión activa. Inicia sesión de nuevo.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "No hay sesión activa. Inicia sesión de nuevo.",
+      });
     }
 
     const hashedRefresh = crypto
@@ -457,13 +441,11 @@ async function refresh(req, res) {
         "refresh_token",
         buildCookieOptions(new Date(), { httpOnly: true }),
       );
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message:
-            "La sesión ha expirado o no es válida. Inicia sesión de nuevo.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message:
+          "La sesión ha expirado o no es válida. Inicia sesión de nuevo.",
+      });
     }
 
     const expiresAt = new Date(stored.expires_at);
@@ -475,13 +457,11 @@ async function refresh(req, res) {
         "refresh_token",
         buildCookieOptions(new Date(), { httpOnly: true }),
       );
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message:
-            "Tu sesión ha expirado. Inicia sesión de nuevo para continuar.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message:
+          "Tu sesión ha expirado. Inicia sesión de nuevo para continuar.",
+      });
     }
 
     const user = await prisma.user.findUnique({
@@ -494,12 +474,10 @@ async function refresh(req, res) {
         "refresh_token",
         buildCookieOptions(new Date(), { httpOnly: true }),
       );
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message: "El usuario asociado a esta sesión ya no existe.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "El usuario asociado a esta sesión ya no existe.",
+      });
     }
 
     const role = user.role?.name ?? "user";
@@ -532,12 +510,10 @@ async function refresh(req, res) {
       "refresh_token",
       buildCookieOptions(new Date(), { httpOnly: true }),
     );
-    return res
-      .status(401)
-      .send({
-        status: "Error",
-        message: "No se pudo renovar la sesión. Inicia sesión de nuevo.",
-      });
+    return res.status(401).send({
+      status: "Error",
+      message: "No se pudo renovar la sesión. Inicia sesión de nuevo.",
+    });
   }
 }
 
@@ -554,12 +530,10 @@ async function validate(req, res) {
     }
     const cookieToken = req?.cookies?.access_token;
     if (!bearerToken && !cookieToken) {
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message: "No se ha proporcionado ningún token de autenticación.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "No se ha proporcionado ningún token de autenticación.",
+      });
     }
 
     const token = bearerToken || cookieToken;
@@ -593,18 +567,17 @@ async function validate(req, res) {
         sameSite: "none",
         path: "/",
       });
-      return res
-        .status(401)
-        .send({
-          status: "Error",
-          message:
-            "El usuario asociado a este token ya no existe en el sistema.",
-        });
+      return res.status(401).send({
+        status: "Error",
+        message: "El usuario asociado a este token ya no existe en el sistema.",
+      });
     }
 
     const user = {
       userId: findUser.id,
       email: findUser.email,
+      name: findUser.name,
+      surname: findUser.surname,
       img_perfil: findUser.img_perfil,
       ciudad: findUser.ciudad,
       onboarding_ended: findUser.onboarding_ended,
@@ -630,19 +603,15 @@ async function existEmail(req, res) {
   const { email } = req.query;
   const comprobarUser = await prisma.user.findUnique({ where: { email } });
   if (comprobarUser) {
-    return res
-      .status(409)
-      .send({
-        status: "Error",
-        message: "Ya existe una cuenta registrada con este correo electrónico.",
-      });
-  }
-  return res
-    .status(200)
-    .send({
-      status: "Success",
-      message: "Este correo electrónico está disponible.",
+    return res.status(409).send({
+      status: "Error",
+      message: "Ya existe una cuenta registrada con este correo electrónico.",
     });
+  }
+  return res.status(200).send({
+    status: "Success",
+    message: "Este correo electrónico está disponible.",
+  });
 }
 
 export const methods = {
