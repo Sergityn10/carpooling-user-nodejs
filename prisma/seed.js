@@ -95,6 +95,83 @@ async function main() {
     });
   }
   console.log(`Created ${defaultTags.length} default tags`);
+
+  // 4. Create default preference definitions
+  const defaultPreferences = [
+    {
+      pref_key: "smoking_allowed",
+      value_type: "boolean",
+      default_value: "0",
+      enum_values: "0,1",
+      description: "¿Se permite fumar en el coche?",
+      is_active: true,
+    },
+    {
+      pref_key: "pets_allowed",
+      value_type: "boolean",
+      default_value: "0",
+      enum_values: "0,1",
+      description: "¿Se permiten mascotas en el coche?",
+      is_active: true,
+    },
+    {
+      pref_key: "music",
+      value_type: "boolean",
+      default_value: "1",
+      enum_values: "0,1",
+      description: "¿Se permite música en el coche?",
+      is_active: true,
+    },
+    {
+      pref_key: "talk_level",
+      value_type: "enum",
+      default_value: "normal",
+      enum_values: "silencioso,normal,charlatan",
+      description: "Nivel de conversación preferido",
+      is_active: true,
+    },
+    {
+      pref_key: "temperature",
+      value_type: "enum",
+      default_value: "templado",
+      enum_values: "frio,templado,calido",
+      description: "Temperatura preferida en el coche",
+      is_active: true,
+    },
+    {
+      pref_key: "luggage_size",
+      value_type: "enum",
+      default_value: "medio",
+      enum_values: "pequeno,medio,grande",
+      description: "Tamaño de equipaje permitido",
+      is_active: true,
+    },
+    {
+      pref_key: "stops_allowed",
+      value_type: "boolean",
+      default_value: "0",
+      enum_values: "0,1",
+      description: "¿Se permiten paradas durante el trayecto?",
+      is_active: true,
+    },
+    {
+      pref_key: "max_detour_km",
+      value_type: "number",
+      default_value: "0",
+      enum_values: null,
+      description: "Desvío máximo permitido en kilómetros",
+      is_active: true,
+    },
+  ];
+
+  for (const pref of defaultPreferences) {
+    await prisma.preferenceDefinition.upsert({
+      where: { pref_key: pref.pref_key },
+      update: {},
+      create: pref,
+    });
+  }
+  console.log(`Created ${defaultPreferences.length} preference definitions`);
 }
 
 main()
