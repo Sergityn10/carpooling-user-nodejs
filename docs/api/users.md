@@ -58,7 +58,7 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
 
 **Autenticación:** Requerida (`isLoged`).
 
-**Descripción:** Devuelve la información completa del usuario autenticado, incluyendo valoración media, número de opiniones, número de viajes, preferencias y un objeto `completitud` que indica el porcentaje de perfil completado y los campos faltantes.
+**Descripción:** Devuelve la información completa del usuario autenticado, incluyendo DNI, ubicación (ciudad, provincia, código postal, dirección, país), valoración media, número de opiniones, número de viajes, preferencias, un objeto `completitud` que indica el porcentaje de perfil completado y los campos faltantes, un objeto `completitud_cae` para generación de CAEs, y un objeto `monedero` con el estado de la wallet y Stripe Connect.
 
 **Salida (200):**
 ```json
@@ -74,6 +74,12 @@ Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren 
     "role": "user",
     "fecha_nacimiento": "1990-01-15",
     "genero": "Masculino",
+    "dni": "12345678A",
+    "ciudad": "Madrid",
+    "provincia": "Madrid",
+    "codigo_postal": "28001",
+    "direccion": "Calle Gran Vía 1",
+    "pais": "España",
     "averageRating": 8.5,
     "numOpinions": 10,
     "myNumOpinions": 5,
@@ -183,7 +189,7 @@ Indica si el usuario tiene todo configurado para recibir ganancias:
 
 **Autenticación:** No requerida.
 
-**Descripción:** Devuelve información de perfil pública de un usuario: nombre, email, imagen, valoración media, número de opiniones, número de viajes, sobre mí y preferencias.
+**Descripción:** Devuelve información de perfil de un usuario: nombre, email, imagen, DNI, ubicación (ciudad, provincia, código postal, dirección, país), valoración media, número de opiniones, número de viajes, sobre mí y preferencias.
 
 **Parámetros de URL:**
 - `id` — ID numérico del usuario.
@@ -201,6 +207,14 @@ Indica si el usuario tiene todo configurado para recibir ganancias:
     "email": "user@example.com",
     "img_perfil": "url",
     "role": "user",
+    "fecha_nacimiento": "1990-01-15",
+    "genero": "Masculino",
+    "dni": "12345678A",
+    "ciudad": "Madrid",
+    "provincia": "Madrid",
+    "codigo_postal": "28001",
+    "direccion": "Calle Gran Vía 1",
+    "pais": "España",
     "averageRating": 8.5,
     "numOpinions": 10,
     "myNumOpinions": 5,

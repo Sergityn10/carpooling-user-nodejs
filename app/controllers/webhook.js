@@ -2,6 +2,15 @@ import prisma from "../lib/prisma.js";
 import Stripe from "stripe";
 import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
+const STRIPE_FIXED_FEE_CENTS = parseInt(
+  process.env.STRIPE_FEE_FIXED_CENTS ?? "25",
+  10,
+);
+const PLATFORM_MARGIN_PERCENT = parseFloat(
+  process.env.PLATFORM_MARGIN_PERCENT ?? "0.15",
+);
 export const status = {
   1: "pending",
   2: "succeeded",
@@ -496,8 +505,38 @@ async function handlePaymentIntentSucceeded(jsonData) {
     );
   }
 
-  const commissionAmountCents = Math.round(grossAmountCents * 0.15);
-  const netAmountCents = grossAmountCents - commissionAmountCents;
+  const driverPriceCents = paymentIntent?.metadata?.driver_price_cents
+    ? parseInt(paymentIntent.metadata.driver_price_cents, 10)
+    : null;
+  const applicationFeeCents = paymentIntent?.metadata?.application_fee_cents
+    ? parseInt(paymentIntent.metadata.application_fee_cents, 10)
+    : null;
+  const platformFeeCents = paymentIntent?.metadata?.platform_fee_cents
+    ? parseInt(paymentIntent.metadata.platform_fee_cents, 10)
+    : null;
+  const stripeFeeCents = paymentIntent?.metadata?.stripe_fee_cents
+    ? parseInt(paymentIntent.metadata.stripe_fee_cents, 10)
+    : null;
+
+  let commissionAmountCents;
+  let netAmountCents;
+
+  if (driverPriceCents !== null && platformFeeCents !== null) {
+    commissionAmountCents = platformFeeCents;
+    netAmountCents = driverPriceCents;
+  } else {
+    const netPriceCents = paymentIntent?.metadata?.net_price_cents
+      ? parseInt(paymentIntent.metadata.net_price_cents, 10)
+      : Math.round(grossAmountCents / (1 + PLATFORM_MARGIN_PERCENT));
+    const driverPrice = Math.round(
+      netPriceCents / (1 + PLATFORM_MARGIN_PERCENT),
+    );
+    const calculatedStripeFeeCents =
+      Math.round(grossAmountCents * STRIPE_PERCENT) + STRIPE_FIXED_FEE_CENTS;
+    commissionAmountCents =
+      grossAmountCents - driverPrice - calculatedStripeFeeCents;
+    netAmountCents = driverPrice;
+  }
 
   if (netAmountCents < 0) {
     throw new Error("Invalid commission calculation (net < 0)");
@@ -601,7 +640,7 @@ async function handlePaymentIntentSucceeded(jsonData) {
         userId: platformUserId,
         type: "commision",
         amount: commissionAmountCents,
-        description: `${baseDesc} (comisión 15%)`,
+        description: `${baseDesc} (comisión ${PLATFORM_MARGIN_PERCENT * 100}%)`,
       });
     });
   } catch (error) {

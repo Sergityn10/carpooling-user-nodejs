@@ -443,6 +443,17 @@ app.post(
     payment.createAccountLink(req, res);
   },
 );
+app.get(
+  "/api/payment/stripe-connect-link",
+  authorization.isLoged,
+  (req, res) => {
+    req.body = {
+      return_url: req.query.return_url,
+      refresh_url: req.query.refresh_url,
+    };
+    payment.createAccountLink(req, res);
+  },
+);
 app.get("/api/payment/stripe-redirect", (req, res) =>
   payment.stripeRedirect(req, res),
 );
@@ -497,6 +508,10 @@ app.post(
   authorization.isLoged,
   (req, res) => payment.createCheckoutPaymentIntent(req, res),
 );
+app.post("/api/payment/calculate-price", authorization.isLoged, (req, res) =>
+  payment.calculatePrice(req, res),
+);
+app.get("/api/payment/cotizar", (req, res) => payment.cotizar(req, res));
 app.post(
   "/api/payment/payment-intent/resume",
   authorization.isLoged,

@@ -6,6 +6,42 @@ import prisma from "../lib/prisma.js";
 import { trayectosService } from "../services/trayectosService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
+const STRIPE_FIXED_FEE_CENTS = parseInt(
+  process.env.STRIPE_FEE_FIXED_CENTS ?? "25",
+  10,
+);
+const PLATFORM_MARGIN_PERCENT = parseFloat(
+  process.env.PLATFORM_MARGIN_PERCENT ?? "0.15",
+);
+
+function calculateTotalPrice(netPriceCents) {
+  const driverPriceCents = Math.round(
+    netPriceCents / (1 + PLATFORM_MARGIN_PERCENT),
+  );
+  const totalCents = Math.round(
+    (netPriceCents + STRIPE_FIXED_FEE_CENTS) / (1 - STRIPE_PERCENT),
+  );
+  const stripeFeeCents =
+    Math.round(totalCents * STRIPE_PERCENT) + STRIPE_FIXED_FEE_CENTS;
+  const applicationFeeCents = totalCents - driverPriceCents;
+  const platformFeeCents = applicationFeeCents - stripeFeeCents;
+  return {
+    total_cents: totalCents,
+    net_price_cents: netPriceCents,
+    driver_price_cents: driverPriceCents,
+    application_fee_cents: applicationFeeCents,
+    platform_fee_cents: platformFeeCents,
+    stripe_fee_cents: stripeFeeCents,
+    total_eur: totalCents / 100,
+    net_price_eur: netPriceCents / 100,
+    driver_price_eur: driverPriceCents / 100,
+    application_fee_eur: applicationFeeCents / 100,
+    platform_fee_eur: platformFeeCents / 100,
+    stripe_fee_eur: stripeFeeCents / 100,
+  };
+}
+
 const createSession = async (req, res) => {
   const { amount, description, success_url, cancel_url } = req.body;
 
@@ -138,6 +174,29 @@ async function createCheckoutPaymentIntent(req, res) {
       });
     }
 
+    const recipientAccount = await prisma.account.findUnique({
+      where: { stripe_account_id: recipient.stripe_account },
+      select: {
+        charges_enabled: true,
+        transfers_enabled: true,
+        details_submitted: true,
+      },
+    });
+
+    if (!recipientAccount || !recipientAccount.transfers_enabled) {
+      return res.status(400).send({
+        status: "Error",
+        message:
+          "Recipient has not completed Stripe onboarding or transfers are not enabled. The recipient must complete onboarding before receiving payments.",
+        recipient_onboarding_completed: Boolean(
+          recipientAccount?.details_submitted,
+        ),
+        recipient_transfers_enabled: Boolean(
+          recipientAccount?.transfers_enabled,
+        ),
+      });
+    }
+
     const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
       /\/$/,
       "",
@@ -150,6 +209,8 @@ async function createCheckoutPaymentIntent(req, res) {
       req.body?.cancel_url ||
       `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
 
+    const pricing = calculateTotalPrice(amount);
+
     const checkout_session = await stripe.checkout.sessions.create({
       customer: sender.stripe_customer_account,
       line_items: [
@@ -161,13 +222,13 @@ async function createCheckoutPaymentIntent(req, res) {
               description:
                 description || `Pago a ${recipient.name || "conductor"}`,
             },
-            unit_amount: amount,
+            unit_amount: pricing.total_cents,
           },
           quantity: 1,
         },
       ],
       payment_intent_data: {
-        application_fee_amount: Math.round(amount * 0.15),
+        application_fee_amount: pricing.application_fee_cents,
         capture_method: "manual",
         transfer_data: {
           destination: recipient.stripe_account,
@@ -180,6 +241,12 @@ async function createCheckoutPaymentIntent(req, res) {
           destination_account: String(recipient.stripe_account),
           id_trayecto: trayectoId,
           recipient_user_id: String(recipient_user_id),
+          net_price_cents: String(pricing.net_price_cents),
+          driver_price_cents: String(pricing.driver_price_cents),
+          total_cents: String(pricing.total_cents),
+          application_fee_cents: String(pricing.application_fee_cents),
+          platform_fee_cents: String(pricing.platform_fee_cents),
+          stripe_fee_cents: String(pricing.stripe_fee_cents),
         },
       },
       metadata: {
@@ -190,6 +257,12 @@ async function createCheckoutPaymentIntent(req, res) {
         destination_account: recipient.stripe_account,
         id_trayecto: trayectoId,
         recipient_user_id: String(recipient_user_id),
+        net_price_cents: String(pricing.net_price_cents),
+        driver_price_cents: String(pricing.driver_price_cents),
+        total_cents: String(pricing.total_cents),
+        application_fee_cents: String(pricing.application_fee_cents),
+        platform_fee_cents: String(pricing.platform_fee_cents),
+        stripe_fee_cents: String(pricing.stripe_fee_cents),
       },
       submit_type: "pay",
       mode: "payment",
@@ -197,7 +270,10 @@ async function createCheckoutPaymentIntent(req, res) {
       cancel_url: cancelUrl,
     });
 
-    return res.status(200).send(checkout_session);
+    return res.status(200).send({
+      ...checkout_session,
+      pricing,
+    });
   } catch (error) {
     console.error("Error creating checkout payment intent:", error);
     return res
@@ -296,6 +372,11 @@ async function resumeCheckoutPaymentIntent(req, res) {
       null;
     const recipientUserId = paymentIntent?.metadata?.recipient_user_id || null;
 
+    const netPriceCents = paymentIntent?.metadata?.net_price_cents
+      ? parseInt(paymentIntent.metadata.net_price_cents, 10)
+      : amount;
+    const pricing = calculateTotalPrice(netPriceCents);
+
     const checkout_session = await stripe.checkout.sessions.create({
       customer: sender.stripe_customer_account,
       line_items: [
@@ -308,13 +389,13 @@ async function resumeCheckoutPaymentIntent(req, res) {
                 paymentIntent.description ||
                 `Pago a ${recipient?.name || "conductor"}`,
             },
-            unit_amount: amount,
+            unit_amount: pricing.total_cents,
           },
           quantity: 1,
         },
       ],
       payment_intent_data: {
-        application_fee_amount: Math.round(amount * 0.15),
+        application_fee_amount: pricing.application_fee_cents,
         capture_method: "manual",
         transfer_data: {
           destination: destinationAccount,
@@ -327,6 +408,12 @@ async function resumeCheckoutPaymentIntent(req, res) {
           destination_account: String(destinationAccount),
           id_trayecto: String(trayectoId ?? ""),
           recipient_user_id: String(recipientUserId ?? ""),
+          net_price_cents: String(pricing.net_price_cents),
+          driver_price_cents: String(pricing.driver_price_cents),
+          total_cents: String(pricing.total_cents),
+          application_fee_cents: String(pricing.application_fee_cents),
+          platform_fee_cents: String(pricing.platform_fee_cents),
+          stripe_fee_cents: String(pricing.stripe_fee_cents),
         },
       },
       metadata: {
@@ -337,6 +424,12 @@ async function resumeCheckoutPaymentIntent(req, res) {
         destination_account: String(destinationAccount),
         id_trayecto: String(trayectoId ?? ""),
         recipient_user_id: String(recipientUserId ?? ""),
+        net_price_cents: String(pricing.net_price_cents),
+        driver_price_cents: String(pricing.driver_price_cents),
+        total_cents: String(pricing.total_cents),
+        application_fee_cents: String(pricing.application_fee_cents),
+        platform_fee_cents: String(pricing.platform_fee_cents),
+        stripe_fee_cents: String(pricing.stripe_fee_cents),
       },
       submit_type: "pay",
       mode: "payment",
@@ -347,7 +440,7 @@ async function resumeCheckoutPaymentIntent(req, res) {
     await prisma.paymentIntent.create({
       data: {
         stripe_payment_id: checkout_session.payment_intent,
-        amount: amount,
+        amount: pricing.total_cents,
         currency: String(paymentIntent.currency || "eur"),
         description: dbPaymentIntent?.description ?? undefined,
         destination_account: destinationAccount,
@@ -362,6 +455,7 @@ async function resumeCheckoutPaymentIntent(req, res) {
       status: "Success",
       message: "Checkout session created for pending payment",
       checkout_session,
+      pricing,
       payment_intent_status: piStatus,
       id_reserva: String(id_reserva),
     });
@@ -847,36 +941,59 @@ const createLoginLink = async (req, res) => {
   const user = req.user;
   const dbUser = await prisma.user.findUnique({
     where: { id: String(user.id) },
-    select: { stripe_account: true },
+    select: { stripe_account: true, onboarding_ended: true },
   });
   if (!dbUser?.stripe_account) {
     return res
       .status(404)
       .send({ status: "Error", message: "You dont have an account" });
   }
-  const loginLink = await stripe.accounts.createLoginLink(
-    dbUser.stripe_account,
-  );
-  return res.status(200).send({
-    status: "Success",
-    message: "Stripe customer created successfully",
-    loginLink,
-  });
+
+  if (!dbUser.onboarding_ended) {
+    return res.status(400).send({
+      status: "Error",
+      message:
+        "Onboarding not completed. Use POST /api/payment/stripe-connect-link to complete onboarding first.",
+      onboarding_completed: false,
+    });
+  }
+
+  try {
+    const loginLink = await stripe.accounts.createLoginLink(
+      dbUser.stripe_account,
+    );
+    return res.status(200).send({
+      status: "Success",
+      message: "Stripe login link created successfully",
+      loginLink,
+    });
+  } catch (error) {
+    console.error("[createLoginLink] Error:", error?.message);
+    return res.status(400).send({
+      status: "Error",
+      message: error?.message ?? String(error),
+    });
+  }
 };
 
 const createPaymentIntent = async (req, res) => {
   const { amount, currency, destination } = req.body;
-  let applicationFeeAmount = amount * 0.1;
+  const pricing = calculateTotalPrice(amount);
   const paymentIntent = await stripe.paymentIntents.create({
-    amount: amount,
+    amount: pricing.total_cents,
     currency: currency,
     metadata: {
       userId: String(req.user.id),
-      applicationFeeAmount: applicationFeeAmount,
+      net_price_cents: String(pricing.net_price_cents),
+      driver_price_cents: String(pricing.driver_price_cents),
+      total_cents: String(pricing.total_cents),
+      application_fee_cents: String(pricing.application_fee_cents),
+      platform_fee_cents: String(pricing.platform_fee_cents),
+      stripe_fee_cents: String(pricing.stripe_fee_cents),
     },
     customer: req.user.stripe_customer_account,
     capture_method: "manual",
-    application_fee_amount: applicationFeeAmount,
+    application_fee_amount: pricing.application_fee_cents,
     transfer_data: {
       destination: destination,
     },
@@ -885,6 +1002,7 @@ const createPaymentIntent = async (req, res) => {
     status: "Success",
     message: "Stripe payment intent created successfully",
     paymentIntent,
+    pricing,
   });
 };
 const getMyStripeCustomerAccount = async (req, res) => {
@@ -1676,6 +1794,56 @@ async function getLinkedExternalAccounts(req, res) {
   }
 }
 
+async function calculatePrice(req, res) {
+  try {
+    const { driver_price_cents } = req.body;
+    if (!driver_price_cents || driver_price_cents <= 0) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Missing or invalid driver_price_cents",
+      });
+    }
+    const pricing = calculateTotalPrice(parseInt(driver_price_cents, 10));
+    return res.status(200).send({ status: "Success", pricing });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
+async function cotizar(req, res) {
+  try {
+    const netoRaw = req.query?.neto;
+    const neto = parseInt(netoRaw, 10);
+    if (!netoRaw || isNaN(neto) || neto <= 0) {
+      return res.status(400).send({
+        status: "Error",
+        message:
+          "Missing or invalid 'neto' query param (must be a positive number in cents)",
+      });
+    }
+    const totalCents = Math.round(
+      (neto + STRIPE_FIXED_FEE_CENTS) / (1 - STRIPE_PERCENT),
+    );
+    const stripeFeeCents =
+      Math.round(totalCents * STRIPE_PERCENT) + STRIPE_FIXED_FEE_CENTS;
+    return res.status(200).send({
+      status: "Success",
+      neto_cents: neto,
+      total_cents: totalCents,
+      stripe_fee_cents: stripeFeeCents,
+      neto_eur: neto / 100,
+      total_eur: totalCents / 100,
+      stripe_fee_eur: stripeFeeCents / 100,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
 export const methods = {
   createSession,
   createStripeConnectAccount,
@@ -1704,4 +1872,6 @@ export const methods = {
   createStripeAccountForUserEmpty,
   updateStripeAccountFromProfile,
   getLinkedExternalAccounts,
+  calculatePrice,
+  cotizar,
 };
