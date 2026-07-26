@@ -582,7 +582,54 @@ El `amount` recibido es el **precio neto** (en céntimos), que ya incluye el mar
 
 ---
 
-## 19. Cancelar Payment Intent
+## 19. Capturar pagos de un trayecto
+
+**URL:** `POST /api/payment/trayecto/capture`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Descripción:** Captura todos los Payment Intents pendientes (`requires_capture`) de las reservas asociadas a un trayecto. Consulta al microservicio de trayectos para obtener las reservas del trayecto, busca los Payment Intents en BD, y captura cada uno en Stripe. Debe llamarse cuando el trayecto se finaliza.
+
+**Entrada (body JSON):**
+```json
+{
+  "id_trayecto": "string (ID del trayecto)"
+}
+```
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "message": "Capturados: 3, Omitidos: 1, Errores: 0",
+  "trayecto_id": "uuid",
+  "captured": [
+    {
+      "payment_intent_id": "pi_xxx",
+      "id_reserva": "uuid",
+      "status": "succeeded",
+      "amount": 2361
+    }
+  ],
+  "skipped": [
+    {
+      "payment_intent_id": "pi_yyy",
+      "id_reserva": "uuid",
+      "status": "succeeded",
+      "reason": "not_in_requires_capture_state"
+    }
+  ],
+  "errors": []
+}
+```
+
+**Errores:**
+- `400` — Falta `id_trayecto`.
+- `502` — No se pudieron obtener las reservas del microservicio de trayectos.
+
+---
+
+## 20. Cancelar Payment Intent
 
 **URL:** `POST /api/payment/payment-intent/cancel`
 

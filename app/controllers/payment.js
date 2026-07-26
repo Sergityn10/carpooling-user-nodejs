@@ -1218,6 +1218,150 @@ async function capturePaymentIntent(req, res) {
   });
 }
 
+async function captureTripPayments(req, res) {
+  try {
+    const trayectoId =
+      req.body?.id_trayecto ??
+      req.body?.trayectoId ??
+      req.body?.trayecto_id ??
+      req.query?.id_trayecto;
+
+    if (!trayectoId) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Missing id_trayecto",
+      });
+    }
+
+    const bearerToken = req.headers.authorization?.split(" ")[1];
+    const cookieToken = req.cookies?.access_token;
+    const userToken = bearerToken || cookieToken;
+
+    let reservas;
+    try {
+      reservas = await trayectosService.getTripPassengers(
+        String(trayectoId),
+        userToken,
+      );
+    } catch (fetchError) {
+      return res.status(502).send({
+        status: "Error",
+        message: "No se pudieron obtener las reservas del trayecto",
+        error: fetchError?.message ?? String(fetchError),
+      });
+    }
+
+    const reservaList = Array.isArray(reservas)
+      ? reservas
+      : (reservas?.reservas ?? reservas?.data ?? []);
+
+    if (!reservaList || reservaList.length === 0) {
+      return res.status(200).send({
+        status: "Success",
+        message: "No hay reservas para este trayecto",
+        captured: [],
+        skipped: [],
+        errors: [],
+      });
+    }
+
+    const reservaIds = reservaList
+      .map((r) => String(r.id_reserva ?? r.id ?? r.id ?? ""))
+      .filter(Boolean);
+
+    if (reservaIds.length === 0) {
+      return res.status(200).send({
+        status: "Success",
+        message: "No se encontraron IDs de reserva válidos",
+        captured: [],
+        skipped: [],
+        errors: [],
+      });
+    }
+
+    const paymentIntents = await prisma.paymentIntent.findMany({
+      where: {
+        id_reserva: { in: reservaIds },
+        state: { in: ["requires_capture", "checkout_completed"] },
+      },
+      select: {
+        stripe_payment_id: true,
+        id_reserva: true,
+        amount: true,
+        state: true,
+      },
+    });
+
+    const captured = [];
+    const skipped = [];
+    const errors = [];
+
+    for (const pi of paymentIntents) {
+      try {
+        const stripePI = await stripe.paymentIntents.retrieve(
+          pi.stripe_payment_id,
+        );
+
+        if (stripePI.status !== "requires_capture") {
+          skipped.push({
+            payment_intent_id: pi.stripe_payment_id,
+            id_reserva: pi.id_reserva,
+            status: stripePI.status,
+            reason: "not_in_requires_capture_state",
+          });
+          continue;
+        }
+
+        const capturedPI = await stripe.paymentIntents.capture(
+          pi.stripe_payment_id,
+        );
+
+        await prisma.paymentIntent.update({
+          where: { stripe_payment_id: pi.stripe_payment_id },
+          data: { state: String(capturedPI.status) },
+        });
+
+        captured.push({
+          payment_intent_id: pi.stripe_payment_id,
+          id_reserva: pi.id_reserva,
+          status: capturedPI.status,
+          amount: capturedPI.amount,
+        });
+      } catch (captureError) {
+        errors.push({
+          payment_intent_id: pi.stripe_payment_id,
+          id_reserva: pi.id_reserva,
+          error: captureError?.message ?? String(captureError),
+        });
+      }
+    }
+
+    const reservasSinPI = reservaIds.filter(
+      (id) => !paymentIntents.some((pi) => pi.id_reserva === id),
+    );
+    for (const idReserva of reservasSinPI) {
+      skipped.push({
+        id_reserva: idReserva,
+        reason: "no_payment_intent_found",
+      });
+    }
+
+    return res.status(200).send({
+      status: "Success",
+      message: `Capturados: ${captured.length}, Omitidos: ${skipped.length}, Errores: ${errors.length}`,
+      trayecto_id: String(trayectoId),
+      captured,
+      skipped,
+      errors,
+    });
+  } catch (error) {
+    console.error("Error in captureTripPayments:", error);
+    return res
+      .status(500)
+      .send({ status: "Error", message: error?.message ?? String(error) });
+  }
+}
+
 async function cancelPaymentIntent(req, res) {
   const paymentIntentId =
     req.body?.paymentIntentId ??
@@ -1726,11 +1870,100 @@ async function createAccountLink(req, res) {
 }
 
 async function stripeRedirect(req, res) {
-  const target = req.query?.target;
-  if (!target) {
-    return res.redirect("youconnext://perfil");
-  }
-  return res.redirect(String(target));
+  const target = req.query?.target || "youconnext://perfil";
+  const decodedTarget = decodeURIComponent(String(target));
+
+  const safeTarget = decodedTarget.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Redirigiendo a YouConnext…</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      text-align: center;
+    }
+    .logo { font-size: 1.8rem; font-weight: 700; margin-bottom: 1.5rem; color: #58a6ff; }
+    .card {
+      background: #161b22;
+      border-radius: 16px;
+      padding: 32px 24px;
+      max-width: 380px;
+      width: 100%;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 4px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { font-size: 0.95rem; line-height: 1.5; color: #8b949e; margin-bottom: 20px; }
+    .btn {
+      display: inline-block;
+      background: #238636;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #2ea043; }
+    .hidden { display: none; }
+    #fallback { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="logo">YouConnext</div>
+  <div class="card">
+    <div class="spinner" id="spinner"></div>
+    <p id="status">Redirigiendo a la aplicación…</p>
+    <div id="fallback" class="hidden">
+      <p>¿No se abrió la app automáticamente?</p>
+      <a class="btn" href="${safeTarget}">Abrir YouConnext</a>
+    </div>
+  </div>
+  <script>
+    (function() {
+      var target = "${safeTarget}";
+      var fallback = document.getElementById("fallback");
+      var spinner = document.getElementById("spinner");
+      var status = document.getElementById("status");
+
+      // Try to open the deep link
+      window.location.href = target;
+
+      // If the app didn't open after 2.5s, show the manual button
+      setTimeout(function() {
+        spinner.classList.add("hidden");
+        status.textContent = "No se pudo abrir la app automáticamente.";
+        fallback.classList.remove("hidden");
+      }, 2500);
+    })();
+  </script>
+</body>
+</html>`;
+
+  return res.status(200).type("text/html").send(html);
 }
 
 async function getLinkedExternalAccounts(req, res) {
@@ -1861,6 +2094,7 @@ export const methods = {
   getWalletTransactions,
   createPaymentIntent,
   capturePaymentIntent,
+  captureTripPayments,
   cancelPaymentIntent,
   createSetupIntent,
   createPayout,

@@ -522,6 +522,9 @@ app.post(
   authorization.isLoged,
   (req, res) => payment.capturePaymentIntent(req, res),
 );
+app.post("/api/payment/trayecto/capture", authorization.isLoged, (req, res) =>
+  payment.captureTripPayments(req, res),
+);
 app.post(
   "/api/payment/payment-intent/cancel",
   authorization.isLoged,

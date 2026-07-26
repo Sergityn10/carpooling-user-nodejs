@@ -790,7 +790,7 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
     if (id_reserva) {
       await trayectosService.updateReservaStatus(
         id_reserva,
-        "completed",
+        "pending",
         paymentIntentId,
       );
     }
