@@ -703,10 +703,6 @@ async function updateStripeAccountFromProfile(userId, updates) {
     }
   }
 
-  if (updates.dni) {
-    individualUpdate.id_number = updates.dni;
-  }
-
   if (updates.genero) {
     const generoMap = {
       Masculino: "male",

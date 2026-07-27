@@ -2,7 +2,7 @@ import { z } from "zod";
 let year = new Date().getFullYear();
 const cocheSchema = z.object({
   id_coche: z.number().int().positive(),
-  matricula: z.string().min(7).max(7),
+  matricula: z.string().min(7).max(8),
   marca: z.string().min(3).max(50),
   modelo: z.string().min(3).max(50),
   year: z.number().int().min(1950).max(year),
