@@ -211,6 +211,24 @@ El role se incluye en el JWT payload y en todas las respuestas de autenticación
   - `GET /api/auth/validate` — Validar token y obtener datos del usuario
   - `POST /api/auth/logout` — Cerrar sesión
 
+## Consentimientos legales (RGPD)
+
+El sistema registra automáticamente los consentimientos legales de los usuarios durante el registro, almacenando qué documento aceptaron, en qué versión, cuándo, y desde qué IP/User-Agent — todo dentro de una transacción atómica de base de datos.
+
+**Tipos de documento:**
+- `PRIVACY_POLICY` — Política de privacidad
+- `TERMS_OF_SERVICE` — Términos de servicio
+- `MARKETING` — Comunicaciones de marketing (opcional)
+
+**Endpoints:**
+- `GET /api/legal-consents` — (Admin) Lista paginada con filtros
+- `GET /api/legal-consents/summary` — (Admin) Resumen global de aceptación
+- `GET /api/legal-consents/without/:documentType` — (Admin) Usuarios sin consentimiento de un tipo
+- `GET /api/legal-consents/user/:userId` — (Admin) Consentimientos de un usuario concreto
+- `GET /api/legal-consents/me` — (Usuario) Mis propios consentimientos
+
+Ver documentación detallada en [`docs/api/legal-consents.md`](docs/api/legal-consents.md).
+
 ## Integración con Stripe
 
 - **Cuenta Stripe Connect Express**: Se crea automáticamente al registrar un usuario. El ID se guarda en `users.stripe_account`.
@@ -225,7 +243,7 @@ El role se incluye en el JWT payload y en todas las respuestas de autenticación
 ```
 carpooling-user/
 ├── app/
-│   ├── controllers/      # Controladores (auth, user, payment, webhook)
+│   ├── controllers/      # Controladores (auth, user, payment, webhook, legalConsent, etc.)
 │   ├── middlewares/      # Middlewares (authorization, autenticación)
 │   ├── schemas/          # Validaciones con Zod
 │   ├── utils/            # Utilidades (db, crypto, hashing)

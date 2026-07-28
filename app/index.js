@@ -24,6 +24,7 @@ import { methods as events } from "./controllers/events.js";
 import { methods as companies } from "./controllers/companies.js";
 import { methods as suggestions } from "./controllers/suggestions.js";
 import { methods as caeReports } from "./controllers/cae-reports.js";
+import { methods as legalConsent } from "./controllers/legalConsent.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -682,6 +683,27 @@ app.delete("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
 );
 app.post("/api/suggestions/:id/accept", authorization.onlyAdmin, (req, res) =>
   suggestions.acceptSuggestion(req, res),
+);
+
+// --- Legal Consents ---
+app.get("/api/legal-consents", authorization.onlyAdmin, (req, res) =>
+  legalConsent.getAllConsents(req, res),
+);
+app.get("/api/legal-consents/summary", authorization.onlyAdmin, (req, res) =>
+  legalConsent.getConsentSummary(req, res),
+);
+app.get(
+  "/api/legal-consents/without/:documentType",
+  authorization.onlyAdmin,
+  (req, res) => legalConsent.getUsersWithoutConsent(req, res),
+);
+app.get(
+  "/api/legal-consents/user/:userId",
+  authorization.onlyAdmin,
+  (req, res) => legalConsent.getConsentsByUser(req, res),
+);
+app.get("/api/legal-consents/me", authorization.isLoged, (req, res) =>
+  legalConsent.getMyConsents(req, res),
 );
 
 app.use((req, res) => {

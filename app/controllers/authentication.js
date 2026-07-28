@@ -131,7 +131,20 @@ async function register(req, res) {
   }
   console.log(req.body);
 
-  const { email, password } = result.data;
+  const { email, password, consents } = result.data;
+
+  if (consents) {
+    if (
+      !consents.privacy_policy_accepted ||
+      !consents.terms_of_service_accepted
+    ) {
+      return res.status(400).send({
+        status: "Error",
+        message:
+          "Debes aceptar la Política de Privacidad y los Términos de Servicio para registrarte.",
+      });
+    }
+  }
 
   const comprobarUser = await prisma.user.findUnique({ where: { email } });
 
@@ -145,24 +158,68 @@ async function register(req, res) {
 
   const hash = await utils.hashValue(10, password);
 
-  const createdUser = await prisma.user.create({
-    data: { email, password: hash, auth_method: authMethods.PASSWORD },
-    include: { role: true },
-  });
+  const ipAddress =
+    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+    req.socket?.remoteAddress ||
+    null;
+  const userAgent = req.headers["user-agent"] || null;
 
-  const activeDefs = await prisma.preferenceDefinition.findMany({
-    where: { is_active: true },
-  });
-  if (activeDefs.length > 0) {
-    await prisma.userPreference.createMany({
-      data: activeDefs.map((pd) => ({
-        user_id: createdUser.id,
-        pref_key: pd.pref_key,
-        value: pd.default_value,
-      })),
-      skipDuplicates: true,
+  const createdUser = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: { email, password: hash, auth_method: authMethods.PASSWORD },
+      include: { role: true },
     });
-  }
+
+    const activeDefs = await tx.preferenceDefinition.findMany({
+      where: { is_active: true },
+    });
+    if (activeDefs.length > 0) {
+      await tx.userPreference.createMany({
+        data: activeDefs.map((pd) => ({
+          user_id: user.id,
+          pref_key: pd.pref_key,
+          value: pd.default_value,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    if (consents) {
+      const consentRecords = [];
+      if (consents.privacy_policy_accepted) {
+        consentRecords.push({
+          userId: user.id,
+          documentType: "PRIVACY_POLICY",
+          documentVersion: consents.privacy_version || "v1.0",
+          ipAddress,
+          userAgent,
+        });
+      }
+      if (consents.terms_of_service_accepted) {
+        consentRecords.push({
+          userId: user.id,
+          documentType: "TERMS_OF_SERVICE",
+          documentVersion: consents.terms_version || "v1.0",
+          ipAddress,
+          userAgent,
+        });
+      }
+      if (consents.marketing_accepted) {
+        consentRecords.push({
+          userId: user.id,
+          documentType: "MARKETING",
+          documentVersion: "v1.0",
+          ipAddress,
+          userAgent,
+        });
+      }
+      if (consentRecords.length > 0) {
+        await tx.legalConsent.createMany({ data: consentRecords });
+      }
+    }
+
+    return user;
+  });
 
   const stripeAccountId = await paymentServices.createStripeAccountForUserEmpty(
     createdUser.id,

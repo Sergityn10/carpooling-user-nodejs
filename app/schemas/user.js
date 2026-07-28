@@ -49,6 +49,15 @@ const registerSchema = z.object({
     invalid_type_error: "Email must be a string",
   }),
   password: z.string(),
+  consents: z
+    .object({
+      privacy_policy_accepted: z.boolean(),
+      terms_of_service_accepted: z.boolean(),
+      marketing_accepted: z.boolean().optional().default(false),
+      privacy_version: z.string().default("v1.0"),
+      terms_version: z.string().default("v1.0"),
+    })
+    .optional(),
 });
 
 const userSchemaPartial = userSchema.partial();

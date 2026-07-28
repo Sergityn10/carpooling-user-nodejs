@@ -99,6 +99,12 @@ enum WalletPayoutMethod {
   instant
 }
 
+enum DocumentType {
+  PRIVACY_POLICY
+  TERMS_OF_SERVICE
+  MARKETING
+}
+
 // ---------------------------------------------------------------------------
 // MODELS
 // ---------------------------------------------------------------------------
@@ -155,6 +161,7 @@ model User {
   commentsReceived     Comment[]    @relation("commentated")
   eventParticipations  EventParticipant[]
   promoterSuggestions  SugerenciasPromotoras[]
+  legalConsents        LegalConsent[]
 
   @@index([role_id])
   @@map("users")
@@ -570,6 +577,22 @@ model EventParticipant {
   @@id([user_id, event_id])
   @@index([event_id])
   @@map("event_participants")
+}
+
+model LegalConsent {
+  id              String       @id @default(uuid()) @db.VarChar(36)
+  userId          String       @db.VarChar(36)
+  documentType    DocumentType
+  documentVersion String       @db.VarChar(50)
+  acceptedAt      DateTime     @default(now())
+  ipAddress       String?      @db.VarChar(255)
+  userAgent       String?      @db.Text
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@index([documentType])
+  @@map("legal_consents")
 }
 
 
