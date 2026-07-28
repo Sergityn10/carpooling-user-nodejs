@@ -49,15 +49,36 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Registra un nuevo usuario con email y contraseña (método `password`). Hashea la contraseña con bcrypt, inserta el usuario en BD, crea preferencias por defecto, crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado con MCC `4121`, descripción de producto y URL de la plataforma) y la guarda en la tabla `accounts`, actualiza `stripe_account` en el usuario, y devuelve un JWT. También emite un `refresh_token`.
+**Descripción:** Registra un nuevo usuario con email y contraseña (método `password`). Hashea la contraseña con bcrypt, inserta el usuario en BD, crea preferencias por defecto, y guarda los consentimientos legales (política de privacidad, términos de servicio y marketing) en la tabla `legal_consents` — todo dentro de una **transacción de base de datos** (si falla cualquier paso, no se guarda nada). Posteriormente, fuera de la transacción, crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado con MCC `4121`, descripción de producto y URL de la plataforma) y la guarda en la tabla `accounts`, actualiza `stripe_account` en el usuario, y devuelve un JWT. También emite un `refresh_token`.
 
 **Entrada (body JSON):**
 ```json
 {
   "email": "string (email válido, único)",
-  "password": "string (mín. 6 caracteres)"
+  "password": "string (mín. 6 caracteres)",
+  "consents": {
+    "privacy_policy_accepted": true,
+    "terms_of_service_accepted": true,
+    "marketing_accepted": false,
+    "privacy_version": "v1.0",
+    "terms_version": "v1.0"
+  }
 }
 ```
+
+**Campos de `consents` (opcional):**
+
+| Campo                       | Tipo    | Requerido                   | Default  | Descripción                                     |
+| --------------------------- | ------- | --------------------------- | -------- | ----------------------------------------------- |
+| `privacy_policy_accepted`   | boolean | Sí (si se envía `consents`) | —        | Debe ser `true` para poder registrarse          |
+| `terms_of_service_accepted` | boolean | Sí (si se envía `consents`) | —        | Debe ser `true` para poder registrarse          |
+| `marketing_accepted`        | boolean | No                          | `false`  | Consentimiento para comunicaciones de marketing |
+| `privacy_version`           | string  | No                          | `"v1.0"` | Versión de la política de privacidad aceptada   |
+| `terms_version`             | string  | No                          | `"v1.0"` | Versión de los términos de servicio aceptados   |
+
+> **Importante:** Si se envía el objeto `consents`, tanto `privacy_policy_accepted` como `terms_of_service_accepted` deben ser `true`. En caso contrario, la petición devuelve `400`.
+>
+> **Auditoría RGPD:** Se registran automáticamente la dirección IP (`x-forwarded-for` o `remoteAddress`) y el `User-Agent` de la petición para cada consentimiento.
 
 **Salida (201):**
 ```json
@@ -71,9 +92,9 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 ```
 
 **Errores:**
-- `400` — Validación de esquema fallida o email ya existe.
-- `404` — Usuario ya creado.
-- `500` — Error al registrar usuario.
+- `400` — Validación de esquema fallida, o no se aceptaron la política de privacidad / términos de servicio.
+- `409` — Ya existe una cuenta registrada con este correo electrónico.
+- `500` — Error al registrar usuario (la transacción se revierte completa).
 
 **Cookies establecidas:** `access_token`, `refresh_token`.
 
