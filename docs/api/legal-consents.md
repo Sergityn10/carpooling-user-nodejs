@@ -10,15 +10,15 @@ Los consentimientos se registran automáticamente durante el registro de usuario
 
 Tabla: `legal_consents`
 
-| Campo | Tipo | Descripción |
-| --- | --- | --- |
-| `id` | UUID | Identificador único del registro |
-| `userId` | UUID | ID del usuario que aceptó |
-| `documentType` | Enum | `PRIVACY_POLICY`, `TERMS_OF_SERVICE` o `MARKETING` |
-| `documentVersion` | String | Versión exacta del documento aceptado (ej. `"v1.0"`) |
-| `acceptedAt` | DateTime | Timestamp de aceptación (vital para RGPD) |
-| `ipAddress` | String (nullable) | IP desde la que se aceptó |
-| `userAgent` | String (nullable) | User-Agent del navegador/app |
+| Campo             | Tipo              | Descripción                                          |
+| ----------------- | ----------------- | ---------------------------------------------------- |
+| `id`              | UUID              | Identificador único del registro                     |
+| `userId`          | UUID              | ID del usuario que aceptó                            |
+| `documentType`    | Enum              | `PRIVACY_POLICY`, `TERMS_OF_SERVICE` o `MARKETING`   |
+| `documentVersion` | String            | Versión exacta del documento aceptado (ej. `"v1.0"`) |
+| `acceptedAt`      | DateTime          | Timestamp de aceptación (vital para RGPD)            |
+| `ipAddress`       | String (nullable) | IP desde la que se aceptó                            |
+| `userAgent`       | String (nullable) | User-Agent del navegador/app                         |
 
 > **Relación:** Si se elimina un usuario, sus consentimientos se eliminan automáticamente (`onDelete: Cascade`).
 
@@ -34,12 +34,12 @@ Tabla: `legal_consents`
 
 **Query params (opcionales):**
 
-| Parámetro | Tipo | Default | Descripción |
-| --- | --- | --- | --- |
-| `documentType` | string | — | Filtrar por tipo: `PRIVACY_POLICY`, `TERMS_OF_SERVICE`, `MARKETING` |
-| `userId` | string | — | Filtrar por ID de usuario |
-| `page` | int | `1` | Número de página |
-| `limit` | int | `50` | Elementos por página (máx. 200) |
+| Parámetro      | Tipo   | Default | Descripción                                                         |
+| -------------- | ------ | ------- | ------------------------------------------------------------------- |
+| `documentType` | string | —       | Filtrar por tipo: `PRIVACY_POLICY`, `TERMS_OF_SERVICE`, `MARKETING` |
+| `userId`       | string | —       | Filtrar por ID de usuario                                           |
+| `page`         | int    | `1`     | Número de página                                                    |
+| `limit`        | int    | `50`    | Elementos por página (máx. 200)                                     |
 
 **Salida (200):**
 ```json
@@ -125,8 +125,8 @@ Tabla: `legal_consents`
 
 **Parámetros de URL:**
 
-| Parámetro | Valores válidos |
-| --- | --- |
+| Parámetro      | Valores válidos                                   |
+| -------------- | ------------------------------------------------- |
 | `documentType` | `PRIVACY_POLICY`, `TERMS_OF_SERVICE`, `MARKETING` |
 
 **Salida (200):**
@@ -165,9 +165,9 @@ Tabla: `legal_consents`
 
 **Parámetros de URL:**
 
-| Parámetro | Tipo | Descripción |
-| --- | --- | --- |
-| `userId` | UUID | ID del usuario a consultar |
+| Parámetro | Tipo | Descripción                |
+| --------- | ---- | -------------------------- |
+| `userId`  | UUID | ID del usuario a consultar |
 
 **Salida (200):**
 ```json
