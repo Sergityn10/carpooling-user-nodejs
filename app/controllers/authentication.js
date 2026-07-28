@@ -19,6 +19,8 @@ import {
   buildCookieOptions,
   buildAccessCookieOptions,
   issueRefreshToken,
+  clearAccessCookie,
+  clearRefreshCookie,
 } from "../middlewares/authorization.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
@@ -458,16 +460,8 @@ async function logout(req, res) {
     }
   }
 
-  res.clearCookie("access_token", {
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
-    path: "/",
-  });
-  res.clearCookie("refresh_token", {
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
-    path: "/",
-  });
+  clearAccessCookie(res);
+  clearRefreshCookie(res);
   return res
     .status(200)
     .send({ status: "Success", message: "Logout successful" });
@@ -601,11 +595,7 @@ async function validate(req, res) {
       jsonwebtoken.verify(token, PUBLIC_KEY, { algorithms: [JWT_ALGORITHM] });
     } catch (jwtError) {
       console.error("[validate] JWT error:", jwtError.name, jwtError.message);
-      res.clearCookie("access_token", {
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
-        path: "/",
-      });
+      clearAccessCookie(res);
       return res.status(401).send({
         status: "Error",
         message:
@@ -619,11 +609,7 @@ async function validate(req, res) {
       (await authorization.reviseCookie(req));
 
     if (!findUser) {
-      res.clearCookie("access_token", {
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
-        path: "/",
-      });
+      clearAccessCookie(res);
       return res.status(401).send({
         status: "Error",
         message: "El usuario asociado a este token ya no existe en el sistema.",

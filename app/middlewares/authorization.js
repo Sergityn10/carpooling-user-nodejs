@@ -87,6 +87,17 @@ function clearRefreshCookie(res) {
   }
 }
 
+function clearAccessCookie(res) {
+  if (res?.clearCookie) {
+    res.clearCookie("access_token", {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+    });
+  }
+}
+
 async function tryRefreshAccessToken(req, res) {
   try {
     const rawRefreshToken = req?.cookies?.refresh_token;
@@ -252,13 +263,11 @@ async function onlyAdmin(req, res, next) {
     req.user = user;
     next();
   } else {
-    return res
-      .status(403)
-      .send({
-        status: "Error",
-        message:
-          "Acceso denegado. Solo los administradores pueden acceder a este recurso.",
-      });
+    return res.status(403).send({
+      status: "Error",
+      message:
+        "Acceso denegado. Solo los administradores pueden acceder a este recurso.",
+    });
   }
 }
 
@@ -269,13 +278,11 @@ async function onlyUser(req, res, next) {
     req.user = user;
     next();
   } else {
-    return res
-      .status(403)
-      .send({
-        status: "Error",
-        message:
-          "Acceso denegado. Solo los usuarios pueden acceder a este recurso.",
-      });
+    return res.status(403).send({
+      status: "Error",
+      message:
+        "Acceso denegado. Solo los usuarios pueden acceder a este recurso.",
+    });
   }
 }
 
@@ -427,6 +434,8 @@ export {
   buildAccessCookieOptions,
   issueRefreshToken,
   persistRefreshToken,
+  clearAccessCookie,
+  clearRefreshCookie,
 };
 
 export const authorization = {
