@@ -290,8 +290,18 @@ async function removeUser(req, res) {
   const { id } = req.params;
 
   const findUser = req.user ?? (await authorization.reviseCookie(req));
-  if (!findUser || String(findUser.id) !== String(id)) {
+  if (!findUser) {
     return res.status(401).send({ status: "Error", message: "Unauthorized" });
+  }
+
+  const isSelf = String(findUser.id) === String(id);
+  const isAdmin = findUser.role?.name === "admin" || findUser.role === "admin";
+
+  if (!isSelf && !isAdmin) {
+    return res.status(403).send({
+      status: "Error",
+      message: "No tienes permisos para eliminar a este usuario.",
+    });
   }
 
   try {
@@ -302,25 +312,43 @@ async function removeUser(req, res) {
         .send({ status: "Error", message: "User not found" });
     }
 
+    if (isAdmin && isSelf) {
+      return res.status(400).send({
+        status: "Error",
+        message: "Un administrador no puede eliminarse a sí mismo.",
+      });
+    }
+
     // MySQL FK cascade deletes automatically propagate to:
     // accounts → payment_intents, cars, comments, refreshTokens,
     // walletAccounts → walletTransactions → walletPayouts,
-    // walletRecharges, telegramInfo, disponibilidades, preferences
+    // walletRecharges, telegramInfo, disponibilidades, preferences,
+    // legalConsents
     await prisma.user.delete({ where: { id } });
 
-    try {
-      res.clearCookie("access_token", {
-        httpOnly: true,
-        secure: true,
-        sameSite: "none",
-        path: "/",
-        domain: process.env.ORIGIN,
-      });
-    } catch (_e) {}
+    if (isSelf) {
+      try {
+        res.clearCookie("access_token", {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          path: "/",
+        });
+        res.clearCookie("refresh_token", {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          path: "/",
+        });
+      } catch (_e) {}
+    }
 
-    return res
-      .status(200)
-      .send({ status: "Success", message: "User deleted successfully" });
+    return res.status(200).send({
+      status: "Success",
+      message: isSelf
+        ? "User deleted successfully"
+        : "Usuario eliminado correctamente por el administrador.",
+    });
   } catch (error) {
     console.error(error);
     return res

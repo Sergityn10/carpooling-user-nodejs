@@ -255,11 +255,29 @@ app.delete(
 
 app.get("/api/auth/oauth/register", async (req, res) => {
   const code = req.query.code;
-  const backendRedirectUrl = `${process.env.MY_ORIGIN}api/auth/oauth/register`; // URL usada en el paso 1
+  const stateRaw = req.query.state;
   // 1. URL de tu frontend (ajusta según tu configuración)
   const successUrl = `${origin}/oauth-callback`;
   const frontendUrl = `${origin}`;
   try {
+    let consents = null;
+    if (stateRaw) {
+      try {
+        consents = JSON.parse(
+          Buffer.from(stateRaw, "base64").toString("utf-8"),
+        );
+      } catch {
+        consents = null;
+      }
+    }
+
+    const consentCheck = authentication.validateConsents(consents);
+    if (!consentCheck.valid) {
+      res.redirect(`${frontendUrl}register?error=consents_required`);
+      return;
+    }
+
+    const backendRedirectUrl = `${process.env.MY_ORIGIN}api/auth/oauth/register`;
     const oauth2Client = new OAuth2Client(
       client_id,
       secret_id,
@@ -296,6 +314,18 @@ app.get("/api/auth/oauth/register", async (req, res) => {
       res.redirect(`${frontendUrl}register?error=auth_failed`);
       return;
     }
+
+    const ipAddress =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      null;
+    const userAgent = req.headers["user-agent"] || null;
+    await authentication.saveLegalConsents(
+      userResult.user.id,
+      consents,
+      ipAddress,
+      userAgent,
+    );
 
     // 5. Generar un Token JWT para la sesión
 
