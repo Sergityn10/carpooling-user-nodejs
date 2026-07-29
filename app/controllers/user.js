@@ -8,6 +8,8 @@ import { methods as cryptoUtils } from "../utils/crypto.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
 import { trayectosService } from "../services/trayectosService.js";
+import AppError from "../utils/appError.js";
+import catchAsync from "../utils/catchAsync.js";
 
 async function countUserViajes(conductor) {
   // trayectos table is managed by another microservice.
@@ -15,362 +17,334 @@ async function countUserViajes(conductor) {
   return 0;
 }
 
-async function updateUserPatch(req, res) {
-  try {
-    const result = UserSchemas.validateUserSchemaPartial(req.body);
-    if (!result.success) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Los datos proporcionados no son válidos.",
-        details: JSON.parse(result.error.message),
-      });
-    }
-
-    const { id } = req.params;
-
-    const findUser = req.user ?? (await authorization.reviseCookie(req));
-    if (!findUser || String(findUser.id) !== String(id)) {
-      return res.status(401).send({
-        status: "Error",
-        message: "No tienes permiso para modificar este usuario.",
-      });
-    }
-
-    const user = await prisma.user.findUnique({ where: { id } });
-    if (!user) {
-      return res.status(404).send({
-        status: "Error",
-        message: "El usuario no existe.",
-      });
-    }
-
-    if (result.data.password) {
-      try {
-        result.data.password = await utils.hashValue(10, result.data.password);
-      } catch (hashError) {
-        console.error(
-          "[updateUserPatch] Error hasheando contraseña:",
-          hashError,
-        );
-        return res.status(500).send({
-          status: "Error",
-          message: "No se pudo procesar la contraseña. Inténtalo de nuevo.",
-        });
-      }
-    }
-
-    if (result.data.dni) {
-      const dniCandidate = String(result.data.dni);
-      try {
-        const allUsers = await prisma.user.findMany({
-          select: { id: true, email: true, dni: true },
-          where: { dni: { not: null } },
-        });
-        const collision = allUsers.find((r) => {
-          if (!r?.dni) return false;
-          try {
-            const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
-            return plain === dniCandidate && String(r.id) !== String(id);
-          } catch {
-            return false;
-          }
-        });
-        if (collision) {
-          return res.status(409).send({
-            status: "Error",
-            message: "Ya existe un usuario registrado con este DNI/NIE.",
-          });
-        }
-      } catch (dniError) {
-        console.error("[updateUserPatch] Error comprobando DNI:", dniError);
-        return res.status(500).send({
-          status: "Error",
-          message: "No se pudo verificar el DNI/NIE. Inténtalo de nuevo.",
-        });
-      }
-    }
-
-    let updatesEncrypted;
-    try {
-      updatesEncrypted = cryptoUtils.encryptFields(
-        result.data,
-        cryptoUtils.USER_SENSITIVE_FIELDS,
-      );
-    } catch (encryptError) {
-      console.error("[updateUserPatch] Error encriptando datos:", encryptError);
-      return res.status(500).send({
-        status: "Error",
-        message: "No se pudieron procesar los datos. Inténtalo de nuevo.",
-      });
-    }
-
-    const keys = Object.keys(updatesEncrypted);
-    if (keys.length === 0) {
-      return res.status(400).send({
-        status: "Error",
-        message: "No se han enviado campos para actualizar.",
-      });
-    }
-
-    try {
-      await prisma.user.update({ where: { id }, data: updatesEncrypted });
-    } catch (dbError) {
-      console.error("[updateUserPatch] Error en base de datos:", dbError);
-      if (dbError?.code === "P2002") {
-        return res.status(409).send({
-          status: "Error",
-          message:
-            "Ya existe un usuario con alguno de los datos proporcionados (email, DNI, etc.).",
-        });
-      }
-      return res.status(500).send({
-        status: "Error",
-        message:
-          "No se pudo actualizar el usuario. Inténtalo de nuevo más tarde.",
-      });
-    }
-
-    paymentServices
-      .updateStripeAccountFromProfile(id, result.data)
-      .catch((err) =>
-        console.error("[updateUserPatch] Error sincronizando con Stripe:", err),
-      );
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Usuario actualizado correctamente.",
-    });
-  } catch (error) {
-    console.error("[updateUserPatch] Error no controlado:", error);
-    return res.status(500).send({
-      status: "Error",
-      message: "Se produjo un error inesperado. Inténtalo de nuevo más tarde.",
-    });
+const updateUserPatch = catchAsync(async (req, res, next) => {
+  const result = UserSchemas.validateUserSchemaPartial(req.body);
+  if (!result.success) {
+    return next(
+      new AppError(
+        "Los datos proporcionados no son válidos.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
   }
-}
 
-async function updateMyUserPatch(req, res) {
-  try {
-    const result = UserSchemas.validateUserSchemaPartial(req.body);
-    if (!result.success) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Los datos proporcionados no son válidos.",
-        details: JSON.parse(result.error.message),
-      });
-    }
+  const { id } = req.params;
 
-    const findUser = req.user;
-    if (!findUser) {
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "No se ha podido identificar tu sesión. Inicia sesión de nuevo.",
-      });
-    }
+  const findUser = req.user ?? (await authorization.reviseCookie(req));
+  if (!findUser || String(findUser.id) !== String(id)) {
+    return next(
+      new AppError(
+        "No tienes permiso para modificar este usuario.",
+        403,
+        "FORBIDDEN",
+      ),
+    );
+  }
 
-    if (result.data.password) {
-      try {
-        result.data.password = await utils.hashValue(10, result.data.password);
-      } catch (hashError) {
-        console.error(
-          "[updateMyUserPatch] Error hasheando contraseña:",
-          hashError,
-        );
-        return res.status(500).send({
-          status: "Error",
-          message: "No se pudo procesar la contraseña. Inténtalo de nuevo.",
-        });
-      }
-    }
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user) {
+    return next(new AppError("El usuario no existe.", 404, "USER_NOT_FOUND"));
+  }
 
-    if (result.data.dni) {
-      const dniCandidate = String(result.data.dni);
-      try {
-        const allUsers = await prisma.user.findMany({
-          select: { email: true, dni: true },
-          where: { dni: { not: null } },
-        });
-        const collision = allUsers.find((r) => {
-          if (!r?.dni) return false;
-          try {
-            const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
-            return (
-              plain === dniCandidate &&
-              String(r.email) !== String(findUser.email)
-            );
-          } catch {
-            return false;
-          }
-        });
-        if (collision) {
-          return res.status(409).send({
-            status: "Error",
-            message: "Ya existe un usuario registrado con este DNI/NIE.",
-          });
-        }
-      } catch (dniError) {
-        console.error("[updateMyUserPatch] Error comprobando DNI:", dniError);
-        return res.status(500).send({
-          status: "Error",
-          message: "No se pudo verificar el DNI/NIE. Inténtalo de nuevo.",
-        });
-      }
-    }
-
-    let updatesEncrypted;
+  if (result.data.password) {
     try {
-      updatesEncrypted = cryptoUtils.encryptFields(
-        result.data,
-        cryptoUtils.USER_SENSITIVE_FIELDS,
-      );
-    } catch (encryptError) {
-      console.error(
-        "[updateMyUserPatch] Error encriptando datos:",
-        encryptError,
-      );
-      return res.status(500).send({
-        status: "Error",
-        message: "No se pudieron procesar los datos. Inténtalo de nuevo.",
-      });
-    }
-
-    const keys = Object.keys(updatesEncrypted);
-    if (keys.length === 0) {
-      return res.status(400).send({
-        status: "Error",
-        message: "No se han enviado campos para actualizar.",
-      });
-    }
-
-    try {
-      await prisma.user.update({
-        where: { email: findUser.email },
-        data: updatesEncrypted,
-      });
-    } catch (dbError) {
-      console.error("[updateMyUserPatch] Error en base de datos:", dbError);
-      if (dbError?.code === "P2002") {
-        return res.status(409).send({
-          status: "Error",
-          message:
-            "Ya existe un usuario con alguno de los datos proporcionados (email, DNI, etc.).",
-        });
-      }
-      return res.status(500).send({
-        status: "Error",
-        message:
-          "No se pudo actualizar el usuario. Inténtalo de nuevo más tarde.",
-      });
-    }
-
-    paymentServices
-      .updateStripeAccountFromProfile(findUser.id, result.data)
-      .catch((err) =>
-        console.error(
-          "[updateMyUserPatch] Error sincronizando con Stripe:",
-          err,
+      result.data.password = await utils.hashValue(10, result.data.password);
+    } catch (hashError) {
+      console.error("[updateUserPatch] Error hasheando contraseña:", hashError);
+      return next(
+        new AppError(
+          "No se pudo procesar la contraseña. Inténtalo de nuevo.",
+          500,
+          "HASH_ERROR",
         ),
       );
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Usuario actualizado correctamente.",
-    });
-  } catch (error) {
-    console.error("[updateMyUserPatch] Error no controlado:", error);
-    return res.status(500).send({
-      status: "Error",
-      message: "Se produjo un error inesperado. Inténtalo de nuevo más tarde.",
-    });
+    }
   }
-}
 
-async function removeUser(req, res) {
+  if (result.data.dni) {
+    const dniCandidate = String(result.data.dni);
+    try {
+      const allUsers = await prisma.user.findMany({
+        select: { id: true, email: true, dni: true },
+        where: { dni: { not: null } },
+      });
+      const collision = allUsers.find((r) => {
+        if (!r?.dni) return false;
+        try {
+          const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
+          return plain === dniCandidate && String(r.id) !== String(id);
+        } catch {
+          return false;
+        }
+      });
+      if (collision) {
+        return next(
+          new AppError(
+            "Ya existe un usuario registrado con este DNI/NIE.",
+            409,
+            "DNI_DUPLICATE",
+          ),
+        );
+      }
+    } catch (dniError) {
+      console.error("[updateUserPatch] Error comprobando DNI:", dniError);
+      return next(
+        new AppError(
+          "No se pudo verificar el DNI/NIE. Inténtalo de nuevo.",
+          500,
+          "DNI_CHECK_ERROR",
+        ),
+      );
+    }
+  }
+
+  let updatesEncrypted;
+  try {
+    updatesEncrypted = cryptoUtils.encryptFields(
+      result.data,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
+  } catch (encryptError) {
+    console.error("[updateUserPatch] Error encriptando datos:", encryptError);
+    return next(
+      new AppError(
+        "No se pudieron procesar los datos. Inténtalo de nuevo.",
+        500,
+        "ENCRYPT_ERROR",
+      ),
+    );
+  }
+
+  const keys = Object.keys(updatesEncrypted);
+  if (keys.length === 0) {
+    return next(
+      new AppError(
+        "No se han enviado campos para actualizar.",
+        400,
+        "NO_FIELDS_TO_UPDATE",
+      ),
+    );
+  }
+
+  await prisma.user.update({ where: { id }, data: updatesEncrypted });
+
+  paymentServices
+    .updateStripeAccountFromProfile(id, result.data)
+    .catch((err) =>
+      console.error("[updateUserPatch] Error sincronizando con Stripe:", err),
+    );
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Usuario actualizado correctamente.",
+  });
+});
+
+const updateMyUserPatch = catchAsync(async (req, res, next) => {
+  const result = UserSchemas.validateUserSchemaPartial(req.body);
+  if (!result.success) {
+    return next(
+      new AppError(
+        "Los datos proporcionados no son válidos.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const findUser = req.user;
+  if (!findUser) {
+    return next(
+      new AppError(
+        "No se ha podido identificar tu sesión. Inicia sesión de nuevo.",
+        401,
+        "UNAUTHORIZED",
+      ),
+    );
+  }
+
+  if (result.data.password) {
+    try {
+      result.data.password = await utils.hashValue(10, result.data.password);
+    } catch (hashError) {
+      console.error(
+        "[updateMyUserPatch] Error hasheando contraseña:",
+        hashError,
+      );
+      return next(
+        new AppError(
+          "No se pudo procesar la contraseña. Inténtalo de nuevo.",
+          500,
+          "HASH_ERROR",
+        ),
+      );
+    }
+  }
+
+  if (result.data.dni) {
+    const dniCandidate = String(result.data.dni);
+    try {
+      const allUsers = await prisma.user.findMany({
+        select: { email: true, dni: true },
+        where: { dni: { not: null } },
+      });
+      const collision = allUsers.find((r) => {
+        if (!r?.dni) return false;
+        try {
+          const plain = cryptoUtils.decryptFields(r, ["dni"]).dni;
+          return (
+            plain === dniCandidate && String(r.email) !== String(findUser.email)
+          );
+        } catch {
+          return false;
+        }
+      });
+      if (collision) {
+        return next(
+          new AppError(
+            "Ya existe un usuario registrado con este DNI/NIE.",
+            409,
+            "DNI_DUPLICATE",
+          ),
+        );
+      }
+    } catch (dniError) {
+      console.error("[updateMyUserPatch] Error comprobando DNI:", dniError);
+      return next(
+        new AppError(
+          "No se pudo verificar el DNI/NIE. Inténtalo de nuevo.",
+          500,
+          "DNI_CHECK_ERROR",
+        ),
+      );
+    }
+  }
+
+  let updatesEncrypted;
+  try {
+    updatesEncrypted = cryptoUtils.encryptFields(
+      result.data,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
+  } catch (encryptError) {
+    console.error("[updateMyUserPatch] Error encriptando datos:", encryptError);
+    return next(
+      new AppError(
+        "No se pudieron procesar los datos. Inténtalo de nuevo.",
+        500,
+        "ENCRYPT_ERROR",
+      ),
+    );
+  }
+
+  const keys = Object.keys(updatesEncrypted);
+  if (keys.length === 0) {
+    return next(
+      new AppError(
+        "No se han enviado campos para actualizar.",
+        400,
+        "NO_FIELDS_TO_UPDATE",
+      ),
+    );
+  }
+
+  await prisma.user.update({
+    where: { email: findUser.email },
+    data: updatesEncrypted,
+  });
+
+  paymentServices
+    .updateStripeAccountFromProfile(findUser.id, result.data)
+    .catch((err) =>
+      console.error("[updateMyUserPatch] Error sincronizando con Stripe:", err),
+    );
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Usuario actualizado correctamente.",
+  });
+});
+
+const removeUser = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   const findUser = req.user ?? (await authorization.reviseCookie(req));
   if (!findUser) {
-    return res.status(401).send({ status: "Error", message: "Unauthorized" });
+    return next(new AppError("Unauthorized", 401, "UNAUTHORIZED"));
   }
 
   const isSelf = String(findUser.id) === String(id);
   const isAdmin = findUser.role?.name === "admin" || findUser.role === "admin";
 
   if (!isSelf && !isAdmin) {
-    return res.status(403).send({
-      status: "Error",
-      message: "No tienes permisos para eliminar a este usuario.",
-    });
+    return next(
+      new AppError(
+        "No tienes permisos para eliminar a este usuario.",
+        403,
+        "FORBIDDEN",
+      ),
+    );
   }
 
-  try {
-    const user = await prisma.user.findUnique({ where: { id } });
-    if (!user) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "User not found" });
-    }
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user) {
+    return next(new AppError("User not found", 404, "USER_NOT_FOUND"));
+  }
 
-    if (isAdmin && isSelf) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Un administrador no puede eliminarse a sí mismo.",
+  if (isAdmin && isSelf) {
+    return next(
+      new AppError(
+        "Un administrador no puede eliminarse a sí mismo.",
+        400,
+        "ADMIN_SELF_DELETE",
+      ),
+    );
+  }
+
+  await prisma.user.delete({ where: { id } });
+
+  if (isSelf) {
+    try {
+      res.clearCookie("access_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        path: "/",
       });
-    }
-
-    // MySQL FK cascade deletes automatically propagate to:
-    // accounts → payment_intents, cars, comments, refreshTokens,
-    // walletAccounts → walletTransactions → walletPayouts,
-    // walletRecharges, telegramInfo, disponibilidades, preferences,
-    // legalConsents
-    await prisma.user.delete({ where: { id } });
-
-    if (isSelf) {
-      try {
-        res.clearCookie("access_token", {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          path: "/",
-        });
-        res.clearCookie("refresh_token", {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          path: "/",
-        });
-      } catch (_e) {}
-    }
-
-    return res.status(200).send({
-      status: "Success",
-      message: isSelf
-        ? "User deleted successfully"
-        : "Usuario eliminado correctamente por el administrador.",
-    });
-  } catch (error) {
-    console.error(error);
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to delete user" });
+      res.clearCookie("refresh_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        path: "/",
+      });
+    } catch (_e) {}
   }
-}
 
-async function getUserInfo(req, res) {
+  return res.status(200).send({
+    status: "Success",
+    message: isSelf
+      ? "User deleted successfully"
+      : "Usuario eliminado correctamente por el administrador.",
+  });
+});
+
+const getUserInfo = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   const rawUser = await prisma.user.findUnique({
     where: { id },
     include: { role: true },
   });
+
+  if (!rawUser) {
+    return next(new AppError("User not found", 404, "USER_NOT_FOUND"));
+  }
+
   const user = cryptoUtils.decryptFields(
     rawUser,
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
-  if (!user) {
-    return res.status(404).send({ status: "Error", message: "User not found" });
-  }
 
   const [receivedComments, givenComments, userPreferences] = await Promise.all([
     prisma.comment.findMany({ where: { user_id_trayect: id } }),
@@ -426,7 +400,7 @@ async function getUserInfo(req, res) {
       preferences,
     },
   });
-}
+});
 
 function normalizeLocationText(value) {
   return String(value ?? "")
@@ -434,13 +408,16 @@ function normalizeLocationText(value) {
     .toLowerCase();
 }
 
-async function getUniqueUsersByLocation(req, res) {
+const getUniqueUsersByLocation = catchAsync(async (req, res, next) => {
   const rawLocation = req.query?.location;
   if (!rawLocation || normalizeLocationText(rawLocation).length < 2) {
-    return res.status(400).send({
-      status: "Error",
-      message: "Missing or invalid query param: location",
-    });
+    return next(
+      new AppError(
+        "Missing or invalid query param: location",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
   }
 
   let details;
@@ -448,33 +425,27 @@ async function getUniqueUsersByLocation(req, res) {
     details = await GoogleMapsProvider.geocodeAddressDetails(rawLocation);
   } catch (error) {
     const msg = error?.message ?? String(error);
-    return res
-      .status(400)
-      .send({ status: "Error", message: `Ubicación no válida: ${msg}` });
+    return next(
+      new AppError(`Ubicación no válida: ${msg}`, 400, "INVALID_LOCATION"),
+    );
   }
 
   const city = details?.city;
   if (!city || normalizeLocationText(city).length === 0) {
-    return res.status(400).send({
-      status: "Error",
-      message:
+    return next(
+      new AppError(
         "La ubicación no corresponde a una ciudad reconocible (falta componente 'locality').",
-    });
+        400,
+        "INVALID_LOCATION",
+      ),
+    );
   }
 
-  let rows;
-  try {
-    rows = await prisma.$queryRaw`
-      SELECT * FROM users
-      WHERE ciudad IS NOT NULL
-      AND TRIM(LOWER(ciudad)) = TRIM(LOWER(${city}))
-    `;
-  } catch (error) {
-    console.error("Error fetching users by location:", error);
-    return res
-      .status(500)
-      .send({ status: "Error", message: "Failed to fetch users" });
-  }
+  const rows = await prisma.$queryRaw`
+    SELECT * FROM users
+    WHERE ciudad IS NOT NULL
+    AND TRIM(LOWER(ciudad)) = TRIM(LOWER(${city}))
+  `;
 
   const decryptedRows = (rows ?? []).map((r) =>
     cryptoUtils.decryptFields(r, cryptoUtils.USER_SENSITIVE_FIELDS),
@@ -511,7 +482,7 @@ async function getUniqueUsersByLocation(req, res) {
     count: users.length,
     users,
   });
-}
+});
 
 const PROFILE_COMPLETENESS_FIELDS = [
   {
@@ -615,7 +586,7 @@ function calculateCompleteness(fields, user, carCount = 0) {
   return { porcentaje_total, campos_faltantes };
 }
 
-async function getMyUserInfo(req, res) {
+const getMyUserInfo = catchAsync(async (req, res, next) => {
   const findUser = req.user;
 
   const [
@@ -731,164 +702,142 @@ async function getMyUserInfo(req, res) {
     completitud_cae,
     monedero,
   });
-}
+});
 
-async function getPublicUserInfo(req, res) {
-  try {
-    const { id } = req.params;
-    const rawUser = await prisma.user.findUnique({
-      where: { id: String(id) },
-      select: { id: true, name: true, surname: true, img_perfil: true },
-    });
+const getPublicUserInfo = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const rawUser = await prisma.user.findUnique({
+    where: { id: String(id) },
+    select: { id: true, name: true, surname: true, img_perfil: true },
+  });
 
-    if (!rawUser) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "User not found" });
-    }
-
-    const user = cryptoUtils.decryptFields(rawUser, ["name", "surname"]);
-
-    return res.status(200).send({ status: "Success", user });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  if (!rawUser) {
+    return next(new AppError("User not found", 404, "USER_NOT_FOUND"));
   }
-}
 
-async function getPublicUsersBatch(req, res) {
-  try {
-    const { ids } = req.body;
+  const user = cryptoUtils.decryptFields(rawUser, ["name", "surname"]);
 
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "ids must be a non-empty array" });
-    }
+  return res.status(200).send({ status: "Success", user });
+});
 
-    const users = await prisma.user.findMany({
-      where: { id: { in: ids.map(String) } },
-      select: { id: true, name: true, surname: true, img_perfil: true },
-    });
+const getPublicUsersBatch = catchAsync(async (req, res, next) => {
+  const { ids } = req.body;
 
-    const decryptedUsers = users.map((u) =>
-      cryptoUtils.decryptFields(u, ["name", "surname"]),
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return next(
+      new AppError("ids must be a non-empty array", 400, "VALIDATION_ERROR"),
     );
-
-    return res.status(200).send({ status: "Success", users: decryptedUsers });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
   }
-}
 
-async function getPublicUserProfile(req, res) {
-  try {
-    const { id } = req.params;
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids.map(String) } },
+    select: { id: true, name: true, surname: true, img_perfil: true },
+  });
 
-    const rawUser = await prisma.user.findUnique({
-      where: { id: String(id) },
-      select: {
-        id: true,
-        name: true,
-        surname: true,
-        img_perfil: true,
-        about_me: true,
-        genero: true,
-        fecha_nacimiento: true,
-        ciudad: true,
-        provincia: true,
-        pais: true,
-        created_at: true,
-        cars: {
-          select: {
-            id_coche: true,
-            marca: true,
-            modelo: true,
-            color: true,
-            tipo_combustible: true,
-            num_plazas: true,
-            year: true,
-          },
-        },
-        commentsReceived: {
-          select: {
-            id_comment: true,
-            opinion: true,
-            rating: true,
-            id_trayecto: true,
-            user_id_commentator: true,
-          },
-        },
-        _count: {
-          select: {
-            eventParticipations: true,
-          },
+  const decryptedUsers = users.map((u) =>
+    cryptoUtils.decryptFields(u, ["name", "surname"]),
+  );
+
+  return res.status(200).send({ status: "Success", users: decryptedUsers });
+});
+
+const getPublicUserProfile = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  const rawUser = await prisma.user.findUnique({
+    where: { id: String(id) },
+    select: {
+      id: true,
+      name: true,
+      surname: true,
+      img_perfil: true,
+      about_me: true,
+      genero: true,
+      fecha_nacimiento: true,
+      ciudad: true,
+      provincia: true,
+      pais: true,
+      created_at: true,
+      cars: {
+        select: {
+          id_coche: true,
+          marca: true,
+          modelo: true,
+          color: true,
+          tipo_combustible: true,
+          num_plazas: true,
+          year: true,
         },
       },
-    });
-
-    if (!rawUser) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "User not found" });
-    }
-
-    const user = cryptoUtils.decryptFields(rawUser, [
-      "name",
-      "surname",
-      "fecha_nacimiento",
-      "provincia",
-    ]);
-
-    const comments = user.commentsReceived ?? [];
-    const totalComments = comments.length;
-    const avgRating =
-      totalComments > 0
-        ? Math.round(
-            (comments.reduce((sum, c) => sum + (c.rating ?? 0), 0) /
-              totalComments) *
-              10,
-          ) / 10
-        : 0;
-
-    const { commentsReceived, _count, ...publicFields } = user;
-
-    const bearerToken = req.headers.authorization?.split(" ")[1];
-    const cookieToken = req.cookies?.access_token;
-    const userToken = bearerToken || cookieToken;
-
-    const driverStats = await trayectosService.getDriverStats(
-      String(id),
-      userToken,
-    );
-
-    return res.status(200).send({
-      status: "Success",
-      user: {
-        ...publicFields,
-        cars: user.cars,
-        stats: {
-          avg_rating: avgRating,
-          total_comments: totalComments,
-          events_joined: _count?.eventParticipations ?? 0,
-          completed_trips: driverStats.completed_trips,
-          kwh_generated: driverStats.kwh_generated,
-          eur_generated: driverStats.eur_generated,
+      commentsReceived: {
+        select: {
+          id_comment: true,
+          opinion: true,
+          rating: true,
+          id_trayecto: true,
+          user_id_commentator: true,
         },
-        recent_comments: comments
-          .sort((a, b) => b.id_comment.localeCompare(a.id_comment))
-          .slice(0, 5),
       },
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+      _count: {
+        select: {
+          eventParticipations: true,
+        },
+      },
+    },
+  });
+
+  if (!rawUser) {
+    return next(new AppError("User not found", 404, "USER_NOT_FOUND"));
   }
-}
+
+  const user = cryptoUtils.decryptFields(rawUser, [
+    "name",
+    "surname",
+    "fecha_nacimiento",
+    "provincia",
+  ]);
+
+  const comments = user.commentsReceived ?? [];
+  const totalComments = comments.length;
+  const avgRating =
+    totalComments > 0
+      ? Math.round(
+          (comments.reduce((sum, c) => sum + (c.rating ?? 0), 0) /
+            totalComments) *
+            10,
+        ) / 10
+      : 0;
+
+  const { commentsReceived, _count, ...publicFields } = user;
+
+  const bearerToken = req.headers.authorization?.split(" ")[1];
+  const cookieToken = req.cookies?.access_token;
+  const userToken = bearerToken || cookieToken;
+
+  const driverStats = await trayectosService.getDriverStats(
+    String(id),
+    userToken,
+  );
+
+  return res.status(200).send({
+    status: "Success",
+    user: {
+      ...publicFields,
+      cars: user.cars,
+      stats: {
+        avg_rating: avgRating,
+        total_comments: totalComments,
+        events_joined: _count?.eventParticipations ?? 0,
+        completed_trips: driverStats.completed_trips,
+        kwh_generated: driverStats.kwh_generated,
+        eur_generated: driverStats.eur_generated,
+      },
+      recent_comments: comments
+        .sort((a, b) => b.id_comment.localeCompare(a.id_comment))
+        .slice(0, 5),
+    },
+  });
+});
 
 export const methods = {
   updateUserPatch,

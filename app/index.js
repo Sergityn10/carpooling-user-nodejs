@@ -25,6 +25,8 @@ import { methods as companies } from "./controllers/companies.js";
 import { methods as suggestions } from "./controllers/suggestions.js";
 import { methods as caeReports } from "./controllers/cae-reports.js";
 import { methods as legalConsent } from "./controllers/legalConsent.js";
+import errorHandler from "./middlewares/errorHandler.js";
+import AppError from "./utils/appError.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -135,13 +137,9 @@ app.get("/api/users", authorization.isLoged, async (req, res) => {
   }
 });
 
-app.get("/api/users/unique-by-location", (req, res) =>
-  user.getUniqueUsersByLocation(req, res),
-);
+app.get("/api/users/unique-by-location", user.getUniqueUsersByLocation);
 
-app.get("/api/users/info", authorization.isLoged, (req, res) =>
-  user.getMyUserInfo(req, res),
-);
+app.get("/api/users/info", authorization.isLoged, user.getMyUserInfo);
 app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
   const { id } = req.params;
   try {
@@ -168,26 +166,14 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
       .json({ status: "Error", message: "Failed to fetch user" });
   }
 });
-app.get("/api/users/:id/info", (req, res) => user.getUserInfo(req, res));
-app.get("/api/users/:id/public", (req, res) =>
-  user.getPublicUserInfo(req, res),
-);
-app.get("/api/users/:id/profile", (req, res) =>
-  user.getPublicUserProfile(req, res),
-);
-app.post("/api/users/public/batch", (req, res) =>
-  user.getPublicUsersBatch(req, res),
-);
-app.patch("/api/users/:id", authorization.isLoged, (req, res) =>
-  user.updateUserPatch(req, res),
-);
-app.patch("/api/users", authorization.isLoged, (req, res) =>
-  user.updateMyUserPatch(req, res),
-);
+app.get("/api/users/:id/info", user.getUserInfo);
+app.get("/api/users/:id/public", user.getPublicUserInfo);
+app.get("/api/users/:id/profile", user.getPublicUserProfile);
+app.post("/api/users/public/batch", user.getPublicUsersBatch);
+app.patch("/api/users/:id", authorization.isLoged, user.updateUserPatch);
+app.patch("/api/users", authorization.isLoged, user.updateMyUserPatch);
 
-app.delete("/api/users/:id", authorization.isLoged, (req, res) =>
-  user.removeUser(req, res),
-);
+app.delete("/api/users/:id", authorization.isLoged, user.removeUser);
 
 app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"));
 app.post("/api/auth/login", (req, res) => authentication.login(req, res));
@@ -736,8 +722,16 @@ app.get("/api/legal-consents/me", authorization.isLoged, (req, res) =>
   legalConsent.getMyConsents(req, res),
 );
 
-app.use((req, res) => {
-  res.status(404).sendFile(__dirname + "/pages/404.html");
+app.use((req, res, next) => {
+  next(
+    new AppError(
+      `No se puede encontrar la ruta ${req.originalUrl} en este servidor`,
+      404,
+      "ROUTE_NOT_FOUND",
+    ),
+  );
 });
+
+app.use(errorHandler);
 
 export default app;
