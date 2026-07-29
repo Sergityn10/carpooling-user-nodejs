@@ -19,7 +19,26 @@ const userSchema = z.object({
     .optional()
     .refine((val) => !val || !isNaN(Date.parse(val)), {
       message: "fecha_nacimiento must be a valid date string (YYYY-MM-DD)",
-    }),
+    })
+    .refine(
+      (val) => {
+        if (!val) return true;
+        const birth = new Date(val);
+        const now = new Date();
+        let age = now.getFullYear() - birth.getFullYear();
+        const monthDiff = now.getMonth() - birth.getMonth();
+        if (
+          monthDiff < 0 ||
+          (monthDiff === 0 && now.getDate() < birth.getDate())
+        ) {
+          age--;
+        }
+        return age >= 18;
+      },
+      {
+        message: "Debes ser mayor de 18 años para usar la plataforma.",
+      },
+    ),
   ciudad: z.string().optional(),
   provincia: z.string().optional(),
   codigo_postal: z.string().optional(),

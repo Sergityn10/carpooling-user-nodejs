@@ -29,6 +29,67 @@ const android_client_id = process.env.GOOGLE_CLIENT_ID_ANDROID;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const isProduction = process.env.NODE_ENV === "production";
 
+function validateConsents(consents) {
+  if (!consents) {
+    return {
+      valid: false,
+      error:
+        "Debes aceptar la Política de Privacidad y los Términos de Servicio para registrarte.",
+    };
+  }
+  if (
+    !consents.privacy_policy_accepted ||
+    !consents.terms_of_service_accepted
+  ) {
+    return {
+      valid: false,
+      error:
+        "Debes aceptar la Política de Privacidad y los Términos de Servicio para registrarte.",
+    };
+  }
+  return { valid: true };
+}
+
+function buildConsentRecords(userId, consents, ipAddress, userAgent) {
+  const records = [];
+  if (consents.privacy_policy_accepted) {
+    records.push({
+      userId,
+      documentType: "PRIVACY_POLICY",
+      documentVersion: consents.privacy_version || "v1.0",
+      ipAddress,
+      userAgent,
+    });
+  }
+  if (consents.terms_of_service_accepted) {
+    records.push({
+      userId,
+      documentType: "TERMS_OF_SERVICE",
+      documentVersion: consents.terms_version || "v1.0",
+      ipAddress,
+      userAgent,
+    });
+  }
+  if (consents.marketing_accepted) {
+    records.push({
+      userId,
+      documentType: "MARKETING",
+      documentVersion: "v1.0",
+      ipAddress,
+      userAgent,
+    });
+  }
+  return records;
+}
+
+async function saveLegalConsents(userId, consents, ipAddress, userAgent) {
+  if (!consents) return;
+  const records = buildConsentRecords(userId, consents, ipAddress, userAgent);
+  if (records.length > 0) {
+    await prisma.legalConsent.createMany({ data: records });
+  }
+}
+
 async function createStripeAccountForUser(userId, email) {
   try {
     const account = await stripe.accounts.create({
@@ -135,17 +196,12 @@ async function register(req, res) {
 
   const { email, password, consents } = result.data;
 
-  if (consents) {
-    if (
-      !consents.privacy_policy_accepted ||
-      !consents.terms_of_service_accepted
-    ) {
-      return res.status(400).send({
-        status: "Error",
-        message:
-          "Debes aceptar la Política de Privacidad y los Términos de Servicio para registrarte.",
-      });
-    }
+  const consentCheck = validateConsents(consents);
+  if (!consentCheck.valid) {
+    return res.status(400).send({
+      status: "Error",
+      message: consentCheck.error,
+    });
   }
 
   const comprobarUser = await prisma.user.findUnique({ where: { email } });
@@ -187,34 +243,12 @@ async function register(req, res) {
     }
 
     if (consents) {
-      const consentRecords = [];
-      if (consents.privacy_policy_accepted) {
-        consentRecords.push({
-          userId: user.id,
-          documentType: "PRIVACY_POLICY",
-          documentVersion: consents.privacy_version || "v1.0",
-          ipAddress,
-          userAgent,
-        });
-      }
-      if (consents.terms_of_service_accepted) {
-        consentRecords.push({
-          userId: user.id,
-          documentType: "TERMS_OF_SERVICE",
-          documentVersion: consents.terms_version || "v1.0",
-          ipAddress,
-          userAgent,
-        });
-      }
-      if (consents.marketing_accepted) {
-        consentRecords.push({
-          userId: user.id,
-          documentType: "MARKETING",
-          documentVersion: "v1.0",
-          ipAddress,
-          userAgent,
-        });
-      }
+      const consentRecords = buildConsentRecords(
+        user.id,
+        consents,
+        ipAddress,
+        userAgent,
+      );
       if (consentRecords.length > 0) {
         await tx.legalConsent.createMany({ data: consentRecords });
       }
@@ -275,19 +309,34 @@ async function oauthGoogle(req, res) {
         message: "Método no válido. Debe ser 'login' o 'register'.",
       });
   }
+
+  let state = undefined;
+  if (method === "register") {
+    const consents = req.body?.consents || req.query.consents;
+    const consentCheck = validateConsents(consents);
+    if (!consentCheck.valid) {
+      return res.status(400).send({
+        status: "Error",
+        message: consentCheck.error,
+      });
+    }
+    state = Buffer.from(JSON.stringify(consents)).toString("base64");
+  }
+
   const oauth2Client = new OAuth2Client(client_id, secret_id, redirectUrl);
 
   const authorizeUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
     scope: "profile openid email",
     prompt: "consent",
+    ...(state ? { state } : {}),
   });
   res.status(200).json({ url: authorizeUrl });
 }
 
 async function oauthGoogleAndroid(req, res) {
   try {
-    const { id_token, method } = req.body;
+    const { id_token, method, consents } = req.body;
 
     if (!id_token) {
       return res.status(400).send({
@@ -355,6 +404,20 @@ async function oauthGoogleAndroid(req, res) {
         });
       }
 
+      const consentCheck = validateConsents(consents);
+      if (!consentCheck.valid) {
+        return res.status(400).send({
+          status: "Error",
+          message: consentCheck.error,
+        });
+      }
+
+      const ipAddress =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        null;
+      const userAgent = req.headers["user-agent"] || null;
+
       const { methods: dbUtils } = await import("../utils/db.js");
       const userResult = await dbUtils.createUser(
         { email, password: "", name },
@@ -371,6 +434,8 @@ async function oauthGoogleAndroid(req, res) {
       }
 
       const newUser = userResult.user;
+
+      await saveLegalConsents(newUser.id, consents, ipAddress, userAgent);
       const role = newUser.role?.name ?? "user";
       const token = jsonwebtoken.sign(
         { userId: newUser.id, email, role },
@@ -667,4 +732,6 @@ export const methods = {
   validate,
   existEmail,
   issueRefreshToken,
+  validateConsents,
+  saveLegalConsents,
 };

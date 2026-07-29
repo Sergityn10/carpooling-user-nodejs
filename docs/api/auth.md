@@ -213,10 +213,24 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Genera la URL de autorización de Google OAuth para iniciar el flujo de login o registro con Google. El cliente debe redirigir al usuario a la URL devuelta.
+**Descripción:** Genera la URL de autorización de Google OAuth para iniciar el flujo de login o registro con Google. El cliente debe redirigir al usuario a la URL devuelta. Si el método es `register`, se deben enviar los consentimientos legales, que se codifican en el parámetro `state` de OAuth para preservarlos a través del redirect de Google.
 
-**Entrada (query param):**
-- `method` — `"login"` o `"register"`.
+**Entrada:**
+- Query param: `method` — `"login"` o `"register"`.
+- Body JSON (solo para `register`):
+```json
+{
+  "consents": {
+    "privacy_policy_accepted": true,
+    "terms_of_service_accepted": true,
+    "marketing_accepted": false,
+    "privacy_version": "v1.0",
+    "terms_version": "v1.0"
+  }
+}
+```
+
+> **Importante:** Para `method=register`, los `consents` son obligatorios y `privacy_policy_accepted` y `terms_of_service_accepted` deben ser `true`.
 
 **Salida (200):**
 ```json
@@ -226,7 +240,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 ```
 
 **Errores:**
-- `400` — Método inválido (no es `login` ni `register`).
+- `400` — Método inválido (no es `login` ni `register`), o consentimientos no proporcionados/no aceptados para registro.
 
 ---
 
@@ -236,12 +250,14 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Endpoint de callback al que Google redirige tras la autorización. Intercambia el código por tokens, obtiene los datos del usuario de Google, verifica si ya existe, crea el usuario en BD (método `google`), genera un JWT y redirige al frontend con el token y los datos del usuario.
+**Descripción:** Endpoint de callback al que Google redirige tras la autorización. Decodifica los consentimientos del parámetro `state`, intercambia el código por tokens, obtiene los datos del usuario de Google, verifica si ya existe, crea el usuario en BD (método `google`), guarda los consentimientos legales en `legal_consents` (con IP y User-Agent), genera un JWT y redirige al frontend con el token y los datos del usuario.
 
 **Query params:**
 - `code` — Código de autorización de Google.
+- `state` — Consentimientos legales codificados en base64 (generados automáticamente por el endpoint anterior).
 
 **Comportamiento:**
+- Si los consentimientos no son válidos → redirige a `{frontend}/register?error=consents_required`.
 - Si el usuario ya existe → redirige a `{frontend}/register?error=user_exists`.
 - Si ocurre un error → redirige a `{frontend}/register?error=auth_failed`.
 - Si todo va bien → redirige a `{frontend}/register/personal-info?token=...&userId=...&img_perfil=...`.
@@ -276,15 +292,24 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 
 **Autenticación:** No requerida.
 
-**Descripción:** Autentica o registra a un usuario usando el `id_token` de Google obtenido desde el SDK de Google Sign-In en Android. A diferencia del flujo web (que usa redirects), este endpoint recibe el `id_token` directamente y devuelve una respuesta JSON con el JWT. El backend verifica el `id_token` usando `google-auth-library` con el client ID de Android (`GOOGLE_CLIENT_ID_ANDROID`). En el registro, también se crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado) y se guarda en la tabla `accounts`.
+**Descripción:** Autentica o registra a un usuario usando el `id_token` de Google obtenido desde el SDK de Google Sign-In en Android. A diferencia del flujo web (que usa redirects), este endpoint recibe el `id_token` directamente y devuelve una respuesta JSON con el JWT. El backend verifica el `id_token` usando `google-auth-library` con el client ID de Android (`GOOGLE_CLIENT_ID_ANDROID`). En el registro, también se validan los consentimientos legales, se guardan en `legal_consents` (con IP y User-Agent), y se crea automáticamente una cuenta Stripe Connect (tipo `express`, `business_type: individual`, con `card_payments` y `transfers` habilitados, `business_profile` pre-rellenado) y se guarda en la tabla `accounts`.
 
 **Entrada (body JSON):**
 ```json
 {
   "id_token": "string (Google ID token del SDK de Android)",
-  "method": "login | register"
+  "method": "login | register",
+  "consents": {
+    "privacy_policy_accepted": true,
+    "terms_of_service_accepted": true,
+    "marketing_accepted": false,
+    "privacy_version": "v1.0",
+    "terms_version": "v1.0"
+  }
 }
 ```
+
+> **Importante:** Para `method=register`, los `consents` son obligatorios y `privacy_policy_accepted` y `terms_of_service_accepted` deben ser `true`.
 
 **Salida — Registro (201):**
 ```json
@@ -313,7 +338,7 @@ Endpoints para registro, login, logout, validación de sesión y OAuth con Googl
 ```
 
 **Errores:**
-- `400` — Falta `id_token`, método inválido, o la cuenta de Google no tiene email.
+- `400` — Falta `id_token`, método inválido, la cuenta de Google no tiene email, o consentimientos no proporcionados/no aceptados para registro.
 - `401` — El `id_token` no es válido o no se pudo verificar.
 - `404` — (Login) Usuario no encontrado o el método de autenticación no es Google.
 - `409` — (Registro) El usuario ya existe.
