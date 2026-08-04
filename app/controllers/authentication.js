@@ -22,6 +22,8 @@ import {
   clearAccessCookie,
   clearRefreshCookie,
 } from "../middlewares/authorization.js";
+import AppError from "../utils/appError.js";
+import catchAsync from "../utils/catchAsync.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
@@ -117,12 +119,16 @@ async function createStripeAccountForUser(userId, email) {
   }
 }
 
-async function login(req, res) {
+const login = catchAsync(async (req, res, next) => {
   const result = UserSchemas.validateLogin(req.body);
   if (!result.success) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: JSON.parse(result.error.message) });
+    return next(
+      new AppError(
+        "Los datos proporcionados no son válidos.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
   }
 
   const { email, password } = result.data;
@@ -137,19 +143,23 @@ async function login(req, res) {
   );
 
   if (!comprobarUser) {
-    return res.status(404).send({
-      status: "Error",
-      message:
+    return next(
+      new AppError(
         "No existe ninguna cuenta con este correo electrónico. ¿Te has registrado ya?",
-    });
+        404,
+        "EMAIL_NOT_REGISTERED",
+      ),
+    );
   }
 
   if (comprobarUser.auth_method !== authMethods.PASSWORD) {
-    return res.status(400).send({
-      status: "Error",
-      message:
+    return next(
+      new AppError(
         "Esta cuenta fue creada con Google. Inicia sesión usando el botón de Google.",
-    });
+        400,
+        "WRONG_AUTH_METHOD",
+      ),
+    );
   }
 
   const isPasswordValid = await bcrypt.compare(
@@ -158,10 +168,13 @@ async function login(req, res) {
   );
 
   if (!isPasswordValid) {
-    return res.status(401).send({
-      status: "Error",
-      message: "La contraseña introducida no es correcta. Inténtalo de nuevo.",
-    });
+    return next(
+      new AppError(
+        "La contraseña introducida no es correcta. Inténtalo de nuevo.",
+        401,
+        "INVALID_CREDENTIALS",
+      ),
+    );
   }
 
   const role = comprobarUser.role?.name ?? "user";
@@ -182,36 +195,37 @@ async function login(req, res) {
     img_perfil: comprobarUser.img_perfil,
     onboarding_ended: comprobarUser.onboarding_ended,
   });
-}
+});
 
-async function register(req, res) {
-  console.log(req.body);
+const register = catchAsync(async (req, res, next) => {
   const result = UserSchemas.validateRegisterSchema(req.body);
   if (!result.success) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: JSON.parse(result.error.message) });
+    return next(
+      new AppError(
+        "Los datos proporcionados no son válidos.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
   }
-  console.log(req.body);
 
   const { email, password, consents } = result.data;
 
   const consentCheck = validateConsents(consents);
   if (!consentCheck.valid) {
-    return res.status(400).send({
-      status: "Error",
-      message: consentCheck.error,
-    });
+    return next(new AppError(consentCheck.error, 400, "CONSENTS_REQUIRED"));
   }
 
   const comprobarUser = await prisma.user.findUnique({ where: { email } });
 
   if (comprobarUser) {
-    return res.status(409).send({
-      status: "Error",
-      message:
+    return next(
+      new AppError(
         "Ya existe una cuenta registrada con este correo electrónico. Intenta iniciar sesión.",
-    });
+        409,
+        "EMAIL_ALREADY_REGISTERED",
+      ),
+    );
   }
 
   const hash = await utils.hashValue(10, password);
@@ -285,15 +299,12 @@ async function register(req, res) {
     role,
     userId: createdUser?.id,
   });
-}
+});
 
-async function oauthGoogle(req, res) {
+const oauthGoogle = catchAsync(async (req, res, next) => {
   res.header("Access-Control-Allow-origin", `${process.env.ORIGIN}`);
   res.header("Referrer-Policy", "no-referrer-when-downgrade");
-  // Example query: GET /api/auth/oauth/google?method=login
-  // or: GET /api/auth/oauth/google?method=register
   const method = req.query.method;
-  console.log("Entra");
   let redirectUrl;
   let origin = process.env.MY_ORIGIN;
   switch (method) {
@@ -304,10 +315,13 @@ async function oauthGoogle(req, res) {
       redirectUrl = `${origin}api/auth/oauth/register`;
       break;
     default:
-      return res.status(400).send({
-        status: "Error",
-        message: "Método no válido. Debe ser 'login' o 'register'.",
-      });
+      return next(
+        new AppError(
+          "Método no válido. Debe ser 'login' o 'register'.",
+          400,
+          "INVALID_OAUTH_METHOD",
+        ),
+      );
   }
 
   let state = undefined;
@@ -315,10 +329,7 @@ async function oauthGoogle(req, res) {
     const consents = req.body?.consents || req.query.consents;
     const consentCheck = validateConsents(consents);
     if (!consentCheck.valid) {
-      return res.status(400).send({
-        status: "Error",
-        message: consentCheck.error,
-      });
+      return next(new AppError(consentCheck.error, 400, "CONSENTS_REQUIRED"));
     }
     state = Buffer.from(JSON.stringify(consents)).toString("base64");
   }
@@ -332,178 +343,186 @@ async function oauthGoogle(req, res) {
     ...(state ? { state } : {}),
   });
   res.status(200).json({ url: authorizeUrl });
-}
+});
 
-async function oauthGoogleAndroid(req, res) {
+const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
+  const { id_token, method, consents } = req.body;
+
+  if (!id_token) {
+    return next(
+      new AppError(
+        "Falta el token de Google (id_token). No se puede verificar la identidad.",
+        400,
+        "GOOGLE_TOKEN_MISSING",
+      ),
+    );
+  }
+
+  if (method !== "login" && method !== "register") {
+    return next(
+      new AppError(
+        "Método no válido. Debe ser 'login' o 'register'.",
+        400,
+        "INVALID_OAUTH_METHOD",
+      ),
+    );
+  }
+
+  const oauth2Client = new OAuth2Client();
+  let payload;
   try {
-    const { id_token, method, consents } = req.body;
-
-    if (!id_token) {
-      return res.status(400).send({
-        status: "Error",
-        message:
-          "Falta el token de Google (id_token). No se puede verificar la identidad.",
-      });
-    }
-
-    if (method !== "login" && method !== "register") {
-      return res.status(400).send({
-        status: "Error",
-        message: "Método no válido. Debe ser 'login' o 'register'.",
-      });
-    }
-
-    const oauth2Client = new OAuth2Client();
-    let payload;
-    try {
-      const ticket = await oauth2Client.verifyIdToken({
-        idToken: id_token,
-        audience: [android_client_id, client_id].filter(Boolean),
-      });
-      payload = ticket.getPayload();
-    } catch (verifyError) {
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "El token de Google no es válido o ha expirado. Cierra sesión en Google e inténtalo de nuevo.",
-      });
-    }
-
-    if (!payload) {
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "No se pudo obtener la información de tu cuenta de Google. Inténtalo de nuevo.",
-      });
-    }
-
-    const googleId = payload.sub;
-    const email = payload.email;
-    const name = payload.name || "";
-    const picture = payload.picture || "";
-
-    if (!email) {
-      return res.status(400).send({
-        status: "Error",
-        message:
-          "Tu cuenta de Google no tiene un correo asociado. Revisa la configuración de tu cuenta de Google.",
-      });
-    }
-
-    const existingUser = await prisma.user.findFirst({
-      where: { OR: [{ email }, { google_id: googleId }] },
-      include: { role: true },
+    const ticket = await oauth2Client.verifyIdToken({
+      idToken: id_token,
+      audience: [android_client_id, client_id].filter(Boolean),
     });
+    payload = ticket.getPayload();
+  } catch (verifyError) {
+    return next(
+      new AppError(
+        "El token de Google no es válido o ha expirado. Cierra sesión en Google e inténtalo de nuevo.",
+        401,
+        "GOOGLE_TOKEN_INVALID",
+      ),
+    );
+  }
 
-    if (method === "register") {
-      if (existingUser) {
-        return res.status(409).send({
-          status: "Error",
-          message:
-            "Ya existe una cuenta con este correo electrónico. Intenta iniciar sesión con Google.",
-        });
-      }
+  if (!payload) {
+    return next(
+      new AppError(
+        "No se pudo obtener la información de tu cuenta de Google. Inténtalo de nuevo.",
+        401,
+        "GOOGLE_PAYLOAD_MISSING",
+      ),
+    );
+  }
 
-      const consentCheck = validateConsents(consents);
-      if (!consentCheck.valid) {
-        return res.status(400).send({
-          status: "Error",
-          message: consentCheck.error,
-        });
-      }
+  const googleId = payload.sub;
+  const email = payload.email;
+  const name = payload.name || "";
+  const picture = payload.picture || "";
 
-      const ipAddress =
-        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-        req.socket?.remoteAddress ||
-        null;
-      const userAgent = req.headers["user-agent"] || null;
+  if (!email) {
+    return next(
+      new AppError(
+        "Tu cuenta de Google no tiene un correo asociado. Revisa la configuración de tu cuenta de Google.",
+        400,
+        "GOOGLE_NO_EMAIL",
+      ),
+    );
+  }
 
-      const { methods: dbUtils } = await import("../utils/db.js");
-      const userResult = await dbUtils.createUser(
-        { email, password: "", name },
-        authMethods.GOOGLE,
-        googleId,
+  const existingUser = await prisma.user.findFirst({
+    where: { OR: [{ email }, { google_id: googleId }] },
+    include: { role: true },
+  });
+
+  if (method === "register") {
+    if (existingUser) {
+      return next(
+        new AppError(
+          "Ya existe una cuenta con este correo electrónico. Intenta iniciar sesión con Google.",
+          409,
+          "EMAIL_ALREADY_REGISTERED",
+        ),
       );
-
-      if (userResult?.status !== "Success") {
-        return res.status(500).send({
-          status: "Error",
-          message:
-            "No se pudo completar el registro. Inténtalo de nuevo más tarde.",
-        });
-      }
-
-      const newUser = userResult.user;
-
-      await saveLegalConsents(newUser.id, consents, ipAddress, userAgent);
-      const role = newUser.role?.name ?? "user";
-      const token = jsonwebtoken.sign(
-        { userId: newUser.id, email, role },
-        PRIVATE_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
-      );
-
-      res.cookie("access_token", token, buildAccessCookieOptions());
-      await issueRefreshToken(res, newUser.id);
-
-      return res.status(201).send({
-        status: "Success",
-        message: "User registered successfully",
-        token,
-        role,
-        userId: newUser.id,
-        img_perfil: picture,
-        onboarding_ended: 0,
-      });
     }
 
-    if (method === "login") {
-      if (!existingUser) {
-        return res.status(404).send({
-          status: "Error",
-          message:
-            "No existe ninguna cuenta con este correo. ¿Te has registrado ya con Google?",
-        });
-      }
-
-      if (existingUser.auth_method !== authMethods.GOOGLE) {
-        return res.status(400).send({
-          status: "Error",
-          message:
-            "Esta cuenta no fue creada con Google. Inicia sesión con tu correo y contraseña.",
-        });
-      }
-
-      const role = existingUser.role?.name ?? "user";
-      const token = jsonwebtoken.sign(
-        { userId: existingUser.id, email, role },
-        PRIVATE_KEY,
-        { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
-      );
-
-      res.cookie("access_token", token, buildAccessCookieOptions());
-      await issueRefreshToken(res, existingUser.id);
-
-      return res.status(200).send({
-        status: "Success",
-        message: "Login successful",
-        token,
-        role,
-        userId: existingUser.id,
-        img_perfil: existingUser.img_perfil || picture,
-        onboarding_ended: existingUser.onboarding_ended,
-      });
+    const consentCheck = validateConsents(consents);
+    if (!consentCheck.valid) {
+      return next(new AppError(consentCheck.error, 400, "CONSENTS_REQUIRED"));
     }
-  } catch (error) {
-    console.error("Error in Android OAuth:", error);
-    return res.status(500).send({
-      status: "Error",
-      message: "Error al autenticar con Google. Inténtalo de nuevo más tarde.",
+
+    const ipAddress =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      null;
+    const userAgent = req.headers["user-agent"] || null;
+
+    const { methods: dbUtils } = await import("../utils/db.js");
+    const userResult = await dbUtils.createUser(
+      { email, password: "", name },
+      authMethods.GOOGLE,
+      googleId,
+    );
+
+    if (userResult?.status !== "Success") {
+      return next(
+        new AppError(
+          "No se pudo completar el registro. Inténtalo de nuevo más tarde.",
+          500,
+          "REGISTRATION_FAILED",
+        ),
+      );
+    }
+
+    const newUser = userResult.user;
+
+    await saveLegalConsents(newUser.id, consents, ipAddress, userAgent);
+    const role = newUser.role?.name ?? "user";
+    const token = jsonwebtoken.sign(
+      { userId: newUser.id, email, role },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+    );
+
+    res.cookie("access_token", token, buildAccessCookieOptions());
+    await issueRefreshToken(res, newUser.id);
+
+    return res.status(201).send({
+      status: "Success",
+      message: "User registered successfully",
+      token,
+      role,
+      userId: newUser.id,
+      img_perfil: picture,
+      onboarding_ended: 0,
     });
   }
-}
 
-async function logout(req, res) {
+  if (method === "login") {
+    if (!existingUser) {
+      return next(
+        new AppError(
+          "No existe ninguna cuenta con este correo. ¿Te has registrado ya con Google?",
+          404,
+          "EMAIL_NOT_REGISTERED",
+        ),
+      );
+    }
+
+    if (existingUser.auth_method !== authMethods.GOOGLE) {
+      return next(
+        new AppError(
+          "Esta cuenta no fue creada con Google. Inicia sesión con tu correo y contraseña.",
+          400,
+          "WRONG_AUTH_METHOD",
+        ),
+      );
+    }
+
+    const role = existingUser.role?.name ?? "user";
+    const token = jsonwebtoken.sign(
+      { userId: existingUser.id, email, role },
+      PRIVATE_KEY,
+      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+    );
+
+    res.cookie("access_token", token, buildAccessCookieOptions());
+    await issueRefreshToken(res, existingUser.id);
+
+    return res.status(200).send({
+      status: "Success",
+      message: "Login successful",
+      token,
+      role,
+      userId: existingUser.id,
+      img_perfil: existingUser.img_perfil || picture,
+      onboarding_ended: existingUser.onboarding_ended,
+    });
+  }
+});
+
+const logout = catchAsync(async (req, res, next) => {
   const rawRefreshToken = req?.cookies?.refresh_token;
 
   if (rawRefreshToken) {
@@ -530,197 +549,177 @@ async function logout(req, res) {
   return res
     .status(200)
     .send({ status: "Success", message: "Logout successful" });
-}
+});
 
-async function refresh(req, res) {
-  try {
-    const rawRefreshToken = req?.cookies?.refresh_token;
-    if (!rawRefreshToken) {
-      return res.status(401).send({
-        status: "Error",
-        message: "No hay sesión activa. Inicia sesión de nuevo.",
-      });
-    }
-
-    const hashedRefresh = crypto
-      .createHash("sha256")
-      .update(rawRefreshToken)
-      .digest("hex");
-
-    const stored = await prisma.refreshToken.findFirst({
-      where: { token: hashedRefresh, revoked: false },
-      select: { user_id: true, expires_at: true, revoked: true },
-    });
-
-    if (!stored) {
-      res.clearCookie(
-        "refresh_token",
-        buildCookieOptions(new Date(), { httpOnly: true }),
-      );
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "La sesión ha expirado o no es válida. Inicia sesión de nuevo.",
-      });
-    }
-
-    const expiresAt = new Date(stored.expires_at);
-    if (
-      Number.isNaN(expiresAt.getTime()) ||
-      expiresAt.getTime() <= Date.now()
-    ) {
-      res.clearCookie(
-        "refresh_token",
-        buildCookieOptions(new Date(), { httpOnly: true }),
-      );
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "Tu sesión ha expirado. Inicia sesión de nuevo para continuar.",
-      });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: stored.user_id },
-      include: { role: true },
-    });
-
-    if (!user) {
-      res.clearCookie(
-        "refresh_token",
-        buildCookieOptions(new Date(), { httpOnly: true }),
-      );
-      return res.status(401).send({
-        status: "Error",
-        message: "El usuario asociado a esta sesión ya no existe.",
-      });
-    }
-
-    const role = user.role?.name ?? "user";
-    // Rotate refresh token and issue new access token
-    const accessToken = jsonwebtoken.sign(
-      { userId: user.id, email: user.email, role },
-      PRIVATE_KEY,
-      { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+const refresh = catchAsync(async (req, res, next) => {
+  const rawRefreshToken = req?.cookies?.refresh_token;
+  if (!rawRefreshToken) {
+    return next(
+      new AppError(
+        "No hay sesión activa. Inicia sesión de nuevo.",
+        401,
+        "NO_REFRESH_TOKEN",
+      ),
     );
-
-    res.cookie("access_token", accessToken, buildAccessCookieOptions());
-    await issueRefreshToken(res, user.id, {
-      rotate: true,
-      oldTokenHash: hashedRefresh,
-    });
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Token refreshed",
-      token: accessToken,
-      role,
-      userId: user.id,
-    });
-  } catch (error) {
-    res.clearCookie(
-      "access_token",
-      buildCookieOptions(new Date(), { httpOnly: true }),
-    );
-    res.clearCookie(
-      "refresh_token",
-      buildCookieOptions(new Date(), { httpOnly: true }),
-    );
-    return res.status(401).send({
-      status: "Error",
-      message: "No se pudo renovar la sesión. Inicia sesión de nuevo.",
-    });
   }
-}
 
-async function validate(req, res) {
-  try {
-    const rawHeader =
-      req?.headers?.authorization || req?.headers?.authentication;
-    let bearerToken = null;
-    if (rawHeader && typeof rawHeader === "string") {
-      const [scheme, tokenFromHeader] = rawHeader.split(" ");
-      if (scheme?.toLowerCase() === "bearer" && tokenFromHeader) {
-        bearerToken = tokenFromHeader;
-      }
-    }
-    const cookieToken = req?.cookies?.access_token;
-    if (!bearerToken && !cookieToken) {
-      return res.status(401).send({
-        status: "Error",
-        message: "No se ha proporcionado ningún token de autenticación.",
-      });
-    }
+  const hashedRefresh = crypto
+    .createHash("sha256")
+    .update(rawRefreshToken)
+    .digest("hex");
 
-    const token = bearerToken || cookieToken;
-    console.log(token);
+  const stored = await prisma.refreshToken.findFirst({
+    where: { token: hashedRefresh, revoked: false },
+    select: { user_id: true, expires_at: true, revoked: true },
+  });
 
-    // Verificar explícitamente el token
-    try {
-      jsonwebtoken.verify(token, PUBLIC_KEY, { algorithms: [JWT_ALGORITHM] });
-    } catch (jwtError) {
-      console.error("[validate] JWT error:", jwtError.name, jwtError.message);
-      clearAccessCookie(res);
-      return res.status(401).send({
-        status: "Error",
-        message:
-          "El token de acceso ha expirado o no es válido. Inicia sesión de nuevo.",
-        detail: jwtError.name,
-      });
-    }
-
-    const findUser =
-      (await authorization.reviseBearer(req)) ||
-      (await authorization.reviseCookie(req));
-
-    if (!findUser) {
-      clearAccessCookie(res);
-      return res.status(401).send({
-        status: "Error",
-        message: "El usuario asociado a este token ya no existe en el sistema.",
-      });
-    }
-
-    const user = {
-      userId: findUser.id,
-      email: findUser.email,
-      name: findUser.name,
-      surname: findUser.surname,
-      img_perfil: findUser.img_perfil,
-      ciudad: findUser.ciudad,
-      onboarding_ended: findUser.onboarding_ended,
-      role: findUser.role?.name ?? "user",
-    };
-    return res.status(200).send({
-      status: "Success",
-      message: "Token is valid",
-      token,
-      data: user,
-    });
-  } catch (error) {
-    return res.status(401).send({
-      status: "Error",
-      message: "No se pudo verificar la autenticación. Inicia sesión de nuevo.",
-      details:
-        process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
+  if (!stored) {
+    clearRefreshCookie(res);
+    return next(
+      new AppError(
+        "La sesión ha expirado o no es válida. Inicia sesión de nuevo.",
+        401,
+        "REFRESH_TOKEN_INVALID",
+      ),
+    );
   }
-}
 
-async function existEmail(req, res) {
+  const expiresAt = new Date(stored.expires_at);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
+    clearRefreshCookie(res);
+    return next(
+      new AppError(
+        "Tu sesión ha expirado. Inicia sesión de nuevo para continuar.",
+        401,
+        "REFRESH_TOKEN_EXPIRED",
+      ),
+    );
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: stored.user_id },
+    include: { role: true },
+  });
+
+  if (!user) {
+    clearRefreshCookie(res);
+    return next(
+      new AppError(
+        "El usuario asociado a esta sesión ya no existe.",
+        401,
+        "TOKEN_USER_NOT_FOUND",
+      ),
+    );
+  }
+
+  const role = user.role?.name ?? "user";
+  const accessToken = jsonwebtoken.sign(
+    { userId: user.id, email: user.email, role },
+    PRIVATE_KEY,
+    { expiresIn: process.env.EXPIRATION_TIME, algorithm: JWT_ALGORITHM },
+  );
+
+  res.cookie("access_token", accessToken, buildAccessCookieOptions());
+  await issueRefreshToken(res, user.id, {
+    rotate: true,
+    oldTokenHash: hashedRefresh,
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Token refreshed",
+    token: accessToken,
+    role,
+    userId: user.id,
+  });
+});
+
+const validate = catchAsync(async (req, res, next) => {
+  const rawHeader = req?.headers?.authorization || req?.headers?.authentication;
+  let bearerToken = null;
+  if (rawHeader && typeof rawHeader === "string") {
+    const [scheme, tokenFromHeader] = rawHeader.split(" ");
+    if (scheme?.toLowerCase() === "bearer" && tokenFromHeader) {
+      bearerToken = tokenFromHeader;
+    }
+  }
+  const cookieToken = req?.cookies?.access_token;
+  if (!bearerToken && !cookieToken) {
+    return next(
+      new AppError(
+        "No se ha proporcionado ningún token de autenticación.",
+        401,
+        "TOKEN_MISSING",
+      ),
+    );
+  }
+
+  const token = bearerToken || cookieToken;
+
+  try {
+    jsonwebtoken.verify(token, PUBLIC_KEY, { algorithms: [JWT_ALGORITHM] });
+  } catch (jwtError) {
+    console.error("[validate] JWT error:", jwtError.name, jwtError.message);
+    clearAccessCookie(res);
+    return next(
+      new AppError(
+        "El token de acceso ha expirado o no es válido. Inicia sesión de nuevo.",
+        401,
+        "TOKEN_EXPIRED",
+      ),
+    );
+  }
+
+  const findUser =
+    (await authorization.reviseBearer(req)) ||
+    (await authorization.reviseCookie(req));
+
+  if (!findUser) {
+    clearAccessCookie(res);
+    return next(
+      new AppError(
+        "El usuario asociado a este token ya no existe en el sistema.",
+        401,
+        "TOKEN_USER_NOT_FOUND",
+      ),
+    );
+  }
+
+  const user = {
+    userId: findUser.id,
+    email: findUser.email,
+    name: findUser.name,
+    surname: findUser.surname,
+    img_perfil: findUser.img_perfil,
+    ciudad: findUser.ciudad,
+    onboarding_ended: findUser.onboarding_ended,
+    role: findUser.role?.name ?? "user",
+  };
+  return res.status(200).send({
+    status: "Success",
+    message: "Token is valid",
+    token,
+    data: user,
+  });
+});
+
+const existEmail = catchAsync(async (req, res, next) => {
   const { email } = req.query;
   const comprobarUser = await prisma.user.findUnique({ where: { email } });
   if (comprobarUser) {
-    return res.status(409).send({
-      status: "Error",
-      message: "Ya existe una cuenta registrada con este correo electrónico.",
-    });
+    return next(
+      new AppError(
+        "Ya existe una cuenta registrada con este correo electrónico.",
+        409,
+        "EMAIL_ALREADY_REGISTERED",
+      ),
+    );
   }
   return res.status(200).send({
     status: "Success",
     message: "Este correo electrónico está disponible.",
   });
-}
+});
 
 export const methods = {
   login,

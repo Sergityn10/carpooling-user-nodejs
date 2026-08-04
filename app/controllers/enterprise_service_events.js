@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import prisma from "../lib/prisma.js";
 import { ServiceEventSchemas } from "../schemas/service_event.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
+import parseUTCDate from "../utils/parseUTCDate.js";
 
 dotenv.config();
 
@@ -18,8 +19,8 @@ async function create(req, res) {
 
   const title = ev.name;
   const description = ev.description ?? null;
-  const start_at = ev.startDate;
-  const end_at = ev.endDate ?? null;
+  const start_at = parseUTCDate(ev.startDate);
+  const end_at = ev.endDate ? parseUTCDate(ev.endDate) : null;
   const address_line1 = ev.location;
   const city = "";
 
@@ -191,6 +192,11 @@ async function patch(req, res) {
   const updates = { ...allowedSchema.data };
   delete updates.id;
   delete updates.enterprise_id;
+
+  if (updates.start_at !== undefined)
+    updates.start_at = parseUTCDate(updates.start_at);
+  if (updates.end_at !== undefined)
+    updates.end_at = parseUTCDate(updates.end_at);
 
   const keys = Object.keys(updates);
   if (keys.length === 0) {

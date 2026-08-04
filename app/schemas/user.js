@@ -1,4 +1,5 @@
 import z from "zod";
+import parseUTCDate from "../utils/parseUTCDate.js";
 
 const userSchema = z.object({
   name: z.string().optional(),
@@ -23,7 +24,7 @@ const userSchema = z.object({
     .refine(
       (val) => {
         if (!val) return true;
-        const birth = new Date(val);
+        const birth = parseUTCDate(val);
         const now = new Date();
         let age = now.getFullYear() - birth.getFullYear();
         const monthDiff = now.getMonth() - birth.getMonth();
