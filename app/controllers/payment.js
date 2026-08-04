@@ -4,6 +4,9 @@ dotenv.config();
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { trayectosService } from "../services/trayectosService.js";
+import AppError from "../utils/appError.js";
+import catchAsync from "../utils/catchAsync.js";
+import parseUTCDate from "../utils/parseUTCDate.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
@@ -42,7 +45,7 @@ function calculateTotalPrice(netPriceCents) {
   };
 }
 
-const createSession = async (req, res) => {
+const createSession = catchAsync(async (req, res, next) => {
   const { amount, description, success_url, cancel_url } = req.body;
 
   const session = await stripe.checkout.sessions.create({
@@ -66,9 +69,9 @@ const createSession = async (req, res) => {
     cancel_url: cancel_url,
   });
   return res.json(session);
-};
+});
 
-const rechargeWalletUser = async (req, res) => {
+const rechargeWalletUser = catchAsync(async (req, res, next) => {
   const { amount, description, success_url, cancel_url } = req.body;
   const user = req.user;
   const destination = user.stripe_account;
@@ -110,151 +113,134 @@ const rechargeWalletUser = async (req, res) => {
   });
 
   return res.json(session);
-};
+});
 
-async function createCheckoutPaymentIntent(req, res) {
-  try {
-    const { amount, id_reserva, description, recipient_user_id } = req.body;
-    const user = req.user;
+const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
+  const { amount, id_reserva, description, recipient_user_id } = req.body;
+  const user = req.user;
 
-    const trayectoIdRaw =
-      req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
-    const trayectoId = trayectoIdRaw != null ? String(trayectoIdRaw) : null;
-    if (!trayectoId) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "Missing or invalid id_trayecto" });
-    }
-
-    if (!recipient_user_id) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "Missing recipient_user_id" });
-    }
-
-    if (!amount || amount <= 0) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "Missing or invalid amount" });
-    }
-
-    const sender = await prisma.user.findUnique({
-      where: { id: String(user.id) },
-      select: { stripe_customer_account: true, stripe_account: true },
-    });
-
-    if (!sender) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Sender user not found" });
-    }
-
-    if (!sender.stripe_customer_account) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Sender does not have a Stripe customer account",
-      });
-    }
-
-    const recipient = await prisma.user.findUnique({
-      where: { id: String(recipient_user_id) },
-      select: { stripe_account: true, name: true },
-    });
-
-    if (!recipient) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Recipient user not found" });
-    }
-
-    if (!recipient.stripe_account) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Recipient does not have a Stripe Connect account",
-      });
-    }
-
-    const recipientAccount = await prisma.account.findUnique({
-      where: { stripe_account_id: recipient.stripe_account },
-      select: {
-        charges_enabled: true,
-        transfers_enabled: true,
-        details_submitted: true,
-      },
-    });
-
-    if (!recipientAccount || !recipientAccount.transfers_enabled) {
-      return res.status(400).send({
-        status: "Error",
-        message:
-          "Recipient has not completed Stripe onboarding or transfers are not enabled. The recipient must complete onboarding before receiving payments.",
-        recipient_onboarding_completed: Boolean(
-          recipientAccount?.details_submitted,
-        ),
-        recipient_transfers_enabled: Boolean(
-          recipientAccount?.transfers_enabled,
-        ),
-      });
-    }
-
-    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-      /\/$/,
-      "",
+  const trayectoIdRaw =
+    req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
+  const trayectoId = trayectoIdRaw != null ? String(trayectoIdRaw) : null;
+  if (!trayectoId) {
+    return next(
+      new AppError("Missing or invalid id_trayecto", 400, "VALIDATION_ERROR"),
     );
-    const deepLink = req.body?.return_url || "youconnext://perfil";
-    const successUrl =
-      req.body?.success_url ||
-      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-    const cancelUrl =
-      req.body?.cancel_url ||
-      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  }
 
-    const pricing = calculateTotalPrice(amount);
+  if (!recipient_user_id) {
+    return next(
+      new AppError("Missing recipient_user_id", 400, "VALIDATION_ERROR"),
+    );
+  }
 
-    const checkout_session = await stripe.checkout.sessions.create({
-      customer: sender.stripe_customer_account,
-      line_items: [
-        {
-          price_data: {
-            currency: "eur",
-            product_data: {
-              name: "Reserva de trayecto",
-              description:
-                description || `Pago a ${recipient.name || "conductor"}`,
-            },
-            unit_amount: pricing.total_cents,
+  if (!amount || amount <= 0) {
+    return next(
+      new AppError("Missing or invalid amount", 400, "VALIDATION_ERROR"),
+    );
+  }
+
+  const sender = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_customer_account: true, stripe_account: true },
+  });
+
+  if (!sender) {
+    return next(new AppError("Sender user not found", 404, "USER_NOT_FOUND"));
+  }
+
+  if (!sender.stripe_customer_account) {
+    return next(
+      new AppError(
+        "Sender does not have a Stripe customer account",
+        400,
+        "STRIPE_CUSTOMER_MISSING",
+      ),
+    );
+  }
+
+  const recipient = await prisma.user.findUnique({
+    where: { id: String(recipient_user_id) },
+    select: { stripe_account: true, name: true },
+  });
+
+  if (!recipient) {
+    return next(
+      new AppError("Recipient user not found", 404, "USER_NOT_FOUND"),
+    );
+  }
+
+  if (!recipient.stripe_account) {
+    return next(
+      new AppError(
+        "Recipient does not have a Stripe Connect account",
+        400,
+        "STRIPE_CONNECT_MISSING",
+      ),
+    );
+  }
+
+  const recipientAccount = await prisma.account.findUnique({
+    where: { stripe_account_id: recipient.stripe_account },
+    select: {
+      charges_enabled: true,
+      transfers_enabled: true,
+      details_submitted: true,
+    },
+  });
+
+  if (!recipientAccount || !recipientAccount.transfers_enabled) {
+    return next(
+      new AppError(
+        "Recipient has not completed Stripe onboarding or transfers are not enabled. The recipient must complete onboarding before receiving payments.",
+        400,
+        "STRIPE_ONBOARDING_INCOMPLETE",
+      ),
+    );
+  }
+
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink = req.body?.return_url || "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+
+  const pricing = calculateTotalPrice(amount);
+
+  const checkout_session = await stripe.checkout.sessions.create({
+    customer: sender.stripe_customer_account,
+    line_items: [
+      {
+        price_data: {
+          currency: "eur",
+          product_data: {
+            name: "Reserva de trayecto",
+            description:
+              description || `Pago a ${recipient.name || "conductor"}`,
           },
-          quantity: 1,
+          unit_amount: pricing.total_cents,
         },
-      ],
-      payment_intent_data: {
-        application_fee_amount: pricing.application_fee_cents,
-        capture_method: "manual",
-        transfer_data: {
-          destination: recipient.stripe_account,
-        },
-        metadata: {
-          type: "reserva",
-          id_user: String(user.id),
-          id_reserva: String(id_reserva || ""),
-          sender_account: String(sender.stripe_account ?? ""),
-          destination_account: String(recipient.stripe_account),
-          id_trayecto: trayectoId,
-          recipient_user_id: String(recipient_user_id),
-          net_price_cents: String(pricing.net_price_cents),
-          driver_price_cents: String(pricing.driver_price_cents),
-          total_cents: String(pricing.total_cents),
-          application_fee_cents: String(pricing.application_fee_cents),
-          platform_fee_cents: String(pricing.platform_fee_cents),
-          stripe_fee_cents: String(pricing.stripe_fee_cents),
-        },
+        quantity: 1,
+      },
+    ],
+    payment_intent_data: {
+      application_fee_amount: pricing.application_fee_cents,
+      capture_method: "manual",
+      transfer_data: {
+        destination: recipient.stripe_account,
       },
       metadata: {
         type: "reserva",
-        id_user: user.id,
-        id_reserva: id_reserva || "",
-        sender_account: sender.stripe_account ?? "",
-        destination_account: recipient.stripe_account,
+        id_user: String(user.id),
+        id_reserva: String(id_reserva || ""),
+        sender_account: String(sender.stripe_account ?? ""),
+        destination_account: String(recipient.stripe_account),
         id_trayecto: trayectoId,
         recipient_user_id: String(recipient_user_id),
         net_price_cents: String(pricing.net_price_cents),
@@ -264,163 +250,168 @@ async function createCheckoutPaymentIntent(req, res) {
         platform_fee_cents: String(pricing.platform_fee_cents),
         stripe_fee_cents: String(pricing.stripe_fee_cents),
       },
-      submit_type: "pay",
-      mode: "payment",
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    });
+    },
+    metadata: {
+      type: "reserva",
+      id_user: user.id,
+      id_reserva: id_reserva || "",
+      sender_account: sender.stripe_account ?? "",
+      destination_account: recipient.stripe_account,
+      id_trayecto: trayectoId,
+      recipient_user_id: String(recipient_user_id),
+      net_price_cents: String(pricing.net_price_cents),
+      driver_price_cents: String(pricing.driver_price_cents),
+      total_cents: String(pricing.total_cents),
+      application_fee_cents: String(pricing.application_fee_cents),
+      platform_fee_cents: String(pricing.platform_fee_cents),
+      stripe_fee_cents: String(pricing.stripe_fee_cents),
+    },
+    submit_type: "pay",
+    mode: "payment",
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  });
 
-    return res.status(200).send({
-      ...checkout_session,
-      pricing,
-    });
-  } catch (error) {
-    console.error("Error creating checkout payment intent:", error);
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  return res.status(200).send({
+    ...checkout_session,
+    pricing,
+  });
+});
+
+const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
+  const { id_reserva } = req.body;
+  const user = req.user;
+
+  if (!id_reserva) {
+    return next(new AppError("Missing id_reserva", 400, "VALIDATION_ERROR"));
   }
-}
 
-async function resumeCheckoutPaymentIntent(req, res) {
-  try {
-    const { id_reserva } = req.body;
-    const user = req.user;
+  const dbPaymentIntent = await prisma.paymentIntent.findFirst({
+    where: { id_reserva: String(id_reserva) },
+    orderBy: { created_at: "desc" },
+  });
 
-    if (!id_reserva) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "Missing id_reserva" });
-    }
-
-    const dbPaymentIntent = await prisma.paymentIntent.findFirst({
-      where: { id_reserva: String(id_reserva) },
-      orderBy: { created_at: "desc" },
-    });
-
-    if (!dbPaymentIntent) {
-      return res.status(404).send({
-        status: "Error",
-        message: "No payment intent found for this reservation",
-      });
-    }
-
-    const paymentIntentId = dbPaymentIntent.stripe_payment_id;
-
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-
-    if (!paymentIntent) {
-      return res.status(404).send({
-        status: "Error",
-        message: "Payment intent not found in Stripe",
-      });
-    }
-
-    const piStatus = String(paymentIntent.status);
-    if (piStatus === "succeeded" || piStatus === "canceled") {
-      return res.status(409).send({
-        status: "Error",
-        message: `Payment intent is already ${piStatus}`,
-        paymentIntent,
-      });
-    }
-
-    const sender = await prisma.user.findUnique({
-      where: { id: String(user.id) },
-      select: { stripe_customer_account: true, stripe_account: true },
-    });
-
-    if (!sender?.stripe_customer_account) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Sender does not have a Stripe customer account",
-      });
-    }
-
-    const destinationAccount =
-      paymentIntent?.metadata?.destination_account ||
-      dbPaymentIntent?.destination_account ||
-      null;
-    if (!destinationAccount) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Cannot determine destination account from original payment",
-      });
-    }
-
-    const recipient = await prisma.user.findFirst({
-      where: { stripe_account: destinationAccount },
-      select: { name: true },
-    });
-
-    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-      /\/$/,
-      "",
+  if (!dbPaymentIntent) {
+    return next(
+      new AppError(
+        "No payment intent found for this reservation",
+        404,
+        "PAYMENT_INTENT_NOT_FOUND",
+      ),
     );
-    const deepLink = req.body?.return_url || "youconnext://perfil";
-    const successUrl =
-      req.body?.success_url ||
-      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-    const cancelUrl =
-      req.body?.cancel_url ||
-      `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  }
 
-    const amount = paymentIntent.amount;
-    const trayectoId =
-      paymentIntent?.metadata?.id_trayecto ||
-      dbPaymentIntent?.description ||
-      null;
-    const recipientUserId = paymentIntent?.metadata?.recipient_user_id || null;
+  const paymentIntentId = dbPaymentIntent.stripe_payment_id;
 
-    const netPriceCents = paymentIntent?.metadata?.net_price_cents
-      ? parseInt(paymentIntent.metadata.net_price_cents, 10)
-      : amount;
-    const pricing = calculateTotalPrice(netPriceCents);
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
-    const checkout_session = await stripe.checkout.sessions.create({
-      customer: sender.stripe_customer_account,
-      line_items: [
-        {
-          price_data: {
-            currency: paymentIntent.currency || "eur",
-            product_data: {
-              name: "Reserva de trayecto (pago pendiente)",
-              description:
-                paymentIntent.description ||
-                `Pago a ${recipient?.name || "conductor"}`,
-            },
-            unit_amount: pricing.total_cents,
+  if (!paymentIntent) {
+    return next(
+      new AppError(
+        "Payment intent not found in Stripe",
+        404,
+        "PAYMENT_INTENT_NOT_FOUND",
+      ),
+    );
+  }
+
+  const piStatus = String(paymentIntent.status);
+  if (piStatus === "succeeded" || piStatus === "canceled") {
+    return next(
+      new AppError(
+        `Payment intent is already ${piStatus}`,
+        409,
+        "PAYMENT_INTENT_ALREADY_COMPLETED",
+      ),
+    );
+  }
+
+  const sender = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_customer_account: true, stripe_account: true },
+  });
+
+  if (!sender?.stripe_customer_account) {
+    return next(
+      new AppError(
+        "Sender does not have a Stripe customer account",
+        400,
+        "STRIPE_CUSTOMER_MISSING",
+      ),
+    );
+  }
+
+  const destinationAccount =
+    paymentIntent?.metadata?.destination_account ||
+    dbPaymentIntent?.destination_account ||
+    null;
+  if (!destinationAccount) {
+    return next(
+      new AppError(
+        "Cannot determine destination account from original payment",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const recipient = await prisma.user.findFirst({
+    where: { stripe_account: destinationAccount },
+    select: { name: true },
+  });
+
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink = req.body?.return_url || "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+
+  const amount = paymentIntent.amount;
+  const trayectoId =
+    paymentIntent?.metadata?.id_trayecto ||
+    dbPaymentIntent?.description ||
+    null;
+  const recipientUserId = paymentIntent?.metadata?.recipient_user_id || null;
+
+  const netPriceCents = paymentIntent?.metadata?.net_price_cents
+    ? parseInt(paymentIntent.metadata.net_price_cents, 10)
+    : amount;
+  const pricing = calculateTotalPrice(netPriceCents);
+
+  const checkout_session = await stripe.checkout.sessions.create({
+    customer: sender.stripe_customer_account,
+    line_items: [
+      {
+        price_data: {
+          currency: paymentIntent.currency || "eur",
+          product_data: {
+            name: "Reserva de trayecto (pago pendiente)",
+            description:
+              paymentIntent.description ||
+              `Pago a ${recipient?.name || "conductor"}`,
           },
-          quantity: 1,
+          unit_amount: pricing.total_cents,
         },
-      ],
-      payment_intent_data: {
-        application_fee_amount: pricing.application_fee_cents,
-        capture_method: "manual",
-        transfer_data: {
-          destination: destinationAccount,
-        },
-        metadata: {
-          type: "reserva",
-          id_user: String(user.id),
-          id_reserva: String(id_reserva),
-          sender_account: String(sender.stripe_account ?? ""),
-          destination_account: String(destinationAccount),
-          id_trayecto: String(trayectoId ?? ""),
-          recipient_user_id: String(recipientUserId ?? ""),
-          net_price_cents: String(pricing.net_price_cents),
-          driver_price_cents: String(pricing.driver_price_cents),
-          total_cents: String(pricing.total_cents),
-          application_fee_cents: String(pricing.application_fee_cents),
-          platform_fee_cents: String(pricing.platform_fee_cents),
-          stripe_fee_cents: String(pricing.stripe_fee_cents),
-        },
+        quantity: 1,
+      },
+    ],
+    payment_intent_data: {
+      application_fee_amount: pricing.application_fee_cents,
+      capture_method: "manual",
+      transfer_data: {
+        destination: destinationAccount,
       },
       metadata: {
         type: "reserva",
         id_user: String(user.id),
         id_reserva: String(id_reserva),
-        sender_account: sender.stripe_account ?? "",
+        sender_account: String(sender.stripe_account ?? ""),
         destination_account: String(destinationAccount),
         id_trayecto: String(trayectoId ?? ""),
         recipient_user_id: String(recipientUserId ?? ""),
@@ -431,46 +422,55 @@ async function resumeCheckoutPaymentIntent(req, res) {
         platform_fee_cents: String(pricing.platform_fee_cents),
         stripe_fee_cents: String(pricing.stripe_fee_cents),
       },
-      submit_type: "pay",
-      mode: "payment",
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    });
-
-    await prisma.paymentIntent.create({
-      data: {
-        stripe_payment_id: checkout_session.payment_intent,
-        amount: pricing.total_cents,
-        currency: String(paymentIntent.currency || "eur"),
-        description: dbPaymentIntent?.description ?? undefined,
-        destination_account: destinationAccount,
-        sender_account: sender.stripe_account ?? undefined,
-        state: "pending",
-        checkout_session_id: checkout_session.id,
-        id_reserva: String(id_reserva),
-      },
-    });
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Checkout session created for pending payment",
-      checkout_session,
-      pricing,
-      payment_intent_status: piStatus,
+    },
+    metadata: {
+      type: "reserva",
+      id_user: String(user.id),
       id_reserva: String(id_reserva),
-    });
-  } catch (error) {
-    console.error("Error resuming checkout payment intent:", error);
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
-  }
-}
+      sender_account: sender.stripe_account ?? "",
+      destination_account: String(destinationAccount),
+      id_trayecto: String(trayectoId ?? ""),
+      recipient_user_id: String(recipientUserId ?? ""),
+      net_price_cents: String(pricing.net_price_cents),
+      driver_price_cents: String(pricing.driver_price_cents),
+      total_cents: String(pricing.total_cents),
+      application_fee_cents: String(pricing.application_fee_cents),
+      platform_fee_cents: String(pricing.platform_fee_cents),
+      stripe_fee_cents: String(pricing.stripe_fee_cents),
+    },
+    submit_type: "pay",
+    mode: "payment",
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  });
 
-async function createStripeConnectAccount(req, res) {
+  await prisma.paymentIntent.create({
+    data: {
+      stripe_payment_id: checkout_session.payment_intent,
+      amount: pricing.total_cents,
+      currency: String(paymentIntent.currency || "eur"),
+      description: dbPaymentIntent?.description ?? undefined,
+      destination_account: destinationAccount,
+      sender_account: sender.stripe_account ?? undefined,
+      state: "pending",
+      checkout_session_id: checkout_session.id,
+      id_reserva: String(id_reserva),
+    },
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Checkout session created for pending payment",
+    checkout_session,
+    pricing,
+    payment_intent_status: piStatus,
+    id_reserva: String(id_reserva),
+  });
+});
+
+const createStripeConnectAccount = catchAsync(async (req, res, next) => {
   const { email, country, name } = req.body;
   const user = req.user;
-  console.log("Creando cuaenta de stripe a ", user.name);
   const existingUser = await prisma.user.findUnique({
     where: { id: String(user.id) },
     select: { stripe_account: true, onboarding_ended: true },
@@ -492,10 +492,9 @@ async function createStripeConnectAccount(req, res) {
   try {
     originUrl = normalizeOriginUrl(process.env.ORIGIN);
   } catch (_e) {
-    return res.status(500).send({
-      status: "Error",
-      message: "Invalid ORIGIN URL configuration",
-    });
+    return next(
+      new AppError("Invalid ORIGIN URL configuration", 500, "SERVER_ERROR"),
+    );
   }
 
   const refreshReturnUrl = originUrl.toString();
@@ -503,9 +502,13 @@ async function createStripeConnectAccount(req, res) {
 
   if (existingStripeAccount) {
     if (onboardingEnded) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "You already have an account" });
+      return next(
+        new AppError(
+          "You already have an account",
+          400,
+          "STRIPE_ACCOUNT_EXISTS",
+        ),
+      );
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -522,35 +525,6 @@ async function createStripeConnectAccount(req, res) {
       accountLink,
     });
   }
-  // const account = await stripe.accounts.create({
-  //   type: "express",
-  //   country: country,
-  //   email: email,
-  //   metadata: {
-  //     username: user.username,
-  //     email: user.email,
-  //     id: user.id,
-  //   },
-  //   business_type: "individual",
-  //   business_profile: {
-  //     mcc: "5812",
-  //     name: name,
-  //     product_description: "Servicio de carpooling",
-  //     support_email: email,
-  //     url: "https://carpooling.com",
-  //   },
-  //   capabilities: {
-  //     card_payments: {
-  //       requested: true,
-  //     },
-  //     transfers: {
-  //       requested: true,
-  //     },
-  //   },
-  //   tos_acceptance: {
-  //     service_agreement: "full",
-  //   },
-  // });
   const account = await stripe.accounts.create({
     type: "express",
     country: country,
@@ -602,7 +576,7 @@ async function createStripeConnectAccount(req, res) {
     message: "Stripe account created successfully",
     accountLink,
   });
-}
+});
 
 async function updateStripeAccountFromProfile(userId, updates) {
   let results = { connectAccount: null, customerAccount: null };
@@ -693,7 +667,7 @@ async function updateStripeAccountFromProfile(userId, updates) {
   }
 
   if (updates.fecha_nacimiento) {
-    const dob = new Date(updates.fecha_nacimiento);
+    const dob = parseUTCDate(updates.fecha_nacimiento);
     if (!isNaN(dob.getTime())) {
       individualUpdate.dob = {
         day: dob.getDate(),
@@ -874,16 +848,16 @@ async function createStripeAccountForUserEmpty(
   }
 }
 
-const getMyStripeConnectAccount = async (req, res) => {
+const getMyStripeConnectAccount = catchAsync(async (req, res, next) => {
   const user = req.user;
   const dbUser = await prisma.user.findUnique({
     where: { id: String(user.id) },
     select: { stripe_account: true },
   });
   if (!dbUser?.stripe_account) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "You dont have an account" });
+    return next(
+      new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
+    );
   }
   const stripe_account_id = dbUser.stripe_account;
   const account = await stripe.accounts.retrieve(stripe_account_id);
@@ -892,15 +866,19 @@ const getMyStripeConnectAccount = async (req, res) => {
     message: "Stripe account created successfully",
     account,
   });
-};
+});
 
-const createStripeCustomer = async (req, res) => {
+const createStripeCustomer = catchAsync(async (req, res, next) => {
   const { email, name } = req.body;
   const user = req.user;
   if (user.stripe_customer_account) {
-    return res
-      .status(400)
-      .send({ status: "Error", message: "You already have an account" });
+    return next(
+      new AppError(
+        "You already have an account",
+        400,
+        "STRIPE_CUSTOMER_EXISTS",
+      ),
+    );
   }
   const customer = await stripe.customers.create({
     email: email,
@@ -920,19 +898,10 @@ const createStripeCustomer = async (req, res) => {
     message: "Stripe customer created successfully",
     customer,
   });
-};
-const createLoginLink = async (req, res) => {
-  let return_url;
-  let refresh_url;
-  try {
-    return_url = req.body.return_url ? req.body.return_url : null;
-    refresh_url = req.body.refresh_url ? req.body.refresh_url : null;
-  } catch (error) {
-    return res.status(400).send({
-      status: "Error",
-      message: "return_url or refresh_url is required",
-    });
-  }
+});
+const createLoginLink = catchAsync(async (req, res, next) => {
+  const return_url = req.body?.return_url ?? null;
+  const refresh_url = req.body?.refresh_url ?? null;
 
   const user = req.user;
   const dbUser = await prisma.user.findUnique({
@@ -940,39 +909,32 @@ const createLoginLink = async (req, res) => {
     select: { stripe_account: true, onboarding_ended: true },
   });
   if (!dbUser?.stripe_account) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "You dont have an account" });
+    return next(
+      new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
+    );
   }
 
   if (!dbUser.onboarding_ended) {
-    return res.status(400).send({
-      status: "Error",
-      message:
+    return next(
+      new AppError(
         "Onboarding not completed. Use POST /api/payment/stripe-connect-link to complete onboarding first.",
-      onboarding_completed: false,
-    });
-  }
-
-  try {
-    const loginLink = await stripe.accounts.createLoginLink(
-      dbUser.stripe_account,
+        400,
+        "STRIPE_ONBOARDING_INCOMPLETE",
+      ),
     );
-    return res.status(200).send({
-      status: "Success",
-      message: "Stripe login link created successfully",
-      loginLink,
-    });
-  } catch (error) {
-    console.error("[createLoginLink] Error:", error?.message);
-    return res.status(400).send({
-      status: "Error",
-      message: error?.message ?? String(error),
-    });
   }
-};
 
-const createPaymentIntent = async (req, res) => {
+  const loginLink = await stripe.accounts.createLoginLink(
+    dbUser.stripe_account,
+  );
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe login link created successfully",
+    loginLink,
+  });
+});
+
+const createPaymentIntent = catchAsync(async (req, res, next) => {
   const { amount, currency, destination } = req.body;
   const pricing = calculateTotalPrice(amount);
   const paymentIntent = await stripe.paymentIntents.create({
@@ -1000,8 +962,8 @@ const createPaymentIntent = async (req, res) => {
     paymentIntent,
     pricing,
   });
-};
-const getMyStripeCustomerAccount = async (req, res) => {
+});
+const getMyStripeCustomerAccount = catchAsync(async (req, res, next) => {
   const user = req.user;
   const dbUser = await prisma.user.findUnique({
     where: { id: String(user.id) },
@@ -1009,9 +971,13 @@ const getMyStripeCustomerAccount = async (req, res) => {
   });
 
   if (!dbUser?.stripe_customer_account) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "You dont have an account" });
+    return next(
+      new AppError(
+        "You dont have an account",
+        404,
+        "STRIPE_CUSTOMER_NOT_FOUND",
+      ),
+    );
   }
   const customer = await stripe.customers.retrieve(
     dbUser.stripe_customer_account,
@@ -1022,46 +988,43 @@ const getMyStripeCustomerAccount = async (req, res) => {
     message: "Stripe customer created successfully",
     customer,
   });
-};
+});
 
-const createStripeLinkAccount = async (req, res) => {
-  try {
-    const user = req.user;
-    if (!user?.stripe_account) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "You dont have an account" });
-    }
-
-    const return_url = req.body?.return_url ?? process.env.ORIGIN;
-    const refresh_url = req.body?.refresh_url ?? process.env.ORIGIN;
-    if (!return_url || !refresh_url) {
-      return res.status(400).send({
-        status: "Error",
-        message: "return_url or refresh_url is required",
-      });
-    }
-
-    const accountLink = await stripe.accountLinks.create({
-      account: user.stripe_account,
-      refresh_url,
-      return_url,
-      type: "account_onboarding",
-      collect: "eventually_due",
-    });
-    return res.status(200).send({
-      status: "Success",
-      message: "Stripe account link created successfully",
-      accountLink,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+const createStripeLinkAccount = catchAsync(async (req, res, next) => {
+  const user = req.user;
+  if (!user?.stripe_account) {
+    return next(
+      new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
+    );
   }
-};
 
-const createStripeTransfer = async (req, res) => {
+  const return_url = req.body?.return_url ?? process.env.ORIGIN;
+  const refresh_url = req.body?.refresh_url ?? process.env.ORIGIN;
+  if (!return_url || !refresh_url) {
+    return next(
+      new AppError(
+        "return_url or refresh_url is required",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const accountLink = await stripe.accountLinks.create({
+    account: user.stripe_account,
+    refresh_url,
+    return_url,
+    type: "account_onboarding",
+    collect: "eventually_due",
+  });
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe account link created successfully",
+    accountLink,
+  });
+});
+
+const createStripeTransfer = catchAsync(async (req, res, next) => {
   const { amount, currency, destination } = req.body;
   const transfer = await stripe.transfers.create({
     amount: amount,
@@ -1076,9 +1039,9 @@ const createStripeTransfer = async (req, res) => {
     message: "Stripe transfer created successfully",
     transfer,
   });
-};
+});
 
-const createBillingPortal = async (req, res) => {
+const createBillingPortal = catchAsync(async (req, res, next) => {
   const user = req.user;
   const billingPortal = await stripe.billingPortal.sessions.create({
     customer: req.user.stripe_customer_account,
@@ -1089,14 +1052,14 @@ const createBillingPortal = async (req, res) => {
     message: "Stripe billing portal created successfully",
     billingPortal,
   });
-};
+});
 
-async function getCashBalance(req, res) {
+const getCashBalance = catchAsync(async (req, res, next) => {
   let stripe_account = req.user.stripe_account;
   if (!stripe_account) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "You dont have an account" });
+    return next(
+      new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
+    );
   }
   const cashBalance = await stripe.balance.retrieve({
     stripeAccount: stripe_account,
@@ -1106,7 +1069,6 @@ async function getCashBalance(req, res) {
   );
   const pendingEuros = cashBalance.pending.find((b) => b.currency === "eur");
 
-  // Convierte de céntimos a unidad principal para la visualización
   const availableAmount = availableEuros
     ? (availableEuros.amount / 100).toFixed(2)
     : "0.00";
@@ -1120,9 +1082,9 @@ async function getCashBalance(req, res) {
     availableAmount,
     pendingAmount,
   });
-}
+});
 
-async function getWalletBalance(req, res) {
+const getWalletBalance = catchAsync(async (req, res, next) => {
   const user = req.user;
 
   const bearerToken = req.headers.authorization?.split(" ")[1];
@@ -1164,9 +1126,9 @@ async function getWalletBalance(req, res) {
     balances,
     cae: caeBalance,
   });
-}
+});
 
-async function getWalletTransactions(req, res) {
+const getWalletTransactions = catchAsync(async (req, res, next) => {
   const user = req.user;
   const limitRaw = req.query?.limit;
   const offsetRaw = req.query?.offset;
@@ -1187,178 +1149,160 @@ async function getWalletTransactions(req, res) {
   return res
     .status(200)
     .send({ status: "Success", transactions, limit, offset });
-}
+});
 
-async function capturePaymentIntent(req, res) {
+const capturePaymentIntent = catchAsync(async (req, res, next) => {
   const { paymentIntentId } = req.body;
   if (!paymentIntentId) {
-    return res.status(400).send({
-      status: "Error",
-      message: "Payment intent id is required",
-    });
+    return next(
+      new AppError("Payment intent id is required", 400, "VALIDATION_ERROR"),
+    );
   }
-  let paymentIntent;
-  try {
-    paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
-  } catch (error) {
-    return res.status(400).send({
-      status: "Error",
-      message: "Payment intent captured failed",
-      error,
-    });
-  }
+  const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
   return res.status(200).send({
     status: "Success",
     message: "Payment intent captured successfully",
     paymentIntent,
   });
-}
+});
 
-async function captureTripPayments(req, res) {
+const captureTripPayments = catchAsync(async (req, res, next) => {
+  const trayectoId =
+    req.body?.id_trayecto ??
+    req.body?.trayectoId ??
+    req.body?.trayecto_id ??
+    req.query?.id_trayecto;
+
+  if (!trayectoId) {
+    return next(new AppError("Missing id_trayecto", 400, "VALIDATION_ERROR"));
+  }
+
+  const bearerToken = req.headers.authorization?.split(" ")[1];
+  const cookieToken = req.cookies?.access_token;
+  const userToken = bearerToken || cookieToken;
+
+  let reservas;
   try {
-    const trayectoId =
-      req.body?.id_trayecto ??
-      req.body?.trayectoId ??
-      req.body?.trayecto_id ??
-      req.query?.id_trayecto;
-
-    if (!trayectoId) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Missing id_trayecto",
-      });
-    }
-
-    const bearerToken = req.headers.authorization?.split(" ")[1];
-    const cookieToken = req.cookies?.access_token;
-    const userToken = bearerToken || cookieToken;
-
-    let reservas;
-    try {
-      reservas = await trayectosService.getTripPassengers(
-        String(trayectoId),
-        userToken,
-      );
-    } catch (fetchError) {
-      return res.status(502).send({
-        status: "Error",
-        message: "No se pudieron obtener las reservas del trayecto",
-        error: fetchError?.message ?? String(fetchError),
-      });
-    }
-
-    const reservaList = Array.isArray(reservas)
-      ? reservas
-      : (reservas?.reservas ?? reservas?.data ?? []);
-
-    if (!reservaList || reservaList.length === 0) {
-      return res.status(200).send({
-        status: "Success",
-        message: "No hay reservas para este trayecto",
-        captured: [],
-        skipped: [],
-        errors: [],
-      });
-    }
-
-    const reservaIds = reservaList
-      .map((r) => String(r.id_reserva ?? r.id ?? r.id ?? ""))
-      .filter(Boolean);
-
-    if (reservaIds.length === 0) {
-      return res.status(200).send({
-        status: "Success",
-        message: "No se encontraron IDs de reserva válidos",
-        captured: [],
-        skipped: [],
-        errors: [],
-      });
-    }
-
-    const paymentIntents = await prisma.paymentIntent.findMany({
-      where: {
-        id_reserva: { in: reservaIds },
-        state: { in: ["requires_capture", "checkout_completed"] },
-      },
-      select: {
-        stripe_payment_id: true,
-        id_reserva: true,
-        amount: true,
-        state: true,
-      },
-    });
-
-    const captured = [];
-    const skipped = [];
-    const errors = [];
-
-    for (const pi of paymentIntents) {
-      try {
-        const stripePI = await stripe.paymentIntents.retrieve(
-          pi.stripe_payment_id,
-        );
-
-        if (stripePI.status !== "requires_capture") {
-          skipped.push({
-            payment_intent_id: pi.stripe_payment_id,
-            id_reserva: pi.id_reserva,
-            status: stripePI.status,
-            reason: "not_in_requires_capture_state",
-          });
-          continue;
-        }
-
-        const capturedPI = await stripe.paymentIntents.capture(
-          pi.stripe_payment_id,
-        );
-
-        await prisma.paymentIntent.update({
-          where: { stripe_payment_id: pi.stripe_payment_id },
-          data: { state: String(capturedPI.status) },
-        });
-
-        captured.push({
-          payment_intent_id: pi.stripe_payment_id,
-          id_reserva: pi.id_reserva,
-          status: capturedPI.status,
-          amount: capturedPI.amount,
-        });
-      } catch (captureError) {
-        errors.push({
-          payment_intent_id: pi.stripe_payment_id,
-          id_reserva: pi.id_reserva,
-          error: captureError?.message ?? String(captureError),
-        });
-      }
-    }
-
-    const reservasSinPI = reservaIds.filter(
-      (id) => !paymentIntents.some((pi) => pi.id_reserva === id),
+    reservas = await trayectosService.getTripPassengers(
+      String(trayectoId),
+      userToken,
     );
-    for (const idReserva of reservasSinPI) {
-      skipped.push({
-        id_reserva: idReserva,
-        reason: "no_payment_intent_found",
-      });
-    }
+  } catch (fetchError) {
+    return next(
+      new AppError(
+        "No se pudieron obtener las reservas del trayecto",
+        502,
+        "TRAYECTOS_SERVICE_UNAVAILABLE",
+      ),
+    );
+  }
 
+  const reservaList = Array.isArray(reservas)
+    ? reservas
+    : (reservas?.reservas ?? reservas?.data ?? []);
+
+  if (!reservaList || reservaList.length === 0) {
     return res.status(200).send({
       status: "Success",
-      message: `Capturados: ${captured.length}, Omitidos: ${skipped.length}, Errores: ${errors.length}`,
-      trayecto_id: String(trayectoId),
-      captured,
-      skipped,
-      errors,
+      message: "No hay reservas para este trayecto",
+      captured: [],
+      skipped: [],
+      errors: [],
     });
-  } catch (error) {
-    console.error("Error in captureTripPayments:", error);
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
   }
-}
 
-async function cancelPaymentIntent(req, res) {
+  const reservaIds = reservaList
+    .map((r) => String(r.id_reserva ?? r.id ?? r.id ?? ""))
+    .filter(Boolean);
+
+  if (reservaIds.length === 0) {
+    return res.status(200).send({
+      status: "Success",
+      message: "No se encontraron IDs de reserva válidos",
+      captured: [],
+      skipped: [],
+      errors: [],
+    });
+  }
+
+  const paymentIntents = await prisma.paymentIntent.findMany({
+    where: {
+      id_reserva: { in: reservaIds },
+      state: { in: ["requires_capture", "checkout_completed"] },
+    },
+    select: {
+      stripe_payment_id: true,
+      id_reserva: true,
+      amount: true,
+      state: true,
+    },
+  });
+
+  const captured = [];
+  const skipped = [];
+  const errors = [];
+
+  for (const pi of paymentIntents) {
+    try {
+      const stripePI = await stripe.paymentIntents.retrieve(
+        pi.stripe_payment_id,
+      );
+
+      if (stripePI.status !== "requires_capture") {
+        skipped.push({
+          payment_intent_id: pi.stripe_payment_id,
+          id_reserva: pi.id_reserva,
+          status: stripePI.status,
+          reason: "not_in_requires_capture_state",
+        });
+        continue;
+      }
+
+      const capturedPI = await stripe.paymentIntents.capture(
+        pi.stripe_payment_id,
+      );
+
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: pi.stripe_payment_id },
+        data: { state: String(capturedPI.status) },
+      });
+
+      captured.push({
+        payment_intent_id: pi.stripe_payment_id,
+        id_reserva: pi.id_reserva,
+        status: capturedPI.status,
+        amount: capturedPI.amount,
+      });
+    } catch (captureError) {
+      errors.push({
+        payment_intent_id: pi.stripe_payment_id,
+        id_reserva: pi.id_reserva,
+        error: captureError?.message ?? String(captureError),
+      });
+    }
+  }
+
+  const reservasSinPI = reservaIds.filter(
+    (id) => !paymentIntents.some((pi) => pi.id_reserva === id),
+  );
+  for (const idReserva of reservasSinPI) {
+    skipped.push({
+      id_reserva: idReserva,
+      reason: "no_payment_intent_found",
+    });
+  }
+
+  return res.status(200).send({
+    status: "Success",
+    message: `Capturados: ${captured.length}, Omitidos: ${skipped.length}, Errores: ${errors.length}`,
+    trayecto_id: String(trayectoId),
+    captured,
+    skipped,
+    errors,
+  });
+});
+
+const cancelPaymentIntent = catchAsync(async (req, res, next) => {
   const paymentIntentId =
     req.body?.paymentIntentId ??
     req.body?.payment_intent_id ??
@@ -1366,21 +1310,18 @@ async function cancelPaymentIntent(req, res) {
   const cancellationReason = req.body?.cancellation_reason;
 
   if (!paymentIntentId) {
-    return res.status(400).send({
-      status: "Error",
-      message: "Payment intent id is required",
-    });
+    return next(
+      new AppError("Payment intent id is required", 400, "VALIDATION_ERROR"),
+    );
   }
 
   let current;
   try {
     current = await stripe.paymentIntents.retrieve(paymentIntentId);
   } catch (error) {
-    return res.status(404).send({
-      status: "Error",
-      message: "Payment intent not found",
-      error: error?.message ?? String(error),
-    });
+    return next(
+      new AppError("Payment intent not found", 404, "PAYMENT_INTENT_NOT_FOUND"),
+    );
   }
 
   const currentStatus = String(current?.status ?? "");
@@ -1400,11 +1341,13 @@ async function cancelPaymentIntent(req, res) {
   }
 
   if (currentStatus === "captured") {
-    return res.status(409).send({
-      status: "Error",
-      message: "El pago ha sido ya realizado y no se puede cancelar.",
-      paymentIntent: current,
-    });
+    return next(
+      new AppError(
+        "El pago ha sido ya realizado y no se puede cancelar.",
+        409,
+        "PAYMENT_INTENT_ALREADY_COMPLETED",
+      ),
+    );
   }
 
   let canceled;
@@ -1415,11 +1358,13 @@ async function cancelPaymentIntent(req, res) {
         : {}),
     });
   } catch (error) {
-    return res.status(400).send({
-      status: "Error",
-      message: "El pago ha sido ya realizado y no se puede cancelar.",
-      error: error?.message ?? String(error),
-    });
+    return next(
+      new AppError(
+        "El pago ha sido ya realizado y no se puede cancelar.",
+        400,
+        "PAYMENT_CANCEL_FAILED",
+      ),
+    );
   }
 
   try {
@@ -1435,9 +1380,9 @@ async function cancelPaymentIntent(req, res) {
     paymentIntent: canceled,
     note: "Webhook payment_intent.canceled will confirm the final state in DB",
   });
-}
+});
 
-async function createSetupIntent(req, res) {
+const createSetupIntent = catchAsync(async (req, res, next) => {
   const { paymentIntentId } = req.body;
   const setupIntent = await stripe.setupIntents.create({
     payment_method_types: ["card"],
@@ -1451,8 +1396,8 @@ async function createSetupIntent(req, res) {
     message: "Setup intent created successfully",
     setupIntent,
   });
-}
-async function createPayout(req, res) {
+});
+const createPayout = catchAsync(async (req, res, next) => {
   const { amount, currency } = req.body;
   let payout;
   try {
@@ -1466,22 +1411,25 @@ async function createPayout(req, res) {
     });
   } catch (error) {
     if (error.code === "balance_insufficient") {
-      return res.status(400).send({
-        status: "Error",
-        message: "No tienes suficiente dinero para retirar",
-      });
+      return next(
+        new AppError(
+          "No tienes suficiente dinero para retirar",
+          400,
+          "STRIPE_BALANCE_INSUFFICIENT",
+        ),
+      );
     }
-    return res
-      .status(400)
-      .send({ status: "Error", message: "Payout creation failed", error });
+    return next(
+      new AppError("Payout creation failed", 400, "STRIPE_PAYOUT_FAILED"),
+    );
   }
   return res.status(200).send({
     status: "Success",
     message: "Payout created successfully",
     payout,
   });
-}
-async function createBankAccount(req, res) {
+});
+const createBankAccount = catchAsync(async (req, res, next) => {
   const { bankAccount } = req.body;
   const bankAccountRes = await stripe.customers.createSource({
     customer: req.user.stripe_customer_account,
@@ -1492,7 +1440,7 @@ async function createBankAccount(req, res) {
     message: "Bank account created successfully",
     bankAccountRes,
   });
-}
+});
 
 function mapStripePayoutStatusToLocalStatus(stripeStatus) {
   switch (String(stripeStatus ?? "").toLowerCase()) {
@@ -1509,21 +1457,21 @@ function mapStripePayoutStatusToLocalStatus(stripeStatus) {
   }
 }
 
-async function createWalletPayout(req, res) {
+const createWalletPayout = catchAsync(async (req, res, next) => {
   const user = req.user;
   const { amount, currency, method, idempotency_key } = req.body ?? {};
 
   const payoutAmount = Number(amount);
   if (!Number.isFinite(payoutAmount) || payoutAmount <= 0) {
-    return res.status(400).send({ status: "Error", message: "Invalid amount" });
+    return next(new AppError("Invalid amount", 400, "VALIDATION_ERROR"));
   }
   const payoutCurrency = String(currency ?? "eur").toLowerCase();
   const payoutMethod = method === "instant" ? "instant" : "standard";
 
   if (!user?.stripe_account) {
-    return res
-      .status(404)
-      .send({ status: "Error", message: "You dont have an account" });
+    return next(
+      new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
+    );
   }
 
   const idempotencyKey = String(
@@ -1563,16 +1511,24 @@ async function createWalletPayout(req, res) {
       });
 
       if (!walletAccount) {
-        throw { statusCode: 500, message: "Wallet account not found" };
+        throw new AppError(
+          "Wallet account not found",
+          500,
+          "WALLET_ACCOUNT_NOT_FOUND",
+        );
       }
 
       if (walletAccount.status === "blocked") {
-        throw { statusCode: 403, message: "Wallet blocked" };
+        throw new AppError("Wallet blocked", 403, "WALLET_BLOCKED");
       }
 
       const balanceBefore = Number(walletAccount.balance ?? 0);
       if (balanceBefore < payoutAmount) {
-        throw { statusCode: 400, message: "Insufficient wallet balance" };
+        throw new AppError(
+          "Insufficient wallet balance",
+          400,
+          "INSUFFICIENT_BALANCE",
+        );
       }
 
       const updatedAccount = await tx.walletAccount.updateMany({
@@ -1584,7 +1540,11 @@ async function createWalletPayout(req, res) {
       });
 
       if (updatedAccount.count === 0) {
-        throw { statusCode: 409, message: "Balance changed, try again" };
+        throw new AppError(
+          "Balance changed, try again",
+          409,
+          "WALLET_BALANCE_CHANGED",
+        );
       }
 
       const refreshedAccount = await tx.walletAccount.findUnique({
@@ -1638,14 +1598,16 @@ async function createWalletPayout(req, res) {
       });
     }
   } catch (error) {
-    if (error?.statusCode) {
-      return res
-        .status(error.statusCode)
-        .send({ status: "Error", message: error.message });
+    if (error instanceof AppError) {
+      return next(error);
     }
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+    return next(
+      new AppError(
+        error?.message ?? String(error),
+        500,
+        "WALLET_PAYOUT_FAILED",
+      ),
+    );
   }
 
   let stripePayout;
@@ -1712,11 +1674,9 @@ async function createWalletPayout(req, res) {
       console.error("Refund failed:", _e);
     }
 
-    return res.status(502).send({
-      status: "Error",
-      message: "Stripe payout failed",
-      error: error?.message ?? String(error),
-    });
+    return next(
+      new AppError("Stripe payout failed", 502, "STRIPE_PAYOUT_FAILED"),
+    );
   }
 
   const localStatus = mapStripePayoutStatusToLocalStatus(stripePayout?.status);
@@ -1749,9 +1709,9 @@ async function createWalletPayout(req, res) {
     idempotency_key: idempotencyKey,
     stripe_payout: stripePayout,
   });
-}
+});
 
-async function getWalletPayouts(req, res) {
+const getWalletPayouts = catchAsync(async (req, res, next) => {
   const user = req.user;
   const limitRaw = req.query?.limit;
   const offsetRaw = req.query?.offset;
@@ -1770,102 +1730,94 @@ async function getWalletPayouts(req, res) {
   });
 
   return res.status(200).send({ status: "Success", payouts, limit, offset });
-}
+});
 
-async function createAccountLink(req, res) {
-  try {
-    const user = req.user;
+const createAccountLink = catchAsync(async (req, res, next) => {
+  const user = req.user;
 
-    const deepLink = req.body?.return_url || "youconnext://perfil";
-    const refreshDeepLink = req.body?.refresh_url || deepLink;
+  const deepLink = req.body?.return_url || "youconnext://perfil";
+  const refreshDeepLink = req.body?.refresh_url || deepLink;
 
-    const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-      /\/$/,
-      "",
-    );
-    const returnUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-    const refreshUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(refreshDeepLink)}`;
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const returnUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const refreshUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(refreshDeepLink)}`;
 
-    const dbUser = await prisma.user.findUnique({
-      where: { id: String(user.id) },
-      select: {
-        stripe_account: true,
-        onboarding_ended: true,
-        email: true,
-        name: true,
-        surname: true,
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: {
+      stripe_account: true,
+      onboarding_ended: true,
+      email: true,
+      name: true,
+      surname: true,
+    },
+  });
+
+  if (!dbUser) {
+    return next(new AppError("User not found", 404, "USER_NOT_FOUND"));
+  }
+
+  let stripeAccountId = dbUser.stripe_account;
+
+  if (!stripeAccountId) {
+    const account = await stripe.accounts.create({
+      type: "express",
+      country: "ES",
+      email: dbUser.email,
+      business_type: "individual",
+      individual: {
+        email: dbUser.email,
+        first_name: dbUser.name || "",
+        last_name: dbUser.surname || "",
+      },
+      metadata: {
+        name: dbUser.name || "",
+        surname: dbUser.surname || "",
+        email: dbUser.email,
+        id: String(user.id),
+      },
+      business_profile: {
+        mcc: "4121",
+        name:
+          [dbUser.name, dbUser.surname].filter(Boolean).join(" ") ||
+          dbUser.email,
+        product_description: "Usuario de la aplicación YouConnext",
+        support_email: dbUser.email,
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
       },
     });
 
-    if (!dbUser) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "User not found" });
-    }
+    stripeAccountId = account.id;
 
-    let stripeAccountId = dbUser.stripe_account;
-
-    if (!stripeAccountId) {
-      const account = await stripe.accounts.create({
-        type: "express",
-        country: "ES",
-        email: dbUser.email,
-        business_type: "individual",
-        individual: {
-          email: dbUser.email,
-          first_name: dbUser.name || "",
-          last_name: dbUser.surname || "",
-        },
-        metadata: {
-          name: dbUser.name || "",
-          surname: dbUser.surname || "",
-          email: dbUser.email,
-          id: String(user.id),
-        },
-        business_profile: {
-          mcc: "4121",
-          name:
-            [dbUser.name, dbUser.surname].filter(Boolean).join(" ") ||
-            dbUser.email,
-          product_description: "Usuario de la aplicación YouConnext",
-          support_email: dbUser.email,
-          url: "https://carpooling-webapp-ten.vercel.app",
-        },
-        capabilities: {
-          card_payments: { requested: true },
-          transfers: { requested: true },
-        },
-      });
-
-      stripeAccountId = account.id;
-
-      await prisma.user.update({
-        where: { id: String(user.id) },
-        data: { stripe_account: stripeAccountId, onboarding_ended: false },
-      });
-    }
-
-    const accountLink = await stripe.accountLinks.create({
-      account: stripeAccountId,
-      refresh_url: refreshUrl,
-      return_url: returnUrl,
-      type: "account_onboarding",
-      collect: "eventually_due",
+    await prisma.user.update({
+      where: { id: String(user.id) },
+      data: { stripe_account: stripeAccountId, onboarding_ended: false },
     });
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Stripe onboarding link created successfully",
-      accountLink,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
   }
-}
 
-async function stripeRedirect(req, res) {
+  const accountLink = await stripe.accountLinks.create({
+    account: stripeAccountId,
+    refresh_url: refreshUrl,
+    return_url: returnUrl,
+    type: "account_onboarding",
+    collect: "eventually_due",
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe onboarding link created successfully",
+    accountLink,
+  });
+});
+
+const stripeRedirect = catchAsync(async (req, res, next) => {
   const target = req.query?.target || "youconnext://perfil";
   const decodedTarget = decodeURIComponent(String(target));
 
@@ -1960,118 +1912,106 @@ async function stripeRedirect(req, res) {
 </html>`;
 
   return res.status(200).type("text/html").send(html);
-}
+});
 
-async function getLinkedExternalAccounts(req, res) {
-  try {
-    const user = req.user;
+const getLinkedExternalAccounts = catchAsync(async (req, res, next) => {
+  const user = req.user;
 
-    const dbUser = await prisma.user.findUnique({
-      where: { id: String(user.id) },
-      select: { stripe_account: true },
-    });
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_account: true },
+  });
 
-    if (!dbUser?.stripe_account) {
-      return res.status(404).send({
-        status: "Error",
-        message: "El usuario no tiene cuenta de Stripe",
-      });
-    }
-
-    const externalAccounts = await stripe.accounts.listExternalAccounts(
-      dbUser.stripe_account,
-      { limit: 3 },
+  if (!dbUser?.stripe_account) {
+    return next(
+      new AppError(
+        "El usuario no tiene cuenta de Stripe",
+        404,
+        "STRIPE_ACCOUNT_NOT_FOUND",
+      ),
     );
-
-    if (externalAccounts.data.length === 0) {
-      return res.status(200).send({ status: "Success", cuentas: [] });
-    }
-
-    const cuentasFormateadas = externalAccounts.data
-      .map((cuenta) => {
-        if (cuenta.object === "bank_account") {
-          return {
-            tipo: "banco",
-            banco: cuenta.bank_name,
-            ultimos4: cuenta.last4,
-            moneda: cuenta.currency,
-            estado: cuenta.status,
-          };
-        }
-        if (cuenta.object === "card") {
-          return {
-            tipo: "tarjeta",
-            marca: cuenta.brand,
-            ultimos4: cuenta.last4,
-            caducidad: `${cuenta.exp_month}/${cuenta.exp_year}`,
-          };
-        }
-        return null;
-      })
-      .filter(Boolean);
-
-    return res.status(200).send({
-      status: "Success",
-      cuentas: cuentasFormateadas,
-    });
-  } catch (error) {
-    console.error("Error al obtener cuentas de Stripe:", error);
-    return res.status(500).send({
-      status: "Error",
-      message: "No se pudo obtener la información de cobro",
-    });
   }
-}
 
-async function calculatePrice(req, res) {
-  try {
-    const { driver_price_cents } = req.body;
-    if (!driver_price_cents || driver_price_cents <= 0) {
-      return res.status(400).send({
-        status: "Error",
-        message: "Missing or invalid driver_price_cents",
-      });
-    }
-    const pricing = calculateTotalPrice(parseInt(driver_price_cents, 10));
-    return res.status(200).send({ status: "Success", pricing });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  const externalAccounts = await stripe.accounts.listExternalAccounts(
+    dbUser.stripe_account,
+    { limit: 3 },
+  );
+
+  if (externalAccounts.data.length === 0) {
+    return res.status(200).send({ status: "Success", cuentas: [] });
   }
-}
 
-async function cotizar(req, res) {
-  try {
-    const netoRaw = req.query?.neto;
-    const neto = parseInt(netoRaw, 10);
-    if (!netoRaw || isNaN(neto) || neto <= 0) {
-      return res.status(400).send({
-        status: "Error",
-        message:
-          "Missing or invalid 'neto' query param (must be a positive number in cents)",
-      });
-    }
-    const totalCents = Math.round(
-      (neto + STRIPE_FIXED_FEE_CENTS) / (1 - STRIPE_PERCENT),
+  const cuentasFormateadas = externalAccounts.data
+    .map((cuenta) => {
+      if (cuenta.object === "bank_account") {
+        return {
+          tipo: "banco",
+          banco: cuenta.bank_name,
+          ultimos4: cuenta.last4,
+          moneda: cuenta.currency,
+          estado: cuenta.status,
+        };
+      }
+      if (cuenta.object === "card") {
+        return {
+          tipo: "tarjeta",
+          marca: cuenta.brand,
+          ultimos4: cuenta.last4,
+          caducidad: `${cuenta.exp_month}/${cuenta.exp_year}`,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  return res.status(200).send({
+    status: "Success",
+    cuentas: cuentasFormateadas,
+  });
+});
+
+const calculatePrice = catchAsync(async (req, res, next) => {
+  const { driver_price_cents } = req.body;
+  if (!driver_price_cents || driver_price_cents <= 0) {
+    return next(
+      new AppError(
+        "Missing or invalid driver_price_cents",
+        400,
+        "VALIDATION_ERROR",
+      ),
     );
-    const stripeFeeCents =
-      Math.round(totalCents * STRIPE_PERCENT) + STRIPE_FIXED_FEE_CENTS;
-    return res.status(200).send({
-      status: "Success",
-      neto_cents: neto,
-      total_cents: totalCents,
-      stripe_fee_cents: stripeFeeCents,
-      neto_eur: neto / 100,
-      total_eur: totalCents / 100,
-      stripe_fee_eur: stripeFeeCents / 100,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
   }
-}
+  const pricing = calculateTotalPrice(parseInt(driver_price_cents, 10));
+  return res.status(200).send({ status: "Success", pricing });
+});
+
+const cotizar = catchAsync(async (req, res, next) => {
+  const netoRaw = req.query?.neto;
+  const neto = parseInt(netoRaw, 10);
+  if (!netoRaw || isNaN(neto) || neto <= 0) {
+    return next(
+      new AppError(
+        "Missing or invalid 'neto' query param (must be a positive number in cents)",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+  const totalCents = Math.round(
+    (neto + STRIPE_FIXED_FEE_CENTS) / (1 - STRIPE_PERCENT),
+  );
+  const stripeFeeCents =
+    Math.round(totalCents * STRIPE_PERCENT) + STRIPE_FIXED_FEE_CENTS;
+  return res.status(200).send({
+    status: "Success",
+    neto_cents: neto,
+    total_cents: totalCents,
+    stripe_fee_cents: stripeFeeCents,
+    neto_eur: neto / 100,
+    total_eur: totalCents / 100,
+    stripe_fee_eur: stripeFeeCents / 100,
+  });
+});
 
 export const methods = {
   createSession,
@@ -2094,6 +2034,7 @@ export const methods = {
   cancelPaymentIntent,
   createSetupIntent,
   createPayout,
+  createBankAccount,
   createWalletPayout,
   getWalletPayouts,
   createCheckoutPaymentIntent,

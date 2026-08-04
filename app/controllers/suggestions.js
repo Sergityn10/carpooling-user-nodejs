@@ -1,265 +1,239 @@
 import dotenv from "dotenv";
 import prisma from "../lib/prisma.js";
 import { notificationsService } from "../services/notificationsService.js";
+import AppError from "../utils/appError.js";
+import catchAsync from "../utils/catchAsync.js";
 dotenv.config();
 const myEmail = process.env.EMAIL_YOUCONNEXT || "sermarled10@gmail.com";
-async function listSuggestions(req, res) {
-  try {
-    const { status, page = 1, limit = 20 } = req.query;
-    const pageNum = Math.max(1, parseInt(page, 10));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
-    const skip = (pageNum - 1) * limitNum;
+const listSuggestions = catchAsync(async (req, res, next) => {
+  const { status, page = 1, limit = 20 } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10));
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+  const skip = (pageNum - 1) * limitNum;
 
-    const where = {};
-    if (status) {
-      where.status = status;
-    }
-
-    const [suggestions, total] = await Promise.all([
-      prisma.sugerenciasPromotoras.findMany({
-        where,
-        include: {
-          user: {
-            select: { id: true, name: true, img_perfil: true },
-          },
-        },
-        skip,
-        take: limitNum,
-        orderBy: { created_at: "desc" },
-      }),
-      prisma.sugerenciasPromotoras.count({ where }),
-    ]);
-
-    return res.status(200).send({
-      status: "Success",
-      suggestions,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum),
-      },
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  const where = {};
+  if (status) {
+    where.status = status;
   }
-}
 
-async function getSuggestionById(req, res) {
-  try {
-    const { id } = req.params;
-    const suggestion = await prisma.sugerenciasPromotoras.findUnique({
-      where: { id },
+  const [suggestions, total] = await Promise.all([
+    prisma.sugerenciasPromotoras.findMany({
+      where,
       include: {
         user: {
           select: { id: true, name: true, img_perfil: true },
         },
       },
-    });
+      skip,
+      take: limitNum,
+      orderBy: { created_at: "desc" },
+    }),
+    prisma.sugerenciasPromotoras.count({ where }),
+  ]);
 
-    if (!suggestion) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Suggestion not found" });
-    }
+  return res.status(200).send({
+    status: "Success",
+    suggestions,
+    pagination: {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum),
+    },
+  });
+});
 
-    return res.status(200).send({ status: "Success", suggestion });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+const getSuggestionById = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const suggestion = await prisma.sugerenciasPromotoras.findUnique({
+    where: { id },
+    include: {
+      user: {
+        select: { id: true, name: true, img_perfil: true },
+      },
+    },
+  });
+
+  if (!suggestion) {
+    return next(
+      new AppError("Suggestion not found", 404, "SUGGESTION_NOT_FOUND"),
+    );
   }
-}
 
-async function createSuggestion(req, res) {
+  return res.status(200).send({ status: "Success", suggestion });
+});
+
+const createSuggestion = catchAsync(async (req, res, next) => {
+  const { name, email, website } = req.body;
+  const userId = req.user?.id;
+
+  if (!name || !email) {
+    return next(
+      new AppError("name and email are required", 400, "VALIDATION_ERROR"),
+    );
+  }
+
+  if (!userId) {
+    return next(new AppError("Authentication required", 401, "TOKEN_MISSING"));
+  }
+
+  const existing = await prisma.sugerenciasPromotoras.findUnique({
+    where: { email },
+  });
+  if (existing) {
+    return next(
+      new AppError(
+        "A suggestion with this email already exists",
+        409,
+        "SUGGESTION_EMAIL_DUPLICATE",
+      ),
+    );
+  }
+
+  const suggestion = await prisma.sugerenciasPromotoras.create({
+    data: {
+      name,
+      email,
+      website: website ?? null,
+      suggested_by: userId,
+    },
+  });
   try {
-    const { name, email, website } = req.body;
-    const userId = req.user?.id;
+    notificationsService.sendSuggestionEmail({
+      companyName: name,
+      companyEmail: email,
+      website: website ?? null,
+      suggestionId: suggestion.id,
+      userName: req.user?.name,
+      userEmail: req.user?.email,
+    });
+  } catch (e) {
+    console.log("Error al intentar enviar el email de sugerencia");
+  }
 
-    if (!name || !email) {
-      return res
-        .status(400)
-        .send({ status: "Error", message: "name and email are required" });
-    }
+  return res.status(201).send({
+    status: "Success",
+    message: "Suggestion created successfully",
+    suggestion,
+  });
+});
 
-    if (!userId) {
-      return res
-        .status(401)
-        .send({ status: "Error", message: "Authentication required" });
-    }
+const updateSuggestion = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { name, email, website, status } = req.body;
 
-    const existing = await prisma.sugerenciasPromotoras.findUnique({
+  const existing = await prisma.sugerenciasPromotoras.findUnique({
+    where: { id },
+  });
+  if (!existing) {
+    return next(
+      new AppError("Suggestion not found", 404, "SUGGESTION_NOT_FOUND"),
+    );
+  }
+
+  if (email && email !== existing.email) {
+    const emailExists = await prisma.sugerenciasPromotoras.findUnique({
       where: { email },
     });
-    if (existing) {
-      return res.status(409).send({
-        status: "Error",
-        message: "A suggestion with this email already exists",
-      });
+    if (emailExists) {
+      return next(
+        new AppError("Email already exists", 409, "SUGGESTION_EMAIL_DUPLICATE"),
+      );
     }
-
-    const suggestion = await prisma.sugerenciasPromotoras.create({
-      data: {
-        name,
-        email,
-        website: website ?? null,
-        suggested_by: userId,
-      },
-    });
-    try {
-      notificationsService.sendSuggestionEmail({
-        companyName: name,
-        companyEmail: email,
-        website: website ?? null,
-        suggestionId: suggestion.id,
-        userName: req.user?.name,
-        userEmail: req.user?.email,
-      });
-    } catch (e) {
-      console.log("Error al intentar enviar el email de sugerencia");
-    }
-
-    return res.status(201).send({
-      status: "Success",
-      message: "Suggestion created successfully",
-      suggestion,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
   }
-}
 
-async function updateSuggestion(req, res) {
-  try {
-    const { id } = req.params;
-    const { name, email, website, status } = req.body;
+  const data = {};
+  if (name !== undefined) data.name = name;
+  if (email !== undefined) data.email = email;
+  if (website !== undefined) data.website = website;
+  if (status !== undefined) data.status = status;
 
-    const existing = await prisma.sugerenciasPromotoras.findUnique({
-      where: { id },
-    });
-    if (!existing) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Suggestion not found" });
-    }
+  const suggestion = await prisma.sugerenciasPromotoras.update({
+    where: { id },
+    data,
+  });
 
-    if (email && email !== existing.email) {
-      const emailExists = await prisma.sugerenciasPromotoras.findUnique({
-        where: { email },
-      });
-      if (emailExists) {
-        return res
-          .status(409)
-          .send({ status: "Error", message: "Email already exists" });
-      }
-    }
+  return res.status(200).send({
+    status: "Success",
+    message: "Suggestion updated successfully",
+    suggestion,
+  });
+});
 
-    const data = {};
-    if (name !== undefined) data.name = name;
-    if (email !== undefined) data.email = email;
-    if (website !== undefined) data.website = website;
-    if (status !== undefined) data.status = status;
+const deleteSuggestion = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
 
-    const suggestion = await prisma.sugerenciasPromotoras.update({
-      where: { id },
-      data,
-    });
-
-    return res.status(200).send({
-      status: "Success",
-      message: "Suggestion updated successfully",
-      suggestion,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  const existing = await prisma.sugerenciasPromotoras.findUnique({
+    where: { id },
+  });
+  if (!existing) {
+    return next(
+      new AppError("Suggestion not found", 404, "SUGGESTION_NOT_FOUND"),
+    );
   }
-}
 
-async function deleteSuggestion(req, res) {
-  try {
-    const { id } = req.params;
+  await prisma.sugerenciasPromotoras.delete({ where: { id } });
 
-    const existing = await prisma.sugerenciasPromotoras.findUnique({
-      where: { id },
-    });
-    if (!existing) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Suggestion not found" });
-    }
+  return res.status(200).send({
+    status: "Success",
+    message: "Suggestion deleted successfully",
+  });
+});
 
-    await prisma.sugerenciasPromotoras.delete({ where: { id } });
+const acceptSuggestion = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
 
-    return res.status(200).send({
-      status: "Success",
-      message: "Suggestion deleted successfully",
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  const suggestion = await prisma.sugerenciasPromotoras.findUnique({
+    where: { id },
+  });
+  if (!suggestion) {
+    return next(
+      new AppError("Suggestion not found", 404, "SUGGESTION_NOT_FOUND"),
+    );
   }
-}
 
-async function acceptSuggestion(req, res) {
-  try {
-    const { id } = req.params;
-
-    const suggestion = await prisma.sugerenciasPromotoras.findUnique({
-      where: { id },
-    });
-    if (!suggestion) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Suggestion not found" });
-    }
-
-    if (suggestion.status === "accepted") {
-      return res
-        .status(409)
-        .send({ status: "Error", message: "Suggestion already accepted" });
-    }
-
-    const existingCompany = await prisma.company.findUnique({
-      where: { email: suggestion.email },
-    });
-    if (existingCompany) {
-      return res.status(409).send({
-        status: "Error",
-        message: "A company with this email already exists",
-      });
-    }
-
-    const company = await prisma.company.create({
-      data: {
-        name: suggestion.name,
-        email: suggestion.email,
-        website: suggestion.website,
-      },
-    });
-
-    await prisma.sugerenciasPromotoras.update({
-      where: { id },
-      data: { status: "accepted" },
-    });
-
-    return res.status(201).send({
-      status: "Success",
-      message: "Suggestion accepted and company created",
-      company,
-    });
-  } catch (error) {
-    return res
-      .status(500)
-      .send({ status: "Error", message: error?.message ?? String(error) });
+  if (suggestion.status === "accepted") {
+    return next(
+      new AppError(
+        "Suggestion already accepted",
+        409,
+        "SUGGESTION_ALREADY_ACCEPTED",
+      ),
+    );
   }
-}
+
+  const existingCompany = await prisma.company.findUnique({
+    where: { email: suggestion.email },
+  });
+  if (existingCompany) {
+    return next(
+      new AppError(
+        "A company with this email already exists",
+        409,
+        "COMPANY_EMAIL_DUPLICATE",
+      ),
+    );
+  }
+
+  const company = await prisma.company.create({
+    data: {
+      name: suggestion.name,
+      email: suggestion.email,
+      website: suggestion.website,
+    },
+  });
+
+  await prisma.sugerenciasPromotoras.update({
+    where: { id },
+    data: { status: "accepted" },
+  });
+
+  return res.status(201).send({
+    status: "Success",
+    message: "Suggestion accepted and company created",
+    company,
+  });
+});
 
 export const methods = {
   listSuggestions,

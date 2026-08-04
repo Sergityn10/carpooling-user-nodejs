@@ -176,18 +176,14 @@ app.patch("/api/users", authorization.isLoged, user.updateMyUserPatch);
 app.delete("/api/users/:id", authorization.isLoged, user.removeUser);
 
 app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"));
-app.post("/api/auth/login", (req, res) => authentication.login(req, res));
-app.get("/api/auth/register/email/:email", (req, res) =>
-  authentication.existEmail(req, res),
-);
-app.post("/api/auth/register", (req, res) => authentication.register(req, res));
-app.get("/api/auth/logout", (req, res) => authentication.logout(req, res));
-app.post("/api/auth/refresh", (req, res) => authentication.refresh(req, res));
-app.get("/api/auth/validate", (req, res) => authentication.validate(req, res));
-app.post("/api/auth/oauth", (req, res) => authentication.oauthGoogle(req, res));
-app.post("/api/auth/oauth/android", (req, res) =>
-  authentication.oauthGoogleAndroid(req, res),
-);
+app.post("/api/auth/login", authentication.login);
+app.get("/api/auth/register/email/:email", authentication.existEmail);
+app.post("/api/auth/register", authentication.register);
+app.get("/api/auth/logout", authentication.logout);
+app.post("/api/auth/refresh", authentication.refresh);
+app.get("/api/auth/validate", authentication.validate);
+app.post("/api/auth/oauth", authentication.oauthGoogle);
+app.post("/api/auth/oauth/android", authentication.oauthGoogleAndroid);
 
 app.post("/api/enterprise/auth/register", (req, res) =>
   enterpriseAuthentication.register(req, res),
@@ -447,114 +443,140 @@ app.post("/api/telegram-info/bulk", authorization.isLoged, (req, res) =>
 );
 
 //PAYMENTS METHOD
-app.post("/api/payment/session", (req, res) => payment.createSession(req, res));
-app.post("/api/payment/stripe-connect", authorization.isLoged, (req, res) =>
-  payment.createStripeConnectAccount(req, res),
+app.post("/api/payment/session", payment.createSession);
+app.post(
+  "/api/payment/stripe-connect",
+  authorization.isLoged,
+  payment.createStripeConnectAccount,
 );
 app.post(
   "/api/payment/stripe-connect-link",
   authorization.isLoged,
-  (req, res) => {
-    console.log("llega");
-
-    payment.createAccountLink(req, res);
-  },
+  payment.createAccountLink,
 );
 app.get(
   "/api/payment/stripe-connect-link",
   authorization.isLoged,
-  (req, res) => {
+  (req, res, next) => {
     req.body = {
       return_url: req.query.return_url,
       refresh_url: req.query.refresh_url,
     };
-    payment.createAccountLink(req, res);
+    payment.createAccountLink(req, res, next);
   },
 );
-app.get("/api/payment/stripe-redirect", (req, res) =>
-  payment.stripeRedirect(req, res),
+app.get("/api/payment/stripe-redirect", payment.stripeRedirect);
+app.get(
+  "/api/payment/stripe-connect",
+  authorization.isLoged,
+  payment.getMyStripeConnectAccount,
 );
-app.get("/api/payment/stripe-connect", authorization.isLoged, (req, res) => {
-  payment.getMyStripeConnectAccount(req, res);
-});
-// app.get("/api/payment/stripe-connect/:stripe_account_id", authorization.isLoged, (req, res) => payment.getMyStripeConnectAccount(req, res))
-app.post("/api/payment/stripe-customer", authorization.isLoged, (req, res) =>
-  payment.createStripeCustomer(req, res),
+app.post(
+  "/api/payment/stripe-customer",
+  authorization.isLoged,
+  payment.createStripeCustomer,
 );
-
-app.get("/api/payment/stripe-customer", authorization.isLoged, (req, res) =>
-  payment.getMyStripeCustomerAccount(req, res),
+app.get(
+  "/api/payment/stripe-customer",
+  authorization.isLoged,
+  payment.getMyStripeCustomerAccount,
 );
-app.post("/api/payment/stripe-link", authorization.isLoged, (req, res) =>
-  payment.createStripeLinkAccount(req, res),
+app.post(
+  "/api/payment/stripe-link",
+  authorization.isLoged,
+  payment.createStripeLinkAccount,
 );
-app.post("/api/payment/stripe-transfer", authorization.isLoged, (req, res) =>
-  payment.createStripeTransfer(req, res),
+app.post(
+  "/api/payment/stripe-transfer",
+  authorization.isLoged,
+  payment.createStripeTransfer,
 );
-app.post("/api/payment/stripe-login-link", authorization.isLoged, (req, res) =>
-  payment.createLoginLink(req, res),
+app.post(
+  "/api/payment/stripe-login-link",
+  authorization.isLoged,
+  payment.createLoginLink,
 );
 app.get(
   "/api/payment/stripe-billing-portal",
   authorization.isLoged,
-  (req, res) => payment.createBillingPortal(req, res),
+  payment.createBillingPortal,
 );
-app.get("/api/payment/cash-balance", authorization.isLoged, (req, res) =>
-  payment.getCashBalance(req, res),
+app.get(
+  "/api/payment/cash-balance",
+  authorization.isLoged,
+  payment.getCashBalance,
 );
-app.get("/api/payment/wallet-balance", authorization.isLoged, (req, res) =>
-  payment.getWalletBalance(req, res),
+app.get(
+  "/api/payment/wallet-balance",
+  authorization.isLoged,
+  payment.getWalletBalance,
 );
-app.get("/api/payment/wallet-transactions", authorization.isLoged, (req, res) =>
-  payment.getWalletTransactions(req, res),
+app.get(
+  "/api/payment/wallet-transactions",
+  authorization.isLoged,
+  payment.getWalletTransactions,
 );
-app.post("/api/payment/wallet-payout", authorization.isLoged, (req, res) =>
-  payment.createWalletPayout(req, res),
+app.post(
+  "/api/payment/wallet-payout",
+  authorization.isLoged,
+  payment.createWalletPayout,
 );
-app.get("/api/payment/wallet-payouts", authorization.isLoged, (req, res) =>
-  payment.getWalletPayouts(req, res),
+app.get(
+  "/api/payment/wallet-payouts",
+  authorization.isLoged,
+  payment.getWalletPayouts,
 );
-app.get("/api/monedero/cuenta-vinculada", authorization.isLoged, (req, res) =>
-  payment.getLinkedExternalAccounts(req, res),
+app.get(
+  "/api/monedero/cuenta-vinculada",
+  authorization.isLoged,
+  payment.getLinkedExternalAccounts,
 );
-app.post("/api/payment/payment-intent", authorization.isLoged, (req, res) =>
-  payment.createPaymentIntent(req, res),
+app.post(
+  "/api/payment/payment-intent",
+  authorization.isLoged,
+  payment.createPaymentIntent,
 );
 app.post(
   "/api/payment/payment-intent/checkout",
   authorization.isLoged,
-  (req, res) => payment.createCheckoutPaymentIntent(req, res),
+  payment.createCheckoutPaymentIntent,
 );
-app.post("/api/payment/calculate-price", authorization.isLoged, (req, res) =>
-  payment.calculatePrice(req, res),
+app.post(
+  "/api/payment/calculate-price",
+  authorization.isLoged,
+  payment.calculatePrice,
 );
-app.get("/api/payment/cotizar", (req, res) => payment.cotizar(req, res));
+app.get("/api/payment/cotizar", payment.cotizar);
 app.post(
   "/api/payment/payment-intent/resume",
   authorization.isLoged,
-  (req, res) => payment.resumeCheckoutPaymentIntent(req, res),
+  payment.resumeCheckoutPaymentIntent,
 );
 app.post(
   "/api/payment/payment-intent/capture",
   authorization.isLoged,
-  (req, res) => payment.capturePaymentIntent(req, res),
+  payment.capturePaymentIntent,
 );
-app.post("/api/payment/trayecto/capture", authorization.isLoged, (req, res) =>
-  payment.captureTripPayments(req, res),
+app.post(
+  "/api/payment/trayecto/capture",
+  authorization.isLoged,
+  payment.captureTripPayments,
 );
 app.post(
   "/api/payment/payment-intent/cancel",
   authorization.isLoged,
-  (req, res) => payment.cancelPaymentIntent(req, res),
+  payment.cancelPaymentIntent,
 );
-app.post("/api/payment/payout", authorization.isLoged, (req, res) =>
-  payment.createPayout(req, res),
+app.post("/api/payment/payout", authorization.isLoged, payment.createPayout);
+app.post(
+  "/api/payment/recharge",
+  authorization.isLoged,
+  payment.rechargeWalletUser,
 );
-app.post("/api/payment/recharge", authorization.isLoged, (req, res) =>
-  payment.rechargeWalletUser(req, res),
-);
-app.post("/api/payment/bank_account", authorization.isLoged, (req, res) =>
-  payment.createBankAccount(req, res),
+app.post(
+  "/api/payment/bank_account",
+  authorization.isLoged,
+  payment.createBankAccount,
 );
 
 //CARS METHOD
@@ -602,67 +624,59 @@ app.get(
 );
 
 // --- Events ---
-app.get("/api/events", (req, res) => events.getAllEvents(req, res));
-app.get("/api/events/nearby", (req, res) => events.getNearbyEvents(req, res));
-app.get("/api/events/me/joined", authorization.isLoged, (req, res) =>
-  events.getMyJoinedEvents(req, res),
+app.get("/api/events", events.getAllEvents);
+app.get("/api/events/nearby", events.getNearbyEvents);
+app.get(
+  "/api/events/me/joined",
+  authorization.isLoged,
+  events.getMyJoinedEvents,
 );
-app.get("/api/events/code/:code", authorization.isLoged, (req, res) =>
-  events.getEventByCode(req, res),
-);
-app.get("/api/events/:id", (req, res) => events.getEventById(req, res));
-app.post("/api/events", authorization.isLoged, (req, res) =>
-  events.createEvent(req, res),
-);
-app.patch("/api/events/:id", authorization.onlyAdmin, (req, res) =>
-  events.updateEvent(req, res),
-);
-app.delete("/api/events/:id", authorization.onlyAdmin, (req, res) =>
-  events.deleteEvent(req, res),
-);
-app.post("/api/events/:id/join", authorization.isLoged, (req, res) =>
-  events.joinEvent(req, res),
-);
-app.delete("/api/events/:id/join", authorization.isLoged, (req, res) =>
-  events.leaveEvent(req, res),
-);
-app.get("/api/events/:id/participants", authorization.isLoged, (req, res) =>
-  events.getEventParticipants(req, res),
+app.get("/api/events/code/:code", authorization.isLoged, events.getEventByCode);
+app.get("/api/events/:id", events.getEventById);
+app.post("/api/events", authorization.isLoged, events.createEvent);
+app.patch("/api/events/:id", authorization.onlyAdmin, events.updateEvent);
+app.delete("/api/events/:id", authorization.onlyAdmin, events.deleteEvent);
+app.post("/api/events/:id/join", authorization.isLoged, events.joinEvent);
+app.delete("/api/events/:id/join", authorization.isLoged, events.leaveEvent);
+app.get(
+  "/api/events/:id/participants",
+  authorization.isLoged,
+  events.getEventParticipants,
 );
 
 // --- CAE Reports ---
-app.get("/api/cae-reports/summary", authorization.onlyAdmin, (req, res) =>
-  caeReports.getReportsSummary(req, res),
+app.get(
+  "/api/cae-reports/summary",
+  authorization.onlyAdmin,
+  caeReports.getReportsSummary,
 );
-app.get("/api/cae-reports", authorization.onlyAdmin, (req, res) =>
-  caeReports.listReports(req, res),
+app.get("/api/cae-reports", authorization.onlyAdmin, caeReports.listReports);
+app.post("/api/cae-reports", authorization.onlyAdmin, caeReports.createReport);
+app.get(
+  "/api/cae-reports/:id",
+  authorization.onlyAdmin,
+  caeReports.getReportById,
 );
-app.post("/api/cae-reports", authorization.onlyAdmin, (req, res) =>
-  caeReports.createReport(req, res),
+app.patch(
+  "/api/cae-reports/:id/status",
+  authorization.onlyAdmin,
+  caeReports.updateReportStatus,
 );
-app.get("/api/cae-reports/:id", authorization.onlyAdmin, (req, res) =>
-  caeReports.getReportById(req, res),
+app.delete(
+  "/api/cae-reports/:id",
+  authorization.onlyAdmin,
+  caeReports.deleteReport,
 );
-app.patch("/api/cae-reports/:id/status", authorization.onlyAdmin, (req, res) =>
-  caeReports.updateReportStatus(req, res),
-);
-app.delete("/api/cae-reports/:id", authorization.onlyAdmin, (req, res) =>
-  caeReports.deleteReport(req, res),
-);
-app.get("/api/cae-reports/:id/export", authorization.onlyAdmin, (req, res) =>
-  caeReports.exportReportExcel(req, res),
+app.get(
+  "/api/cae-reports/:id/export",
+  authorization.onlyAdmin,
+  caeReports.exportReportExcel,
 );
 
 // --- Tags ---
-app.get("/api/tags", authorization.isLoged, (req, res) =>
-  events.getAllTags(req, res),
-);
-app.post("/api/tags", authorization.onlyAdmin, (req, res) =>
-  events.createTag(req, res),
-);
-app.delete("/api/tags/:id", authorization.onlyAdmin, (req, res) =>
-  events.deleteTag(req, res),
-);
+app.get("/api/tags", authorization.isLoged, events.getAllTags);
+app.post("/api/tags", authorization.onlyAdmin, events.createTag);
+app.delete("/api/tags/:id", authorization.onlyAdmin, events.deleteTag);
 
 // --- Companies ---
 app.get("/api/companies", authorization.isLoged, (req, res) =>
@@ -682,23 +696,35 @@ app.delete("/api/companies/:id", authorization.onlyAdmin, (req, res) =>
 );
 
 // --- Promoter Suggestions ---
-app.get("/api/suggestions", authorization.onlyAdmin, (req, res) =>
-  suggestions.listSuggestions(req, res),
+app.get(
+  "/api/suggestions",
+  authorization.onlyAdmin,
+  suggestions.listSuggestions,
 );
-app.get("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
-  suggestions.getSuggestionById(req, res),
+app.get(
+  "/api/suggestions/:id",
+  authorization.onlyAdmin,
+  suggestions.getSuggestionById,
 );
-app.post("/api/suggestions", authorization.isLoged, (req, res) =>
-  suggestions.createSuggestion(req, res),
+app.post(
+  "/api/suggestions",
+  authorization.isLoged,
+  suggestions.createSuggestion,
 );
-app.patch("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
-  suggestions.updateSuggestion(req, res),
+app.patch(
+  "/api/suggestions/:id",
+  authorization.onlyAdmin,
+  suggestions.updateSuggestion,
 );
-app.delete("/api/suggestions/:id", authorization.onlyAdmin, (req, res) =>
-  suggestions.deleteSuggestion(req, res),
+app.delete(
+  "/api/suggestions/:id",
+  authorization.onlyAdmin,
+  suggestions.deleteSuggestion,
 );
-app.post("/api/suggestions/:id/accept", authorization.onlyAdmin, (req, res) =>
-  suggestions.acceptSuggestion(req, res),
+app.post(
+  "/api/suggestions/:id/accept",
+  authorization.onlyAdmin,
+  suggestions.acceptSuggestion,
 );
 
 // --- Legal Consents ---
