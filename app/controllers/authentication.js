@@ -28,6 +28,10 @@ dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
 const android_client_id = process.env.GOOGLE_CLIENT_ID_ANDROID;
+const extra_client_ids = (process.env.GOOGLE_CLIENT_ID_EXTRA ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -373,7 +377,9 @@ const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
   try {
     const ticket = await oauth2Client.verifyIdToken({
       idToken: id_token,
-      audience: [android_client_id, client_id].filter(Boolean),
+      audience: [android_client_id, client_id, ...extra_client_ids].filter(
+        Boolean,
+      ),
     });
     payload = ticket.getPayload();
   } catch (verifyError) {
