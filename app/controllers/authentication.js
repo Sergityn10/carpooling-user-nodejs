@@ -377,9 +377,17 @@ const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
     });
     payload = ticket.getPayload();
   } catch (verifyError) {
+    let tokenAud;
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(id_token.split(".")[1], "base64").toString("utf-8"),
+      );
+      tokenAud = decoded.aud;
+    } catch (_e) {}
     console.error("Google token verification failed:", {
       message: verifyError?.message,
-      audience: [android_client_id, client_id].filter(Boolean),
+      tokenAud,
+      configuredAudience: [android_client_id, client_id].filter(Boolean),
     });
     return next(
       new AppError(
