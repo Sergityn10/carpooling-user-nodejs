@@ -377,6 +377,10 @@ const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
     });
     payload = ticket.getPayload();
   } catch (verifyError) {
+    console.error("Google token verification failed:", {
+      message: verifyError?.message,
+      audience: [android_client_id, client_id].filter(Boolean),
+    });
     return next(
       new AppError(
         "El token de Google no es válido o ha expirado. Cierra sesión en Google e inténtalo de nuevo.",
