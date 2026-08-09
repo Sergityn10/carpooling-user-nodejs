@@ -27,6 +27,7 @@ import { methods as caeReports } from "./controllers/cae-reports.js";
 import { methods as legalConsent } from "./controllers/legalConsent.js";
 import errorHandler from "./middlewares/errorHandler.js";
 import AppError from "./utils/appError.js";
+import { paymentEventHandler } from "./services/paymentEventHandler.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -552,6 +553,11 @@ app.post(
   authorization.isLoged,
   payment.resumeCheckoutPaymentIntent,
 );
+app.get(
+  "/api/payment/payment-intent/:id_reserva/checkout-link",
+  authorization.isLoged,
+  payment.getPaymentIntentCheckoutLink,
+);
 app.post(
   "/api/payment/payment-intent/capture",
   authorization.isLoged,
@@ -759,5 +765,12 @@ app.use((req, res, next) => {
 });
 
 app.use(errorHandler);
+
+paymentEventHandler.start().catch((err) => {
+  console.error(
+    "[index] Failed to start payment event handler:",
+    err?.message ?? err,
+  );
+});
 
 export default app;

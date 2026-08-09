@@ -442,11 +442,17 @@ const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     mode: "payment",
     success_url: successUrl,
     cancel_url: cancelUrl,
+    expand: ["payment_intent"],
   });
+
+  const piId =
+    typeof checkout_session.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : checkout_session.payment_intent?.id;
 
   await prisma.paymentIntent.create({
     data: {
-      stripe_payment_id: checkout_session.payment_intent,
+      stripe_payment_id: piId,
       amount: pricing.total_cents,
       currency: String(paymentIntent.currency || "eur"),
       description: dbPaymentIntent?.description ?? undefined,
@@ -2025,6 +2031,222 @@ const cotizar = catchAsync(async (req, res, next) => {
   });
 });
 
+const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
+  const { id_reserva } = req.params;
+  const user = req.user;
+
+  if (!id_reserva) {
+    return next(new AppError("Missing id_reserva", 400, "VALIDATION_ERROR"));
+  }
+
+  const dbPaymentIntent = await prisma.paymentIntent.findFirst({
+    where: { id_reserva: String(id_reserva) },
+    orderBy: { created_at: "desc" },
+  });
+
+  if (!dbPaymentIntent) {
+    return next(
+      new AppError(
+        "No payment intent found for this reservation",
+        404,
+        "PAYMENT_INTENT_NOT_FOUND",
+      ),
+    );
+  }
+
+  const paymentIntentId = dbPaymentIntent.stripe_payment_id;
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+  if (!paymentIntent) {
+    return next(
+      new AppError(
+        "Payment intent not found in Stripe",
+        404,
+        "PAYMENT_INTENT_NOT_FOUND",
+      ),
+    );
+  }
+
+  const piStatus = String(paymentIntent.status);
+  if (piStatus === "succeeded" || piStatus === "canceled") {
+    return next(
+      new AppError(
+        `Payment intent is already ${piStatus}`,
+        409,
+        "PAYMENT_INTENT_ALREADY_COMPLETED",
+      ),
+    );
+  }
+
+  let checkoutSession = null;
+  if (dbPaymentIntent.checkout_session_id) {
+    try {
+      checkoutSession = await stripe.checkout.sessions.retrieve(
+        dbPaymentIntent.checkout_session_id,
+      );
+    } catch (_) {}
+  }
+
+  if (checkoutSession && checkoutSession.url) {
+    return res.status(200).send({
+      status: "Success",
+      message: "Checkout link retrieved successfully",
+      checkout_url: checkoutSession.url,
+      checkout_session_id: checkoutSession.id,
+      payment_intent_id: paymentIntentId,
+      payment_intent_status: piStatus,
+      id_reserva: String(id_reserva),
+    });
+  }
+
+  const sender = await prisma.user.findUnique({
+    where: { id: String(user.id) },
+    select: { stripe_customer_account: true, stripe_account: true },
+  });
+
+  if (!sender?.stripe_customer_account) {
+    return next(
+      new AppError(
+        "Sender does not have a Stripe customer account",
+        400,
+        "STRIPE_CUSTOMER_MISSING",
+      ),
+    );
+  }
+
+  const destinationAccount =
+    paymentIntent?.metadata?.destination_account ||
+    dbPaymentIntent?.destination_account ||
+    null;
+
+  if (!destinationAccount) {
+    return next(
+      new AppError(
+        "Cannot determine destination account from original payment",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const recipient = await prisma.user.findFirst({
+    where: { stripe_account: destinationAccount },
+    select: { name: true },
+  });
+
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink =
+    req.body?.return_url || req.query?.return_url || "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+
+  const netPriceCents = paymentIntent?.metadata?.net_price_cents
+    ? parseInt(paymentIntent.metadata.net_price_cents, 10)
+    : paymentIntent.amount;
+  const pricing = calculateTotalPrice(netPriceCents);
+
+  const newCheckoutSession = await stripe.checkout.sessions.create({
+    customer: sender.stripe_customer_account,
+    line_items: [
+      {
+        price_data: {
+          currency: paymentIntent.currency || "eur",
+          product_data: {
+            name: "Reserva de trayecto (pago pendiente)",
+            description:
+              paymentIntent.description ||
+              `Pago a ${recipient?.name || "conductor"}`,
+          },
+          unit_amount: pricing.total_cents,
+        },
+        quantity: 1,
+      },
+    ],
+    payment_intent_data: {
+      application_fee_amount: pricing.application_fee_cents,
+      capture_method: "manual",
+      transfer_data: {
+        destination: destinationAccount,
+      },
+      metadata: {
+        type: "reserva",
+        id_user: String(user.id),
+        id_reserva: String(id_reserva),
+        sender_account: String(sender.stripe_account ?? ""),
+        destination_account: String(destinationAccount),
+        id_trayecto: String(paymentIntent?.metadata?.id_trayecto ?? ""),
+        recipient_user_id: String(
+          paymentIntent?.metadata?.recipient_user_id ?? "",
+        ),
+        net_price_cents: String(pricing.net_price_cents),
+        driver_price_cents: String(pricing.driver_price_cents),
+        total_cents: String(pricing.total_cents),
+        application_fee_cents: String(pricing.application_fee_cents),
+        platform_fee_cents: String(pricing.platform_fee_cents),
+        stripe_fee_cents: String(pricing.stripe_fee_cents),
+      },
+    },
+    metadata: {
+      type: "reserva",
+      id_user: String(user.id),
+      id_reserva: String(id_reserva),
+      sender_account: sender.stripe_account ?? "",
+      destination_account: destinationAccount,
+      id_trayecto: String(paymentIntent?.metadata?.id_trayecto ?? ""),
+      recipient_user_id: String(
+        paymentIntent?.metadata?.recipient_user_id ?? "",
+      ),
+      net_price_cents: String(pricing.net_price_cents),
+      driver_price_cents: String(pricing.driver_price_cents),
+      total_cents: String(pricing.total_cents),
+      application_fee_cents: String(pricing.application_fee_cents),
+      platform_fee_cents: String(pricing.platform_fee_cents),
+      stripe_fee_cents: String(pricing.stripe_fee_cents),
+    },
+    submit_type: "pay",
+    mode: "payment",
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    expand: ["payment_intent"],
+  });
+
+  const newPiId =
+    typeof newCheckoutSession.payment_intent === "string"
+      ? newCheckoutSession.payment_intent
+      : newCheckoutSession.payment_intent?.id;
+
+  await prisma.paymentIntent.create({
+    data: {
+      stripe_payment_id: newPiId,
+      amount: pricing.total_cents,
+      currency: String(paymentIntent.currency || "eur"),
+      description: dbPaymentIntent?.description ?? undefined,
+      destination_account: destinationAccount,
+      sender_account: sender.stripe_account ?? undefined,
+      state: "pending",
+      checkout_session_id: newCheckoutSession.id,
+      id_reserva: String(id_reserva),
+    },
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "New checkout session created",
+    checkout_url: newCheckoutSession.url,
+    checkout_session_id: newCheckoutSession.id,
+    payment_intent_id: newPiId,
+    payment_intent_status: piStatus,
+    id_reserva: String(id_reserva),
+  });
+});
+
 export const methods = {
   createSession,
   createStripeConnectAccount,
@@ -2051,6 +2273,7 @@ export const methods = {
   getWalletPayouts,
   createCheckoutPaymentIntent,
   resumeCheckoutPaymentIntent,
+  getPaymentIntentCheckoutLink,
   rechargeWalletUser,
   createStripeAccountForUserEmpty,
   updateStripeAccountFromProfile,

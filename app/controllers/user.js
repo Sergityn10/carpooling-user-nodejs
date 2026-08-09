@@ -9,6 +9,7 @@ import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
+import { eventBus } from "../services/eventBus.js";
 
 const updateUserPatch = catchAsync(async (req, res, next) => {
   const result = UserSchemas.validateUserSchemaPartial(req.body);
@@ -127,6 +128,8 @@ const updateUserPatch = catchAsync(async (req, res, next) => {
     .catch((err) =>
       console.error("[updateUserPatch] Error sincronizando con Stripe:", err),
     );
+
+  await eventBus.userUpdated(id, result.data);
 
   return res.status(200).send({
     status: "Success",
@@ -253,6 +256,8 @@ const updateMyUserPatch = catchAsync(async (req, res, next) => {
       console.error("[updateMyUserPatch] Error sincronizando con Stripe:", err),
     );
 
+  await eventBus.userUpdated(findUser.id, result.data);
+
   return res.status(200).send({
     status: "Success",
     message: "Usuario actualizado correctamente.",
@@ -296,6 +301,8 @@ const removeUser = catchAsync(async (req, res, next) => {
   }
 
   await prisma.user.delete({ where: { id } });
+
+  await eventBus.userDeleted(id, !isSelf);
 
   if (isSelf) {
     try {

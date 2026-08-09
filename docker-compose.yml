@@ -14,6 +14,21 @@ services:
     networks:
       - carpooling-network
 
+  rabbitmq:
+    image: rabbitmq:4.0-management
+    container_name: rabbitmq-carpooling
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: carpooling
+      RABBITMQ_DEFAULT_PASS: carpooling123
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - carpooling-network
+
   # app:
   #   build: .
   #   container_name: carpooling-user
@@ -29,6 +44,7 @@ services:
 
 volumes:
   mysql_data:
+  rabbitmq_data:
 
 networks:
   carpooling-network:

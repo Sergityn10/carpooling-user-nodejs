@@ -1,6 +1,6 @@
 import prisma from "../lib/prisma.js";
 import Stripe from "stripe";
-import { trayectosService } from "../services/trayectosService.js";
+import { eventBus } from "../services/eventBus.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
@@ -408,10 +408,21 @@ async function handlePaymentIntentCreated(jsonData) {
 
   if (id_reserva) {
     const mappedStatus = state === "succeeded" ? "completed" : "pending";
-    await trayectosService.updateReservaStatus(
+    await eventBus.paymentIntentCreated(
+      stripePaymentIntentId,
+      amount,
+      currency,
+      state,
       id_reserva,
       mappedStatus,
+    );
+  } else {
+    await eventBus.paymentIntentCreated(
       stripePaymentIntentId,
+      amount,
+      currency,
+      state,
+      id_reserva,
     );
   }
 }
@@ -544,10 +555,29 @@ async function handlePaymentIntentSucceeded(jsonData) {
 
   try {
     if (id_reserva) {
-      await trayectosService.updateReservaStatus(
+      console.log("[webhook] Emitting payment_intent.captured for reserva", {
         id_reserva,
-        "completed",
         stripePaymentIntentId,
+        grossAmountCents,
+        currency,
+        payerUserId,
+        receiverUserId,
+        netAmountCents,
+        commissionAmountCents,
+      });
+      await eventBus.paymentIntentCaptured(
+        stripePaymentIntentId,
+        id_reserva,
+        grossAmountCents,
+        currency,
+        payerUserId,
+        receiverUserId,
+        netAmountCents,
+        commissionAmountCents,
+      );
+      console.log(
+        "[webhook] Event payment_intent.captured emitted successfully for reserva",
+        id_reserva,
       );
     }
 
@@ -643,7 +673,34 @@ async function handlePaymentIntentSucceeded(jsonData) {
         description: `${baseDesc} (comisión ${PLATFORM_MARGIN_PERCENT * 100}%)`,
       });
     });
+
+    console.log("[webhook] Emitting payment_intent.succeeded for reserva", {
+      id_reserva,
+      stripePaymentIntentId,
+      grossAmountCents: grossAmountCents / 100,
+      currency,
+      payerUserId,
+      receiverUserId,
+    });
+    await eventBus.paymentIntentSucceeded(
+      stripePaymentIntentId,
+      grossAmountCents / 100,
+      currency,
+      payerUserId,
+      receiverUserId,
+      id_reserva,
+    );
+    console.log(
+      "[webhook] Event payment_intent.succeeded emitted successfully for reserva",
+      id_reserva,
+    );
   } catch (error) {
+    console.error(
+      "[webhook] Error in payment success flow for reserva",
+      id_reserva,
+      ":",
+      error?.message ?? error,
+    );
     throw error;
   }
 }
@@ -666,11 +723,13 @@ async function handlePaymentIntentFailed(jsonData) {
     id_reserva = piRow?.id_reserva;
   }
   if (id_reserva) {
-    await trayectosService.updateReservaStatus(
+    await eventBus.paymentIntentFailed(
+      paymentIntent.id,
       id_reserva,
       "canceled",
-      paymentIntent.id,
     );
+  } else {
+    await eventBus.paymentIntentFailed(paymentIntent.id, id_reserva);
   }
 
   await prisma.walletRecharge.updateMany({
@@ -700,11 +759,13 @@ async function handlePaymentIntentCanceled(jsonData) {
     id_reserva = piRow?.id_reserva;
   }
   if (id_reserva) {
-    await trayectosService.updateReservaStatus(
+    await eventBus.paymentIntentCanceled(
+      paymentIntent.id,
       id_reserva,
       "canceled",
-      paymentIntent.id,
     );
+  } else {
+    await eventBus.paymentIntentCanceled(paymentIntent.id, id_reserva);
   }
 }
 async function handleCustomerUpdated(jsonData) {
@@ -788,10 +849,13 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
   if (type === "reserva") {
     const id_reserva = checkout_session?.metadata?.id_reserva;
     if (id_reserva) {
-      await trayectosService.updateReservaStatus(
+      await eventBus.paymentIntentCreated(
+        paymentIntentId,
+        null,
+        null,
+        "checkout_completed",
         id_reserva,
         "pending",
-        paymentIntentId,
       );
     }
     return;
@@ -802,7 +866,7 @@ async function handleCheckoutSessionExpired(jsonData) {
   const session = jsonData?.object;
   const id_reserva = session?.metadata?.id_reserva;
   if (id_reserva) {
-    await trayectosService.updateReservaStatus(id_reserva, "canceled", null);
+    await eventBus.checkoutSessionExpired(id_reserva);
   }
 }
 async function handleAccountUpdated(jsonData) {
@@ -820,10 +884,26 @@ async function handleAccountUpdated(jsonData) {
   let userId = userIdRaw ? String(userIdRaw) : null;
 
   const chargesEnabled = Boolean(stripeAccount.charges_enabled);
-  const transfersEnabled =
-    String(stripeAccount?.capabilities?.transfers ?? "").toLowerCase() ===
-    "active";
+  const transfersCapability = String(
+    stripeAccount?.capabilities?.transfers ?? "unknown",
+  ).toLowerCase();
+  const cardPaymentsCapability = String(
+    stripeAccount?.capabilities?.card_payments ?? "unknown",
+  ).toLowerCase();
+  const transfersEnabled = transfersCapability === "active";
   const detailsSubmitted = Boolean(stripeAccount.details_submitted);
+
+  console.log("[handleAccountUpdated]", {
+    stripeAccountId,
+    userId,
+    charges_enabled: chargesEnabled,
+    capabilities: {
+      transfers: transfersCapability,
+      card_payments: cardPaymentsCapability,
+    },
+    transfers_enabled: transfersEnabled,
+    details_submitted: detailsSubmitted,
+  });
 
   const onboardingComplete = detailsSubmitted;
 
@@ -914,6 +994,15 @@ async function handleAccountUpdated(jsonData) {
         });
       }
     });
+
+    await eventBus.stripeAccountUpdated(
+      userId,
+      stripeAccountId,
+      chargesEnabled,
+      transfersEnabled,
+      detailsSubmitted,
+      onboardingComplete,
+    );
   } catch (error) {
     console.error("handleAccountUpdated error:", error);
     throw error;
