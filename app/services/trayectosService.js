@@ -392,14 +392,40 @@ async function deleteCAEReport(reportId, adminToken) {
   }
 }
 
+async function countConductorTrips(userId) {
+  try {
+    const token = generateServiceToken();
+    const response = await fetch(
+      `${TRAYECTOS_ORIGIN}/api/trayecto/conductor/${userId}?limit=1`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    if (!response.ok) {
+      console.error(
+        `[trayectosService] countConductorTrips ${response.status}: ${await response.text()}`,
+      );
+      return 0;
+    }
+    const data = await response.json();
+    return data?.pagination?.total ?? 0;
+  } catch (error) {
+    console.error(
+      "[trayectosService] countConductorTrips error:",
+      error?.message ?? error,
+    );
+    return 0;
+  }
+}
+
 async function getDriverStats(userId, userToken) {
   try {
+    const token = generateServiceToken();
     const [tripsResponse, caeResponse] = await Promise.all([
-      fetch(`${TRAYECTOS_ORIGIN}/api/trayecto/conductor/${userId}`, {
+      fetch(`${TRAYECTOS_ORIGIN}/api/trayecto/conductor/${userId}?limit=100`, {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${userToken}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       }),
       userToken
         ? fetch(`${TRAYECTOS_ORIGIN}/api/cae/balance`, {
@@ -414,9 +440,7 @@ async function getDriverStats(userId, userToken) {
     let completedTrips = 0;
     if (tripsResponse.ok) {
       const tripsData = await tripsResponse.json();
-      const trips = Array.isArray(tripsData)
-        ? tripsData
-        : (tripsData.trayectos ?? []);
+      const trips = tripsData.data ?? [];
       completedTrips = trips.filter((t) => t.status === "finalizado").length;
     } else {
       console.error(
@@ -459,6 +483,7 @@ export const trayectosService = {
   cancelReserva,
   getCAEBalance,
   getDriverStats,
+  countConductorTrips,
   getAllCAEs,
   getTripPassengers,
   getTripRecorrido,

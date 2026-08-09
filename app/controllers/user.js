@@ -7,15 +7,8 @@ import { methods as utils } from "../utils/hashing.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
-import { trayectosService } from "../services/trayectosService.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
-
-async function countUserViajes(conductor) {
-  // trayectos table is managed by another microservice.
-  // This should be fetched via an API call to the trayectos microservice.
-  return 0;
-}
 
 const updateUserPatch = catchAsync(async (req, res, next) => {
   const result = UserSchemas.validateUserSchemaPartial(req.body);
@@ -361,13 +354,6 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       ? 0
       : receivedComments.reduce((acc, c) => acc + c.rating, 0) / numOpinions;
 
-  let viajes = 0;
-  try {
-    viajes = await countUserViajes(user.id);
-  } catch (_e) {
-    viajes = 0;
-  }
-
   const preferences = {};
   userPreferences.forEach((row) => {
     preferences[row.pref_key] = row.value;
@@ -396,7 +382,6 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       numOpinions,
       myNumOpinions: givenComments.length,
       about_me: user.about_me,
-      viajes,
       preferences,
     },
   });
@@ -626,13 +611,6 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
       ? 0
       : receivedComments.reduce((acc, c) => acc + c.rating, 0) / numOpinions;
 
-  let viajes = 0;
-  try {
-    viajes = await countUserViajes(findUser.id);
-  } catch (_e) {
-    viajes = 0;
-  }
-
   const preferences = {};
   userPreferences.forEach((row) => {
     preferences[row.pref_key] = row.value;
@@ -695,7 +673,6 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
       numOpinions,
       myNumOpinions: givenComments.length,
       about_me: findUser.about_me,
-      viajes,
       preferences,
     },
     completitud,
@@ -810,15 +787,6 @@ const getPublicUserProfile = catchAsync(async (req, res, next) => {
 
   const { commentsReceived, _count, ...publicFields } = user;
 
-  const bearerToken = req.headers.authorization?.split(" ")[1];
-  const cookieToken = req.cookies?.access_token;
-  const userToken = bearerToken || cookieToken;
-
-  const driverStats = await trayectosService.getDriverStats(
-    String(id),
-    userToken,
-  );
-
   return res.status(200).send({
     status: "Success",
     user: {
@@ -828,9 +796,6 @@ const getPublicUserProfile = catchAsync(async (req, res, next) => {
         avg_rating: avgRating,
         total_comments: totalComments,
         events_joined: _count?.eventParticipations ?? 0,
-        completed_trips: driverStats.completed_trips,
-        kwh_generated: driverStats.kwh_generated,
-        eur_generated: driverStats.eur_generated,
       },
       recent_comments: comments
         .sort((a, b) => b.id_comment.localeCompare(a.id_comment))
