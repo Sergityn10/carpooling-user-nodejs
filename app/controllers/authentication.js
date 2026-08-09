@@ -100,8 +100,20 @@ async function createStripeAccountForUser(userId, email) {
   try {
     const account = await stripe.accounts.create({
       type: "express",
+      country: "ES",
       email,
+      business_type: "individual",
+      business_profile: {
+        mcc: "4121",
+        product_description:
+          "Conductor de carpooling en la plataforma YouConnext",
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
       metadata: { userId },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
     });
 
     await prisma.account.create({
@@ -216,6 +228,7 @@ const register = catchAsync(async (req, res, next) => {
   const { email, password, consents } = result.data;
 
   const consentCheck = validateConsents(consents);
+  console.log(consents);
   if (!consentCheck.valid) {
     return next(new AppError(consentCheck.error, 400, "CONSENTS_REQUIRED"));
   }

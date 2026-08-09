@@ -829,6 +829,18 @@ async function createStripeAccountForUserEmpty(
       },
     });
 
+    console.log("[Stripe Create Account]", {
+      id: account.id,
+      business_type: account.business_type,
+      individual: account.individual
+        ? {
+            first_name: account.individual.first_name,
+            last_name: account.individual.last_name,
+          }
+        : null,
+      company: account.company ? { name: account.company.name } : null,
+    });
+
     await prisma.account.create({
       data: {
         stripe_account_id: account.id,
