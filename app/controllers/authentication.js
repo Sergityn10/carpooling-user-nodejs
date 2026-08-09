@@ -24,6 +24,7 @@ import {
 } from "../middlewares/authorization.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
+import { eventBus } from "../services/eventBus.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
@@ -202,6 +203,7 @@ const login = catchAsync(async (req, res, next) => {
 
   res.cookie("access_token", token, buildAccessCookieOptions());
   await issueRefreshToken(res, comprobarUser.id);
+  await eventBus.userLogin(comprobarUser.id, email, role);
   return res.status(200).send({
     status: "Success",
     message: `Login successful`,
@@ -309,6 +311,12 @@ const register = catchAsync(async (req, res, next) => {
 
   res.cookie("access_token", token, buildAccessCookieOptions());
   await issueRefreshToken(res, createdUser?.id);
+  await eventBus.userRegistered(
+    createdUser?.id,
+    email,
+    authMethods.PASSWORD,
+    role,
+  );
   return res.status(201).send({
     status: "Success",
     message: "User registered successfully",
@@ -498,6 +506,7 @@ const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
 
     res.cookie("access_token", token, buildAccessCookieOptions());
     await issueRefreshToken(res, newUser.id);
+    await eventBus.userRegistered(newUser.id, email, authMethods.GOOGLE, role);
 
     return res.status(201).send({
       status: "Success",
@@ -540,6 +549,7 @@ const oauthGoogleAndroid = catchAsync(async (req, res, next) => {
 
     res.cookie("access_token", token, buildAccessCookieOptions());
     await issueRefreshToken(res, existingUser.id);
+    await eventBus.userLogin(existingUser.id, email, role);
 
     return res.status(200).send({
       status: "Success",
@@ -584,6 +594,7 @@ const logout = catchAsync(async (req, res, next) => {
 
 const refresh = catchAsync(async (req, res, next) => {
   const rawRefreshToken = req?.cookies?.refresh_token;
+  console.log("[refresh] Cookie refresh_token:", rawRefreshToken);
   if (!rawRefreshToken) {
     return next(
       new AppError(
@@ -598,11 +609,13 @@ const refresh = catchAsync(async (req, res, next) => {
     .createHash("sha256")
     .update(rawRefreshToken)
     .digest("hex");
+  console.log("[refresh] Hashed refresh token:", hashedRefresh);
 
   const stored = await prisma.refreshToken.findFirst({
     where: { token: hashedRefresh, revoked: false },
     select: { user_id: true, expires_at: true, revoked: true },
   });
+  console.log("[refresh] Stored token record:", stored);
 
   if (!stored) {
     clearRefreshCookie(res);
@@ -655,6 +668,8 @@ const refresh = catchAsync(async (req, res, next) => {
     rotate: true,
     oldTokenHash: hashedRefresh,
   });
+  console.log("[refresh] New access token:", accessToken);
+  console.log("[refresh] User:", user.id, "Role:", role);
 
   return res.status(200).send({
     status: "Success",

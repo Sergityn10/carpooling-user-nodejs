@@ -3,6 +3,7 @@ import prisma from "../lib/prisma.js";
 import { ServiceEventSchemas } from "../schemas/service_event.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
+import { eventBus } from "../services/eventBus.js";
 
 dotenv.config();
 
@@ -86,6 +87,12 @@ async function create(req, res) {
         image: ev.image ?? null,
       },
     });
+
+    await eventBus.enterpriseServiceEventCreated(
+      created.id,
+      enterpriseId,
+      title,
+    );
 
     return res.status(201).send({
       status: "Success",
@@ -221,6 +228,8 @@ async function patch(req, res) {
       where: { id, enterprise_id: enterprise.id },
     });
 
+    await eventBus.enterpriseServiceEventUpdated(id, updates);
+
     return res.status(200).send({
       status: "Success",
       message: "Service event updated",
@@ -250,6 +259,8 @@ async function remove(req, res) {
         .status(404)
         .send({ status: "Error", message: "Service event not found" });
     }
+
+    await eventBus.enterpriseServiceEventDeleted(id);
 
     return res
       .status(200)

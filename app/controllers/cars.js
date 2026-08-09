@@ -1,6 +1,7 @@
 import { CocheSchemas } from "../schemas/coche.js";
 import dotenv from "dotenv";
 import prisma from "../lib/prisma.js";
+import { eventBus } from "../services/eventBus.js";
 dotenv.config();
 
 async function createCar(req, res) {
@@ -25,6 +26,7 @@ async function createCar(req, res) {
         year: data.data.year,
       },
     });
+    await eventBus.carCreated(car.id_coche, user.id);
     return res
       .status(200)
       .send({ status: "Success", message: "Car created successfully", car });
@@ -64,6 +66,7 @@ async function updateCar(req, res) {
       where: { id_coche },
       data: value,
     });
+    await eventBus.carUpdated(id_coche, value);
     return res
       .status(200)
       .send({ status: "Success", message: "Car updated successfully", car });
@@ -83,6 +86,7 @@ async function removeCar(req, res) {
   const { id: id_coche } = req.params;
   try {
     await prisma.car.delete({ where: { id_coche } });
+    await eventBus.carDeleted(id_coche);
     return res
       .status(200)
       .send({ status: "Success", message: "Car deleted successfully" });

@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import prisma from "../lib/prisma.js";
 import { notificationsService } from "../services/notificationsService.js";
+import { eventBus } from "../services/eventBus.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 dotenv.config();
@@ -98,18 +99,27 @@ const createSuggestion = catchAsync(async (req, res, next) => {
       suggested_by: userId,
     },
   });
-  try {
-    notificationsService.sendSuggestionEmail({
-      companyName: name,
-      companyEmail: email,
-      website: website ?? null,
-      suggestionId: suggestion.id,
-      userName: req.user?.name,
-      userEmail: req.user?.email,
-    });
-  } catch (e) {
-    console.log("Error al intentar enviar el email de sugerencia");
-  }
+  // try {
+  //   notificationsService.sendSuggestionEmail({
+  //     companyName: name,
+  //     companyEmail: email,
+  //     website: website ?? null,
+  //     suggestionId: suggestion.id,
+  //     userName: req.user?.name,
+  //     userEmail: req.user?.email,
+  //   });
+  // } catch (e) {
+  //   console.log("Error al intentar enviar el email de sugerencia");
+  // }
+
+  await eventBus.suggestionCreated(
+    suggestion.id,
+    name,
+    email,
+    website ?? null,
+    req.user?.name,
+    req.user?.email,
+  );
 
   return res.status(201).send({
     status: "Success",
@@ -227,6 +237,8 @@ const acceptSuggestion = catchAsync(async (req, res, next) => {
     where: { id },
     data: { status: "accepted" },
   });
+
+  await eventBus.suggestionAccepted(id, company.id);
 
   return res.status(201).send({
     status: "Success",

@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { messagesService } from "../services/messagesService.js";
+import { eventBus } from "../services/eventBus.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
@@ -189,6 +190,13 @@ const createEvent = catchAsync(async (req, res, next) => {
     }
   }
 
+  await eventBus.platformEventCreated(
+    event.id,
+    event.name,
+    event.company_id,
+    event.unique_code,
+  );
+
   return res.status(201).send({
     status: "Success",
     message: "Event created successfully",
@@ -258,6 +266,8 @@ const updateEvent = catchAsync(async (req, res, next) => {
     },
   });
 
+  await eventBus.platformEventUpdated(id, data);
+
   return res.status(200).send({
     status: "Success",
     message: "Event updated successfully",
@@ -281,6 +291,8 @@ const deleteEvent = catchAsync(async (req, res, next) => {
   }
 
   await prisma.platformEvent.delete({ where: { id } });
+
+  await eventBus.platformEventDeleted(id);
 
   return res.status(200).send({
     status: "Success",
@@ -424,6 +436,8 @@ const joinEvent = catchAsync(async (req, res, next) => {
     data: { user_id: userId, event_id: id },
   });
 
+  await eventBus.platformEventJoined(id, userId);
+
   if (event.chat_id) {
     const userToken = req.headers.authorization?.replace("Bearer ", "");
     if (userToken) {
@@ -450,6 +464,8 @@ const leaveEvent = catchAsync(async (req, res, next) => {
   await prisma.eventParticipant.delete({
     where: { user_id_event_id: { user_id: userId, event_id: id } },
   });
+
+  await eventBus.platformEventLeft(id, userId);
 
   const event = await prisma.platformEvent.findUnique({
     where: { id },
