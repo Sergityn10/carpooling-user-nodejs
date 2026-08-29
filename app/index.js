@@ -644,11 +644,7 @@ app.patch("/api/events/:id", authorization.onlyAdmin, events.updateEvent);
 app.delete("/api/events/:id", authorization.onlyAdmin, events.deleteEvent);
 app.post("/api/events/:id/join", authorization.isLoged, events.joinEvent);
 app.delete("/api/events/:id/join", authorization.isLoged, events.leaveEvent);
-app.get(
-  "/api/events/:id/participants",
-  authorization.isLoged,
-  events.getEventParticipants,
-);
+app.get("/api/events/:id/participants", events.getEventParticipants);
 
 // --- CAE Reports ---
 app.get(
