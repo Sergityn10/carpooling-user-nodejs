@@ -154,6 +154,7 @@ model User {
   walletRecharges      WalletRecharge[]
   walletTransactions   WalletTransaction[]
   walletPayouts        WalletPayout[]
+  walletConfig         WalletConfig?
   telegramInfo         TelegramInfo[]
   disponibilidades     DisponibilidadSemanal[]
   preferences          UserPreference[]
@@ -406,6 +407,26 @@ model WalletAccount {
   @@unique([user_id, currency])
   @@index([currency])
   @@map("wallet_accounts")
+}
+
+model WalletConfig {
+  id                    String   @id @default(uuid()) @db.VarChar(36)
+  user_id               String   @unique @db.VarChar(36)
+  wallet_enabled        Boolean  @default(true)
+  recharges_enabled     Boolean  @default(true)
+  payouts_enabled       Boolean  @default(true)
+  payments_enabled      Boolean  @default(true)
+  min_recharge_cents    Int      @default(100)
+  max_recharge_cents    Int      @default(500000)
+  max_daily_payout_cents Int     @default(100000)
+  updated_by            String?  @db.VarChar(36)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([wallet_enabled])
+  @@map("wallet_configs")
 }
 
 model WalletRecharge {

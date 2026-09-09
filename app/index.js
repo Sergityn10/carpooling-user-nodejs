@@ -25,6 +25,7 @@ import { methods as companies } from "./controllers/companies.js";
 import { methods as suggestions } from "./controllers/suggestions.js";
 import { methods as caeReports } from "./controllers/cae-reports.js";
 import { methods as legalConsent } from "./controllers/legalConsent.js";
+import { methods as walletConfig } from "./controllers/walletConfig.js";
 import errorHandler from "./middlewares/errorHandler.js";
 import AppError from "./utils/appError.js";
 import { paymentEventHandler } from "./services/paymentEventHandler.js";
@@ -749,6 +750,40 @@ app.get(
 );
 app.get("/api/legal-consents/me", authorization.isLoged, (req, res) =>
   legalConsent.getMyConsents(req, res),
+);
+
+// --- Wallet Config (Admin) ---
+app.get(
+  "/api/admin/wallet-config",
+  authorization.onlyAdmin,
+  walletConfig.listWalletConfigs,
+);
+app.get(
+  "/api/admin/wallet-config/:userId",
+  authorization.onlyAdmin,
+  walletConfig.getWalletConfig,
+);
+app.put(
+  "/api/admin/wallet-config/:userId",
+  authorization.onlyAdmin,
+  walletConfig.upsertWalletConfig,
+);
+app.patch(
+  "/api/admin/wallet-config/:userId/toggle",
+  authorization.onlyAdmin,
+  walletConfig.toggleWallet,
+);
+app.delete(
+  "/api/admin/wallet-config/:userId",
+  authorization.onlyAdmin,
+  walletConfig.resetWalletConfig,
+);
+
+// --- Wallet Config (User) ---
+app.get(
+  "/api/wallet-config/me",
+  authorization.isLoged,
+  walletConfig.getMyWalletConfig,
 );
 
 app.use((req, res, next) => {

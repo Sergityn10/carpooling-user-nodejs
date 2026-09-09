@@ -7,6 +7,7 @@ import { methods as utils } from "../utils/hashing.js";
 import { methods as cryptoUtils } from "../utils/crypto.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
 import { methods as paymentServices } from "./payment.js";
+import { DEFAULT_CONFIG as DEFAULT_WALLET_CONFIG } from "./walletConfig.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { eventBus } from "../services/eventBus.js";
@@ -346,14 +347,16 @@ const getUserInfo = catchAsync(async (req, res, next) => {
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
-  const [receivedComments, givenComments, userPreferences] = await Promise.all([
-    prisma.comment.findMany({ where: { user_id_trayect: id } }),
-    prisma.comment.findMany({ where: { user_id_commentator: id } }),
-    prisma.userPreference.findMany({
-      where: { user_id: id },
-      select: { pref_key: true, value: true },
-    }),
-  ]);
+  const [receivedComments, givenComments, userPreferences, walletConfigRow] =
+    await Promise.all([
+      prisma.comment.findMany({ where: { user_id_trayect: id } }),
+      prisma.comment.findMany({ where: { user_id_commentator: id } }),
+      prisma.userPreference.findMany({
+        where: { user_id: id },
+        select: { pref_key: true, value: true },
+      }),
+      prisma.walletConfig.findUnique({ where: { user_id: id } }),
+    ]);
 
   const numOpinions = receivedComments.length;
   const averageRating =
@@ -390,6 +393,10 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       myNumOpinions: givenComments.length,
       about_me: user.about_me,
       preferences,
+      wallet_config: walletConfigRow ?? {
+        user_id: id,
+        ...DEFAULT_WALLET_CONFIG,
+      },
     },
   });
 });

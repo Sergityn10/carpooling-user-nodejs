@@ -267,6 +267,14 @@ async function suggestionAccepted(suggestionId, companyId) {
   });
 }
 
+async function walletConfigUpdated(userId, config, adminId) {
+  await rabbitmq.publish("wallet.config.updated", {
+    user_id: userId,
+    config,
+    updated_by: adminId,
+  });
+}
+
 export const eventBus = {
   userRegistered,
   userLogin,
@@ -294,4 +302,5 @@ export const eventBus = {
   enterpriseServiceEventDeleted,
   suggestionCreated,
   suggestionAccepted,
+  walletConfigUpdated,
 };
