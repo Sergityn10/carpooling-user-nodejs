@@ -786,6 +786,28 @@ app.get(
   walletConfig.getMyWalletConfig,
 );
 
+// --- Admin Stripe Onboarding ---
+app.get(
+  "/api/admin/stripe-connect/:userId",
+  authorization.onlyAdmin,
+  payment.adminGetStripeConnectAccount,
+);
+app.post(
+  "/api/admin/stripe-connect/:userId",
+  authorization.onlyAdmin,
+  payment.adminCreateStripeConnectAccount,
+);
+app.post(
+  "/api/admin/stripe-connect/:userId/account-link",
+  authorization.onlyAdmin,
+  payment.adminCreateAccountLink,
+);
+app.post(
+  "/api/admin/stripe-connect/:userId/login-link",
+  authorization.onlyAdmin,
+  payment.adminCreateLoginLink,
+);
+
 app.use((req, res, next) => {
   next(
     new AppError(

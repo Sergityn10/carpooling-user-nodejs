@@ -11,6 +11,8 @@ import { DEFAULT_CONFIG as DEFAULT_WALLET_CONFIG } from "./walletConfig.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { eventBus } from "../services/eventBus.js";
+import Stripe from "stripe";
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const updateUserPatch = catchAsync(async (req, res, next) => {
   const result = UserSchemas.validateUserSchemaPartial(req.body);
@@ -347,16 +349,37 @@ const getUserInfo = catchAsync(async (req, res, next) => {
     cryptoUtils.USER_SENSITIVE_FIELDS,
   );
 
-  const [receivedComments, givenComments, userPreferences, walletConfigRow] =
-    await Promise.all([
-      prisma.comment.findMany({ where: { user_id_trayect: id } }),
-      prisma.comment.findMany({ where: { user_id_commentator: id } }),
-      prisma.userPreference.findMany({
-        where: { user_id: id },
-        select: { pref_key: true, value: true },
-      }),
-      prisma.walletConfig.findUnique({ where: { user_id: id } }),
-    ]);
+  const [
+    receivedComments,
+    givenComments,
+    userPreferences,
+    walletConfigRow,
+    stripeAccount,
+    walletAccount,
+  ] = await Promise.all([
+    prisma.comment.findMany({ where: { user_id_trayect: id } }),
+    prisma.comment.findMany({ where: { user_id_commentator: id } }),
+    prisma.userPreference.findMany({
+      where: { user_id: id },
+      select: { pref_key: true, value: true },
+    }),
+    prisma.walletConfig.findUnique({ where: { user_id: id } }),
+    rawUser.stripe_account
+      ? stripe.accounts
+          .retrieve(rawUser.stripe_account)
+          .then((acc) => ({
+            charges_enabled: acc.charges_enabled,
+            transfers_enabled: acc.transfers_enabled,
+            details_submitted: acc.details_submitted,
+            payouts_enabled: acc.payouts_enabled,
+          }))
+          .catch(() => null)
+      : Promise.resolve(null),
+    prisma.walletAccount.findFirst({
+      where: { user_id: String(id), currency: "eur" },
+      select: { id: true, balance: true, status: true },
+    }),
+  ]);
 
   const numOpinions = receivedComments.length;
   const averageRating =
@@ -396,6 +419,20 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       wallet_config: walletConfigRow ?? {
         user_id: id,
         ...DEFAULT_WALLET_CONFIG,
+      },
+      monedero: {
+        disponible:
+          Boolean(stripeAccount?.charges_enabled) &&
+          Boolean(stripeAccount?.transfers_enabled),
+        stripe_account: Boolean(rawUser.stripe_account),
+        stripe_account_id: rawUser.stripe_account ?? null,
+        stripe_customer_account: rawUser.stripe_customer_account ?? null,
+        onboarding_completado: Boolean(rawUser.onboarding_ended),
+        charges_enabled: Boolean(stripeAccount?.charges_enabled),
+        transfers_enabled: Boolean(stripeAccount?.transfers_enabled),
+        details_submitted: Boolean(stripeAccount?.details_submitted),
+        wallet_activa: walletAccount?.status === "active",
+        wallet_balance: walletAccount ? Number(walletAccount.balance) : 0,
       },
     },
   });
@@ -595,6 +632,7 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
     carCount,
     stripeAccount,
     walletAccount,
+    walletConfigRow,
   ] = await Promise.all([
     prisma.comment.findMany({ where: { user_id_trayect: findUser.id } }),
     prisma.comment.findMany({ where: { user_id_commentator: findUser.id } }),
@@ -604,19 +642,21 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
     }),
     prisma.car.count({ where: { user_id: String(findUser.id) } }),
     findUser.stripe_account
-      ? prisma.account.findUnique({
-          where: { stripe_account_id: findUser.stripe_account },
-          select: {
-            charges_enabled: true,
-            transfers_enabled: true,
-            details_submitted: true,
-          },
-        })
+      ? stripe.accounts
+          .retrieve(findUser.stripe_account)
+          .then((acc) => ({
+            charges_enabled: acc.charges_enabled,
+            transfers_enabled: acc.transfers_enabled,
+            details_submitted: acc.details_submitted,
+            payouts_enabled: acc.payouts_enabled,
+          }))
+          .catch(() => null)
       : Promise.resolve(null),
     prisma.walletAccount.findFirst({
       where: { user_id: String(findUser.id), currency: "eur" },
       select: { id: true, balance: true, status: true },
     }),
+    prisma.walletConfig.findUnique({ where: { user_id: String(findUser.id) } }),
   ]);
 
   const numOpinions = receivedComments.length;
@@ -646,12 +686,18 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
       Boolean(stripeAccount?.charges_enabled) &&
       Boolean(stripeAccount?.transfers_enabled),
     stripe_account: Boolean(findUser.stripe_account),
+    stripe_account_id: findUser.stripe_account ?? null,
+    stripe_customer_account: findUser.stripe_customer_account ?? null,
     onboarding_completado: Boolean(findUser.onboarding_ended),
     charges_enabled: Boolean(stripeAccount?.charges_enabled),
     transfers_enabled: Boolean(stripeAccount?.transfers_enabled),
     details_submitted: Boolean(stripeAccount?.details_submitted),
     wallet_activa: walletAccount?.status === "active",
     wallet_balance: walletAccount ? Number(walletAccount.balance) : 0,
+    config: walletConfigRow ?? {
+      user_id: findUser.id,
+      ...DEFAULT_WALLET_CONFIG,
+    },
     mensaje: !findUser.stripe_account
       ? "No tienes cuenta Stripe Connect configurada."
       : !findUser.onboarding_ended
