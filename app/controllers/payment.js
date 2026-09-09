@@ -2191,6 +2191,223 @@ const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
   });
 });
 
+// ===================== ADMIN STRIPE FUNCTIONS =====================
+
+const adminGetStripeConnectAccount = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(userId) },
+    select: { stripe_account: true, onboarding_ended: true },
+  });
+  if (!dbUser) {
+    return next(new AppError("Usuario no encontrado.", 404, "USER_NOT_FOUND"));
+  }
+  if (!dbUser.stripe_account) {
+    return next(
+      new AppError(
+        "Este usuario no tiene cuenta Stripe Connect.",
+        404,
+        "STRIPE_ACCOUNT_NOT_FOUND",
+      ),
+    );
+  }
+
+  const account = await stripe.accounts.retrieve(dbUser.stripe_account);
+
+  return res.status(200).send({
+    status: "Success",
+    account,
+    onboarding_ended: Boolean(dbUser.onboarding_ended),
+  });
+});
+
+const adminCreateStripeConnectAccount = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { return_url, refresh_url } = req.body;
+
+  if (!return_url || !refresh_url) {
+    return next(
+      new AppError(
+        "return_url y refresh_url son obligatorios.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(userId) },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      surname: true,
+      stripe_account: true,
+      onboarding_ended: true,
+    },
+  });
+  if (!dbUser) {
+    return next(new AppError("Usuario no encontrado.", 404, "USER_NOT_FOUND"));
+  }
+
+  if (dbUser.stripe_account && dbUser.onboarding_ended) {
+    return next(
+      new AppError(
+        "Este usuario ya tiene la cuenta Stripe configurada y el onboarding completado.",
+        400,
+        "STRIPE_ACCOUNT_EXISTS",
+      ),
+    );
+  }
+
+  let stripeAccountId = dbUser.stripe_account;
+
+  if (!stripeAccountId) {
+    const account = await stripe.accounts.create({
+      type: "express",
+      country: "ES",
+      email: dbUser.email,
+      business_type: "individual",
+      individual: {
+        email: dbUser.email,
+        first_name: dbUser.name || "",
+        last_name: dbUser.surname || "",
+      },
+      metadata: {
+        name: dbUser.name || "",
+        surname: dbUser.surname || "",
+        email: dbUser.email,
+        id: dbUser.id,
+        created_by_admin: String(req.user.id),
+      },
+      business_profile: {
+        mcc: "4121",
+        name:
+          [dbUser.name, dbUser.surname].filter(Boolean).join(" ") ||
+          dbUser.email,
+        product_description: "Usuario de la aplicación YouConnext",
+        support_email: dbUser.email,
+        url: "https://carpooling-webapp-ten.vercel.app",
+      },
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+    });
+
+    stripeAccountId = account.id;
+
+    await prisma.user.update({
+      where: { id: String(userId) },
+      data: { stripe_account: stripeAccountId, onboarding_ended: false },
+    });
+  }
+
+  const accountLink = await stripe.accountLinks.create({
+    account: stripeAccountId,
+    refresh_url,
+    return_url,
+    type: "account_onboarding",
+    collect: "eventually_due",
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe onboarding link created successfully",
+    accountLink,
+    stripe_account_id: stripeAccountId,
+  });
+});
+
+const adminCreateAccountLink = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { return_url, refresh_url } = req.body;
+
+  if (!return_url || !refresh_url) {
+    return next(
+      new AppError(
+        "return_url y refresh_url son obligatorios.",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(userId) },
+    select: { stripe_account: true },
+  });
+  if (!dbUser) {
+    return next(new AppError("Usuario no encontrado.", 404, "USER_NOT_FOUND"));
+  }
+  if (!dbUser.stripe_account) {
+    return next(
+      new AppError(
+        "Este usuario no tiene cuenta Stripe Connect. Usa POST /api/admin/stripe-connect/:userId para crearla.",
+        404,
+        "STRIPE_ACCOUNT_NOT_FOUND",
+      ),
+    );
+  }
+
+  const accountLink = await stripe.accountLinks.create({
+    account: dbUser.stripe_account,
+    refresh_url,
+    return_url,
+    type: "account_onboarding",
+    collect: "eventually_due",
+  });
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe onboarding link created successfully",
+    accountLink,
+  });
+});
+
+const adminCreateLoginLink = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { return_url } = req.body;
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: String(userId) },
+    select: { stripe_account: true, onboarding_ended: true },
+  });
+  if (!dbUser) {
+    return next(new AppError("Usuario no encontrado.", 404, "USER_NOT_FOUND"));
+  }
+  if (!dbUser.stripe_account) {
+    return next(
+      new AppError(
+        "Este usuario no tiene cuenta Stripe Connect.",
+        404,
+        "STRIPE_ACCOUNT_NOT_FOUND",
+      ),
+    );
+  }
+  if (!dbUser.onboarding_ended) {
+    return next(
+      new AppError(
+        "El onboarding no esta completado. Usa POST /api/admin/stripe-connect/:userId/account-link para generar el link de onboarding.",
+        400,
+        "STRIPE_ONBOARDING_INCOMPLETE",
+      ),
+    );
+  }
+
+  const loginLink = await stripe.accounts.createLoginLink(
+    dbUser.stripe_account,
+    return_url ? { redirect_url: return_url } : undefined,
+  );
+
+  return res.status(200).send({
+    status: "Success",
+    message: "Stripe login link created successfully",
+    loginLink,
+  });
+});
+
 export const methods = {
   createSession,
   createStripeConnectAccount,
@@ -2224,4 +2441,8 @@ export const methods = {
   getLinkedExternalAccounts,
   calculatePrice,
   cotizar,
+  adminGetStripeConnectAccount,
+  adminCreateStripeConnectAccount,
+  adminCreateAccountLink,
+  adminCreateLoginLink,
 };
