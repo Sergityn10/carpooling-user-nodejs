@@ -199,17 +199,8 @@ const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     );
   }
 
-  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-    /\/$/,
-    "",
-  );
-  const deepLink = req.body?.return_url || "youconnext://perfil";
-  const successUrl =
-    req.body?.success_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-  const cancelUrl =
-    req.body?.cancel_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const successUrl = req.body?.success_url;
+  const cancelUrl = req.body?.cancel_url;
 
   const pricing = calculateTotalPrice(amount);
 
@@ -360,17 +351,8 @@ const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     select: { name: true },
   });
 
-  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-    /\/$/,
-    "",
-  );
-  const deepLink = req.body?.return_url || "youconnext://perfil";
-  const successUrl =
-    req.body?.success_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-  const cancelUrl =
-    req.body?.cancel_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const successUrl = req.body?.success_url;
+  const cancelUrl = req.body?.cancel_url;
 
   const amount = paymentIntent.amount;
   const trayectoId =
@@ -483,28 +465,7 @@ const createStripeConnectAccount = catchAsync(async (req, res, next) => {
   });
   const existingStripeAccount = existingUser?.stripe_account;
   const onboardingEnded = Boolean(existingUser?.onboarding_ended);
-  const normalizeOriginUrl = (originRaw) => {
-    const raw = String(originRaw ?? "").trim();
-    const withProto = /^https?:\/\//i.test(raw)
-      ? raw
-      : `${process.env.NODE_ENV === "production" ? "https" : "http"}://${raw}`;
-    const url = new URL(withProto);
-    url.hash = "";
-    url.search = "";
-    return url;
-  };
-
-  let originUrl;
-  try {
-    originUrl = normalizeOriginUrl(process.env.ORIGIN);
-  } catch (_e) {
-    return next(
-      new AppError("Invalid ORIGIN URL configuration", 500, "SERVER_ERROR"),
-    );
-  }
-
-  const refreshReturnUrl = originUrl.toString();
-  const businessProfileUrl = new URL("/show", originUrl).toString();
+  const refreshReturnUrl = req.body?.return_url || req.body?.refresh_url;
 
   if (existingStripeAccount) {
     if (onboardingEnded) {
@@ -1753,15 +1714,8 @@ const getWalletPayouts = catchAsync(async (req, res, next) => {
 const createAccountLink = catchAsync(async (req, res, next) => {
   const user = req.user;
 
-  const deepLink = req.body?.return_url || "youconnext://perfil";
-  const refreshDeepLink = req.body?.refresh_url || deepLink;
-
-  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-    /\/$/,
-    "",
-  );
-  const returnUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-  const refreshUrl = `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(refreshDeepLink)}`;
+  const returnUrl = req.body?.return_url;
+  const refreshUrl = req.body?.refresh_url;
 
   const dbUser = await prisma.user.findUnique({
     where: { id: String(user.id) },
@@ -2134,18 +2088,8 @@ const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
     select: { name: true },
   });
 
-  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
-    /\/$/,
-    "",
-  );
-  const deepLink =
-    req.body?.return_url || req.query?.return_url || "youconnext://perfil";
-  const successUrl =
-    req.body?.success_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
-  const cancelUrl =
-    req.body?.cancel_url ||
-    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const successUrl = req.body?.success_url || req.query?.success_url;
+  const cancelUrl = req.body?.cancel_url || req.query?.cancel_url;
 
   const netPriceCents = paymentIntent?.metadata?.net_price_cents
     ? parseInt(paymentIntent.metadata.net_price_cents, 10)
