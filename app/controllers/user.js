@@ -373,7 +373,22 @@ const getUserInfo = catchAsync(async (req, res, next) => {
             details_submitted: acc.details_submitted,
             payouts_enabled: acc.payouts_enabled,
           }))
-          .catch(() => null)
+          .catch((err) => {
+            console.error(
+              "[getUserInfo] Error retrieving Stripe account:",
+              err?.message ?? err,
+            );
+            return prisma.account
+              .findUnique({
+                where: { stripe_account_id: rawUser.stripe_account },
+                select: {
+                  charges_enabled: true,
+                  transfers_enabled: true,
+                  details_submitted: true,
+                },
+              })
+              .catch(() => null);
+          })
       : Promise.resolve(null),
     prisma.walletAccount.findFirst({
       where: { user_id: String(id), currency: "eur" },
@@ -650,7 +665,22 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
             details_submitted: acc.details_submitted,
             payouts_enabled: acc.payouts_enabled,
           }))
-          .catch(() => null)
+          .catch((err) => {
+            console.error(
+              "[getMyUserInfo] Error retrieving Stripe account:",
+              err?.message ?? err,
+            );
+            return prisma.account
+              .findUnique({
+                where: { stripe_account_id: findUser.stripe_account },
+                select: {
+                  charges_enabled: true,
+                  transfers_enabled: true,
+                  details_submitted: true,
+                },
+              })
+              .catch(() => null);
+          })
       : Promise.resolve(null),
     prisma.walletAccount.findFirst({
       where: { user_id: String(findUser.id), currency: "eur" },

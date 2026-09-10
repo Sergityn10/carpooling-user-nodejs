@@ -217,6 +217,18 @@ async function paymentCheckoutCreated(
   });
 }
 
+async function paymentLinkCreated(
+  idReserva,
+  stripeUrl,
+  stripeCheckoutSessionId,
+) {
+  await rabbitmq.publish("payment.link.created", {
+    id_reserva: idReserva ?? null,
+    stripe_url: stripeUrl,
+    stripe_checkout_session_id: stripeCheckoutSessionId,
+  });
+}
+
 async function enterpriseServiceEventCreated(
   serviceEventId,
   enterpriseId,
@@ -297,6 +309,7 @@ export const eventBus = {
   payoutUpdated,
   checkoutSessionExpired,
   paymentCheckoutCreated,
+  paymentLinkCreated,
   enterpriseServiceEventCreated,
   enterpriseServiceEventUpdated,
   enterpriseServiceEventDeleted,
