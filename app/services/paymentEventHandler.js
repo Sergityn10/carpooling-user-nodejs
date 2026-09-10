@@ -307,6 +307,20 @@ async function handleReservaPaymentRequired(event) {
     );
   }
 
+  try {
+    await eventBus.paymentLinkCreated(
+      String(id_reserva),
+      checkout_session.url,
+      checkout_session.id,
+    );
+    console.log("[paymentEventHandler] Event payment.link.created emitted");
+  } catch (err) {
+    console.error(
+      "[paymentEventHandler] Failed to emit payment.link.created:",
+      err?.message ?? err,
+    );
+  }
+
   console.log(
     "[paymentEventHandler] Checkout session created for reserva",
     id_reserva,
@@ -549,6 +563,22 @@ async function handleReservaPaymentResume(event) {
   } catch (err) {
     console.error(
       "[paymentEventHandler] Failed to emit payment.checkout.created:",
+      err?.message ?? err,
+    );
+  }
+
+  try {
+    await eventBus.paymentLinkCreated(
+      String(id_reserva),
+      checkout_session.url,
+      checkout_session.id,
+    );
+    console.log(
+      "[paymentEventHandler] Event payment.link.created emitted for resume",
+    );
+  } catch (err) {
+    console.error(
+      "[paymentEventHandler] Failed to emit payment.link.created:",
       err?.message ?? err,
     );
   }
