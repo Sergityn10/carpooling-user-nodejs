@@ -116,17 +116,22 @@ const rechargeWalletUser = catchAsync(async (req, res, next) => {
 });
 
 const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
-  const { amount, id_reserva, description, recipient_user_id } = req.body;
+  const {
+    amount,
+    currency = "eur",
+    description,
+    success_url,
+    cancel_url,
+    recipient_user_id,
+    id_reserva: idReservaBody,
+  } = req.body;
   const user = req.user;
-
+  const metadata = req.body.metadata || {};
+  const paymentMode = req.body.payment_mode || "reserva";
+  const id_reserva = idReservaBody || metadata?.id_reserva || null;
   const trayectoIdRaw =
-    req.body?.id_trayecto ?? req.body?.trayectoId ?? req.body?.trayecto_id;
+    req.body?.id_trayecto ?? req.body?.metadata?.id_trayecto ?? null;
   const trayectoId = trayectoIdRaw != null ? String(trayectoIdRaw) : null;
-  if (!trayectoId) {
-    return next(
-      new AppError("Missing or invalid id_trayecto", 400, "VALIDATION_ERROR"),
-    );
-  }
 
   if (!recipient_user_id) {
     return next(
@@ -180,27 +185,52 @@ const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     );
   }
 
-  const recipientAccount = await prisma.account.findUnique({
-    where: { stripe_account_id: recipient.stripe_account },
-    select: {
-      charges_enabled: true,
-      transfers_enabled: true,
-      details_submitted: true,
-    },
-  });
+  let recipientAccount;
+  try {
+    const stripeAccount = await stripe.accounts.retrieve(
+      recipient.stripe_account,
+    );
+    recipientAccount = {
+      charges_enabled: stripeAccount.charges_enabled,
+      transfers_enabled: stripeAccount.transfers_enabled,
+      details_submitted: stripeAccount.details_submitted,
+    };
+  } catch (err) {
+    recipientAccount = await prisma.account.findUnique({
+      where: { stripe_account_id: recipient.stripe_account },
+      select: {
+        charges_enabled: true,
+        transfers_enabled: true,
+        details_submitted: true,
+      },
+    });
+  }
 
-  if (!recipientAccount || !recipientAccount.transfers_enabled) {
+  const canReceivePayments =
+    recipientAccount?.charges_enabled === true ||
+    recipientAccount?.transfers_enabled === true;
+
+  if (!recipientAccount || !canReceivePayments) {
     return next(
       new AppError(
-        "Recipient has not completed Stripe onboarding or transfers are not enabled. The recipient must complete onboarding before receiving payments.",
+        "Recipient has not completed Stripe onboarding or charges are not enabled. The recipient must complete onboarding before receiving payments.",
         400,
         "STRIPE_ONBOARDING_INCOMPLETE",
       ),
     );
   }
 
-  const successUrl = req.body?.success_url;
-  const cancelUrl = req.body?.cancel_url;
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink = "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
 
   const pricing = calculateTotalPrice(amount);
 
@@ -261,7 +291,40 @@ const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     mode: "payment",
     success_url: successUrl,
     cancel_url: cancelUrl,
+    expand: ["payment_intent"],
   });
+
+  const piId =
+    typeof checkout_session.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : checkout_session.payment_intent?.id;
+
+  if (piId && id_reserva) {
+    await prisma.paymentIntent.upsert({
+      where: { stripe_payment_id: piId },
+      create: {
+        stripe_payment_id: piId,
+        amount: pricing.total_cents,
+        currency: "eur",
+        description: description || undefined,
+        destination_account: recipient.stripe_account,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
+      update: {
+        amount: pricing.total_cents,
+        currency: "eur",
+        description: description || undefined,
+        destination_account: recipient.stripe_account,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
+    });
+  }
 
   return res.status(200).send({
     ...checkout_session,
@@ -351,8 +414,17 @@ const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     select: { name: true },
   });
 
-  const successUrl = req.body?.success_url;
-  const cancelUrl = req.body?.cancel_url;
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink = "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
 
   const amount = paymentIntent.amount;
   const trayectoId =
@@ -432,19 +504,49 @@ const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
       ? checkout_session.payment_intent
       : checkout_session.payment_intent?.id;
 
-  await prisma.paymentIntent.create({
-    data: {
-      stripe_payment_id: piId,
-      amount: pricing.total_cents,
-      currency: String(paymentIntent.currency || "eur"),
-      description: dbPaymentIntent?.description ?? undefined,
-      destination_account: destinationAccount,
-      sender_account: sender.stripe_account ?? undefined,
-      state: "pending",
-      checkout_session_id: checkout_session.id,
-      id_reserva: String(id_reserva),
-    },
-  });
+  const currencyValue = String(paymentIntent.currency || "eur").toLowerCase();
+
+  if (piId) {
+    await prisma.paymentIntent.upsert({
+      where: { stripe_payment_id: piId },
+      create: {
+        stripe_payment_id: piId,
+        amount: pricing.total_cents,
+        currency: currencyValue,
+        description: dbPaymentIntent?.description ?? undefined,
+        destination_account: destinationAccount,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
+      update: {
+        amount: pricing.total_cents,
+        currency: currencyValue,
+        description: dbPaymentIntent?.description ?? undefined,
+        destination_account: destinationAccount,
+        sender_account: sender.stripe_account ?? undefined,
+        state: "pending",
+        checkout_session_id: checkout_session.id,
+        id_reserva: String(id_reserva),
+      },
+    });
+  } else {
+    const latestPI = await prisma.paymentIntent.findFirst({
+      where: { id_reserva: String(id_reserva) },
+      orderBy: { created_at: "desc" },
+      select: { stripe_payment_id: true },
+    });
+    if (latestPI) {
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: latestPI.stripe_payment_id },
+        data: {
+          state: "pending",
+          checkout_session_id: checkout_session.id,
+        },
+      });
+    }
+  }
 
   return res.status(200).send({
     status: "Success",
@@ -2088,8 +2190,19 @@ const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
     select: { name: true },
   });
 
-  const successUrl = req.body?.success_url || req.query?.success_url;
-  const cancelUrl = req.body?.cancel_url || req.query?.cancel_url;
+  const myOrigin = (process.env.MY_ORIGIN || "http://localhost:4000").replace(
+    /\/$/,
+    "",
+  );
+  const deepLink = "youconnext://perfil";
+  const successUrl =
+    req.body?.success_url ||
+    req.query?.success_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
+  const cancelUrl =
+    req.body?.cancel_url ||
+    req.query?.cancel_url ||
+    `${myOrigin}/api/payment/stripe-redirect?target=${encodeURIComponent(deepLink)}`;
 
   const netPriceCents = paymentIntent?.metadata?.net_price_cents
     ? parseInt(paymentIntent.metadata.net_price_cents, 10)
@@ -2169,6 +2282,16 @@ const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
   await prisma.paymentIntent.create({
     data: {
       stripe_payment_id: newPiId,
+      amount: pricing.total_cents,
+      currency: String(paymentIntent.currency || "eur"),
+      description: dbPaymentIntent?.description ?? undefined,
+      destination_account: destinationAccount,
+      sender_account: sender.stripe_account ?? undefined,
+      state: "pending",
+      checkout_session_id: newCheckoutSession.id,
+      id_reserva: String(id_reserva),
+    },
+    update: {
       amount: pricing.total_cents,
       currency: String(paymentIntent.currency || "eur"),
       description: dbPaymentIntent?.description ?? undefined,
