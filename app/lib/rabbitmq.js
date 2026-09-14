@@ -11,42 +11,55 @@ const RECONNECT_INTERVAL_MS = 5000;
 let connection = null;
 let channel = null;
 let isConnecting = false;
+let pendingConnection = null;
 
 async function connect() {
-  if (isConnecting) return;
+  if (isConnecting && pendingConnection) {
+    return pendingConnection;
+  }
+  if (channel) {
+    return channel;
+  }
   isConnecting = true;
 
-  try {
-    connection = await amqp.connect(RABBITMQ_URL);
-    channel = await connection.createChannel();
-    await channel.assertExchange(EXCHANGE_NAME, EXCHANGE_TYPE, {
-      durable: true,
-    });
+  pendingConnection = (async () => {
+    try {
+      connection = await amqp.connect(RABBITMQ_URL);
+      channel = await connection.createChannel();
+      await channel.assertExchange(EXCHANGE_NAME, EXCHANGE_TYPE, {
+        durable: true,
+      });
 
-    console.log("[rabbitmq] Connected and exchange asserted:", EXCHANGE_NAME);
+      console.log("[rabbitmq] Connected and exchange asserted:", EXCHANGE_NAME);
 
-    connection.on("close", () => {
-      console.warn("[rabbitmq] Connection closed. Reconnecting...");
+      connection.on("close", () => {
+        console.warn("[rabbitmq] Connection closed. Reconnecting...");
+        connection = null;
+        channel = null;
+        isConnecting = false;
+        pendingConnection = null;
+        setTimeout(connect, RECONNECT_INTERVAL_MS);
+      });
+
+      connection.on("error", (err) => {
+        console.error("[rabbitmq] Connection error:", err?.message ?? err);
+      });
+    } catch (error) {
+      console.error(
+        "[rabbitmq] Failed to connect:",
+        error?.message ?? error,
+        `Retrying in ${RECONNECT_INTERVAL_MS}ms...`,
+      );
       connection = null;
       channel = null;
+      pendingConnection = null;
       setTimeout(connect, RECONNECT_INTERVAL_MS);
-    });
+    } finally {
+      isConnecting = false;
+    }
+  })();
 
-    connection.on("error", (err) => {
-      console.error("[rabbitmq] Connection error:", err?.message ?? err);
-    });
-  } catch (error) {
-    console.error(
-      "[rabbitmq] Failed to connect:",
-      error?.message ?? error,
-      `Retrying in ${RECONNECT_INTERVAL_MS}ms...`,
-    );
-    connection = null;
-    channel = null;
-    setTimeout(connect, RECONNECT_INTERVAL_MS);
-  } finally {
-    isConnecting = false;
-  }
+  return pendingConnection;
 }
 
 async function getChannel() {
@@ -60,7 +73,10 @@ async function publish(routingKey, payload) {
   try {
     const ch = await getChannel();
     if (!ch) {
-      console.warn("[rabbitmq] No channel available, skipping publish");
+      console.warn(
+        "[rabbitmq] No channel available, skipping publish:",
+        routingKey,
+      );
       return false;
     }
     const message = Buffer.from(
@@ -71,10 +87,12 @@ async function publish(routingKey, payload) {
         data: payload,
       }),
     );
-    return ch.publish(EXCHANGE_NAME, routingKey, message, {
+    const published = ch.publish(EXCHANGE_NAME, routingKey, message, {
       persistent: true,
       contentType: "application/json",
     });
+    console.log("[rabbitmq] Publish result for", routingKey, ":", published);
+    return published;
   } catch (error) {
     console.error(
       `[rabbitmq] Publish error for "${routingKey}":`,

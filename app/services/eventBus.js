@@ -96,14 +96,17 @@ async function paymentIntentCreated(
   idReserva,
   mappedStatus,
 ) {
-  await rabbitmq.publish("payment_intent.created", {
+  const payload = {
     payment_intent_id: paymentIntentId,
     amount,
     currency,
     state,
     mapped_status: mappedStatus ?? null,
     id_reserva: idReserva ?? null,
-  });
+  };
+  console.log("[eventBus] Publishing payment_intent.created:", payload);
+  await rabbitmq.publish("payment_intent.created", payload);
+  console.log("[eventBus] payment_intent.created published successfully");
 }
 
 async function paymentIntentSucceeded(
@@ -114,14 +117,17 @@ async function paymentIntentSucceeded(
   receiverUserId,
   idReserva,
 ) {
-  await rabbitmq.publish("payment_intent.succeeded", {
+  const payload = {
     payment_intent_id: paymentIntentId,
     amount,
     currency,
     payer_user_id: payerUserId,
     receiver_user_id: receiverUserId,
     id_reserva: idReserva ?? null,
-  });
+  };
+  console.log("[eventBus] Publishing payment_intent.succeeded:", payload);
+  await rabbitmq.publish("payment_intent.succeeded", payload);
+  console.log("[eventBus] payment_intent.succeeded published successfully");
 }
 
 async function paymentIntentFailed(paymentIntentId, idReserva, mappedStatus) {
@@ -142,7 +148,7 @@ async function paymentIntentCaptured(
   netAmountCents,
   commissionAmountCents,
 ) {
-  await rabbitmq.publish("payment_intent.captured", {
+  const payload = {
     payment_intent_id: paymentIntentId,
     id_reserva: idReserva ?? null,
     gross_amount_cents: grossAmountCents,
@@ -151,7 +157,10 @@ async function paymentIntentCaptured(
     currency,
     payer_user_id: payerUserId,
     receiver_user_id: receiverUserId,
-  });
+  };
+  console.log("[eventBus] Publishing payment_intent.captured:", payload);
+  await rabbitmq.publish("payment_intent.captured", payload);
+  console.log("[eventBus] payment_intent.captured published successfully");
 }
 
 async function paymentIntentCanceled(paymentIntentId, idReserva, mappedStatus) {

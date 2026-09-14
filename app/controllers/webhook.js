@@ -160,6 +160,12 @@ async function handleStripeEvent(req, res) {
   const jsonData = req.body;
   const data = JSON.stringify(req.body);
 
+  console.log("[webhook] handleStripeEvent called:", {
+    type: jsonData?.type,
+    id: jsonData?.id,
+    source,
+  });
+
   if (
     jsonData.type === "account.created" ||
     jsonData.type === "account.updated"
@@ -205,6 +211,8 @@ async function handleStripeEvent(req, res) {
   if (String(jsonData.type ?? "").startsWith("payout.")) {
     await handlePayoutEvent(jsonData);
   }
+
+  console.log("[webhook] handleStripeEvent finished:", jsonData?.type);
 }
 async function handleCustomerDeleted(jsonData) {}
 async function handleChargeSucceeded(jsonData) {}
@@ -365,9 +373,19 @@ async function handlePayoutEvent(stripeEvent) {
 }
 async function handlePaymentIntentCreated(jsonData) {
   const paymentIntent = jsonData.object;
+  console.log("[webhook] payment_intent.created received:", {
+    id: paymentIntent?.id,
+    status: paymentIntent?.status,
+    amount: paymentIntent?.amount,
+    currency: paymentIntent?.currency,
+    metadata: paymentIntent?.metadata,
+  });
 
   const stripePaymentIntentId = paymentIntent?.id ?? null;
   if (!stripePaymentIntentId) {
+    console.log(
+      "[webhook] payment_intent.created: no stripePaymentIntentId, aborting",
+    );
     return;
   }
 
@@ -380,6 +398,43 @@ async function handlePaymentIntentCreated(jsonData) {
   const senderAccount = paymentIntent?.metadata?.sender_account ?? null;
   const description = paymentIntent?.description ?? null;
   const id_reserva = paymentIntent?.metadata?.id_reserva ?? null;
+
+  if (id_reserva) {
+    const mappedStatus = state === "succeeded" ? "completed" : "pending";
+    console.log(
+      "[webhook] payment_intent.created: publishing event for reserva",
+      {
+        stripePaymentIntentId,
+        amount,
+        currency,
+        state,
+        id_reserva,
+        mappedStatus,
+      },
+    );
+    await eventBus.paymentIntentCreated(
+      stripePaymentIntentId,
+      amount,
+      currency,
+      state,
+      id_reserva,
+      mappedStatus,
+    );
+    console.log(
+      "[webhook] payment_intent.created: event published successfully",
+    );
+  } else {
+    console.log(
+      "[webhook] payment_intent.created: no id_reserva in metadata, publishing without reserva",
+    );
+    await eventBus.paymentIntentCreated(
+      stripePaymentIntentId,
+      amount,
+      currency,
+      state,
+      id_reserva,
+    );
+  }
 
   await prisma.paymentIntent.upsert({
     where: { stripe_payment_id: stripePaymentIntentId },
@@ -405,26 +460,6 @@ async function handlePaymentIntentCreated(jsonData) {
       id_reserva: id_reserva ?? undefined,
     },
   });
-
-  if (id_reserva) {
-    const mappedStatus = state === "succeeded" ? "completed" : "pending";
-    await eventBus.paymentIntentCreated(
-      stripePaymentIntentId,
-      amount,
-      currency,
-      state,
-      id_reserva,
-      mappedStatus,
-    );
-  } else {
-    await eventBus.paymentIntentCreated(
-      stripePaymentIntentId,
-      amount,
-      currency,
-      state,
-      id_reserva,
-    );
-  }
 }
 
 async function handlePaymentIntentUpdated(jsonData) {
@@ -449,21 +484,35 @@ async function handlePaymentIntentUpdated(jsonData) {
 }
 async function handlePaymentIntentSucceeded(jsonData) {
   const paymentIntent = jsonData.object;
+  console.log("[webhook] payment_intent.succeeded received:", {
+    payment_intent_id: paymentIntent?.id,
+    status: paymentIntent?.status,
+    amount_received: paymentIntent?.amount_received,
+    amount: paymentIntent?.amount,
+    currency: paymentIntent?.currency,
+    metadata: paymentIntent?.metadata,
+  });
 
   try {
     await prisma.paymentIntent.update({
       where: { stripe_payment_id: paymentIntent.id },
       data: { state: String(paymentIntent.status) },
     });
+    console.log("[webhook] PaymentIntent updated in DB:", {
+      stripe_payment_id: paymentIntent.id,
+      state: paymentIntent.status,
+    });
   } catch (_) {}
 
   let id_reserva = paymentIntent?.metadata?.id_reserva;
   if (!id_reserva) {
+    console.log("[webhook] id_reserva not in metadata, querying DB...");
     const paymentIntentRow = await prisma.paymentIntent.findUnique({
       where: { stripe_payment_id: paymentIntent.id },
       select: { id_reserva: true },
     });
     id_reserva = paymentIntentRow?.id_reserva;
+    console.log("[webhook] id_reserva from DB:", id_reserva);
   }
   const stripePaymentIntentId = paymentIntent?.id ?? null;
   const currency = String(paymentIntent?.currency ?? "eur").toLowerCase();
@@ -492,6 +541,10 @@ async function handlePaymentIntentSucceeded(jsonData) {
   const paymentDescription = String(paymentIntentRow?.description ?? "");
 
   if (!senderAccount || !destinationAccount) {
+    console.log("[webhook] Missing sender or destination account, aborting:", {
+      senderAccount,
+      destinationAccount,
+    });
     return;
   }
 
@@ -506,11 +559,22 @@ async function handlePaymentIntentSucceeded(jsonData) {
 
   const payerUserId = payerUser?.id ?? null;
   const receiverUserId = receiverUser?.id ?? null;
+  console.log("[webhook] Resolved users:", {
+    payerUserId,
+    receiverUserId,
+    platformUserId:
+      process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID,
+  });
 
   const platformUserId =
     process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? null;
 
   if (!payerUserId || !receiverUserId || !platformUserId) {
+    console.error("[webhook] Missing required user IDs:", {
+      payerUserId,
+      receiverUserId,
+      platformUserId,
+    });
     throw new Error(
       "Missing payer/receiver/platform user id for wallet transactions",
     );
@@ -550,6 +614,11 @@ async function handlePaymentIntentSucceeded(jsonData) {
   }
 
   if (netAmountCents < 0) {
+    console.error("[webhook] Invalid commission calculation:", {
+      grossAmountCents,
+      netAmountCents,
+      commissionAmountCents,
+    });
     throw new Error("Invalid commission calculation (net < 0)");
   }
 
@@ -578,6 +647,10 @@ async function handlePaymentIntentSucceeded(jsonData) {
       console.log(
         "[webhook] Event payment_intent.captured emitted successfully for reserva",
         id_reserva,
+      );
+    } else {
+      console.log(
+        "[webhook] No id_reserva, skipping payment_intent.captured event",
       );
     }
 
@@ -810,8 +883,16 @@ async function handleCheckoutSessionUpdated(jsonData) {}
 async function handleCheckoutSessionCompleted(stripeEvent) {
   const sessionFromEvent = stripeEvent?.data?.object;
   if (!sessionFromEvent) {
+    console.log("[webhook] checkout.session.completed: no session in event");
     return;
   }
+
+  console.log("[webhook] checkout.session.completed received:", {
+    id: sessionFromEvent?.id,
+    status: sessionFromEvent?.status,
+    payment_status: sessionFromEvent?.payment_status,
+    metadata: sessionFromEvent?.metadata,
+  });
 
   let checkout_session = sessionFromEvent;
   try {
@@ -830,17 +911,12 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
       ? checkout_session.payment_intent
       : (checkout_session?.payment_intent?.id ?? null);
 
-  if (paymentIntentId) {
-    try {
-      await prisma.paymentIntent.update({
-        where: { stripe_payment_id: paymentIntentId },
-        data: {
-          state: "checkout_completed",
-          checkout_session_id: checkout_session?.id ?? undefined,
-        },
-      });
-    } catch (_) {}
-  }
+  console.log("[webhook] checkout.session.completed processed:", {
+    type,
+    paymentIntentId,
+    payment_intent: checkout_session?.payment_intent,
+    metadata: checkout_session?.metadata,
+  });
 
   if (type === "recharge") {
     return;
@@ -848,18 +924,49 @@ async function handleCheckoutSessionCompleted(stripeEvent) {
 
   if (type === "reserva") {
     const id_reserva = checkout_session?.metadata?.id_reserva;
+    console.log("[webhook] checkout.session.completed: reserva type", {
+      id_reserva,
+      paymentIntentId,
+    });
     if (id_reserva) {
+      console.log(
+        "[webhook] checkout.session.completed: publishing paymentIntentCreated event",
+      );
       await eventBus.paymentIntentCreated(
         paymentIntentId,
         null,
         null,
         "checkout_completed",
         id_reserva,
-        "pending",
+        "completed",
       );
+      console.log(
+        "[webhook] checkout.session.completed: event published successfully",
+      );
+    } else {
+      console.log(
+        "[webhook] checkout.session.completed: no id_reserva in metadata, skipping event",
+      );
+    }
+
+    if (paymentIntentId) {
+      try {
+        await prisma.paymentIntent.update({
+          where: { stripe_payment_id: paymentIntentId },
+          data: {
+            state: "checkout_completed",
+            checkout_session_id: checkout_session?.id ?? undefined,
+          },
+        });
+      } catch (_) {}
     }
     return;
   }
+
+  console.log(
+    "[webhook] checkout.session.completed: type is not reserva or recharge, type =",
+    type,
+  );
 }
 
 async function handleCheckoutSessionExpired(jsonData) {
