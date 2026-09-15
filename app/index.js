@@ -26,6 +26,7 @@ import { methods as suggestions } from "./controllers/suggestions.js";
 import { methods as caeReports } from "./controllers/cae-reports.js";
 import { methods as legalConsent } from "./controllers/legalConsent.js";
 import { methods as walletConfig } from "./controllers/walletConfig.js";
+import { methods as account } from "./controllers/account.js";
 import errorHandler from "./middlewares/errorHandler.js";
 import AppError from "./utils/appError.js";
 import { paymentEventHandler } from "./services/paymentEventHandler.js";
@@ -806,6 +807,30 @@ app.post(
   "/api/admin/stripe-connect/:userId/login-link",
   authorization.onlyAdmin,
   payment.adminCreateLoginLink,
+);
+
+// --- Admin Accounts (Stripe Connect states) ---
+app.get("/api/admin/accounts", authorization.onlyAdmin, account.listAccounts);
+app.get(
+  "/api/admin/accounts/:stripeAccountId",
+  authorization.onlyAdmin,
+  account.getAccount,
+);
+app.post("/api/admin/accounts", authorization.onlyAdmin, account.createAccount);
+app.patch(
+  "/api/admin/accounts/:stripeAccountId",
+  authorization.onlyAdmin,
+  account.updateAccount,
+);
+app.delete(
+  "/api/admin/accounts/:stripeAccountId",
+  authorization.onlyAdmin,
+  account.deleteAccount,
+);
+app.post(
+  "/api/admin/accounts/sync/:userId",
+  authorization.onlyAdmin,
+  account.syncAccountFromStripe,
 );
 
 app.use((req, res, next) => {
