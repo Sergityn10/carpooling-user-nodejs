@@ -379,6 +379,7 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       select: { id: true, balance: true, status: true },
     }),
   ]);
+  console.log(stripeAccount)
 
   const numOpinions = receivedComments.length;
   const averageRating =
