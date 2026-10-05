@@ -648,6 +648,11 @@ app.delete("/api/events/:id", authorization.onlyAdmin, events.deleteEvent);
 app.post("/api/events/:id/join", authorization.isLoged, events.joinEvent);
 app.delete("/api/events/:id/join", authorization.isLoged, events.leaveEvent);
 app.get("/api/events/:id/participants", events.getEventParticipants);
+app.get(
+  "/api/events/:id/participants/details",
+  authorization.isLoged,
+  events.getEventParticipantsDetailed,
+);
 
 // --- CAE Reports ---
 app.get(

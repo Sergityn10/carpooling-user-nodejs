@@ -6,6 +6,7 @@ import { eventBus } from "../services/eventBus.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
+import { GeoPoint } from "../utils/geoPoint.js";
 dotenv.config();
 
 function generateUniqueCode() {
@@ -357,58 +358,79 @@ const deleteTag = catchAsync(async (req, res, next) => {
 });
 
 const getNearbyEvents = catchAsync(async (req, res, next) => {
-  const { lat, lng, radius = 50, tag, limit = 20 } = req.query;
+  const { lat, lng, radius = 50, tag, limit = 20, page = 1 } = req.query;
 
-  if (!lat || !lng) {
+  if (lat === undefined || lat === null || lng === undefined || lng === null) {
     return next(
       new AppError("lat and lng are required", 400, "VALIDATION_ERROR"),
     );
   }
 
-  const userLat = parseFloat(lat);
-  const userLng = parseFloat(lng);
-  const radiusKm = parseFloat(radius);
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+  let userPoint;
+  try {
+    userPoint = new GeoPoint(lat, lng);
+  } catch (err) {
+    return next(
+      new AppError(err.message, 400, "VALIDATION_ERROR"),
+    );
+  }
+
+  const radiusKm = Math.max(0.1, parseFloat(radius) || 50);
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const skip = (pageNum - 1) * limitNum;
+
+  // Pre-filtrado mediante Bounding Box para optimización con índices
+  const bbox = userPoint.getBoundingBox(radiusKm);
 
   const where = {
-    latitude: { not: null },
-    longitude: { not: null },
+    latitude: {
+      gte: bbox.minLat,
+      lte: bbox.maxLat,
+    },
+    longitude: {
+      gte: bbox.minLng,
+      lte: bbox.maxLng,
+    },
     end_date: { gte: new Date() },
   };
+
   if (tag) {
     where.tags = { some: { tag: { name: tag } } };
   }
 
-  const events = await prisma.platformEvent.findMany({
+  // Obtenemos solo los candidatos dentro de la caja delimitadora espacial
+  const candidateEvents = await prisma.platformEvent.findMany({
     where,
     include: {
       company: { select: { id: true, name: true, logo: true } },
       tags: { include: { tag: true } },
     },
-    take: 500,
-    orderBy: { created_at: "desc" },
   });
 
-  const nearby = events
+  // Calculamos la distancia esférica exacta y filtramos por radio circular
+  const filteredAndSorted = candidateEvents
     .map((event) => {
-      const distance = haversineDistance(
-        userLat,
-        userLng,
-        parseFloat(event.latitude),
-        parseFloat(event.longitude),
-      );
+      const distance = userPoint.distanceTo({
+        lat: parseFloat(event.latitude),
+        lng: parseFloat(event.longitude),
+      });
       return { ...event, distance_km: Math.round(distance * 100) / 100 };
     })
     .filter((event) => event.distance_km <= radiusKm)
-    .sort((a, b) => a.distance_km - b.distance_km)
-    .slice(0, limitNum);
+    .sort((a, b) => a.distance_km - b.distance_km);
+
+  const total = filteredAndSorted.length;
+  const paginatedEvents = filteredAndSorted.slice(skip, skip + limitNum);
 
   return res.status(200).send({
     status: "Success",
-    events: nearby,
+    events: paginatedEvents,
     pagination: {
-      total: nearby.length,
+      page: pageNum,
       limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum) || 1,
       radius_km: radiusKm,
     },
   });
@@ -483,30 +505,49 @@ const leaveEvent = catchAsync(async (req, res, next) => {
     .send({ status: "Success", message: "Left event successfully" });
 });
 
-const getEventParticipants = catchAsync(async (req, res, next) => {
-  const { id } = req.params;
+const PUBLIC_PARTICIPANT_SELECT = {
+  id: true,
+  name: true,
+  img_perfil: true,
+};
 
-  const event = await prisma.platformEvent.findUnique({ where: { id } });
-  if (!event) {
-    return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
-  }
+const PRIVATE_PARTICIPANT_SELECT = {
+  ...PUBLIC_PARTICIPANT_SELECT,
+  ciudad: true,
+  provincia: true,
+};
 
-  const participants = await prisma.eventParticipant.findMany({
-    where: { event_id: id },
-    include: {
-      user: { select: { id: true, name: true, img_perfil: true } },
-    },
-    orderBy: { joined_at: "desc" },
+const buildParticipantsHandler = (userSelect) =>
+  catchAsync(async (req, res, next) => {
+    const { id } = req.params;
+
+    const event = await prisma.platformEvent.findUnique({ where: { id } });
+    if (!event) {
+      return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
+    }
+
+    const participants = await prisma.eventParticipant.findMany({
+      where: { event_id: id },
+      include: { user: { select: userSelect } },
+      orderBy: { joined_at: "desc" },
+    });
+
+    return res.status(200).send({
+      status: "Success",
+      participants: participants.map((p) => ({
+        ...p.user,
+        joined_at: p.joined_at,
+      })),
+    });
   });
 
-  return res.status(200).send({
-    status: "Success",
-    participants: participants.map((p) => ({
-      ...p.user,
-      joined_at: p.joined_at,
-    })),
-  });
-});
+const getEventParticipants = buildParticipantsHandler(
+  PUBLIC_PARTICIPANT_SELECT,
+);
+
+const getEventParticipantsDetailed = buildParticipantsHandler(
+  PRIVATE_PARTICIPANT_SELECT,
+);
 
 const getMyJoinedEvents = catchAsync(async (req, res, next) => {
   const userId = req.user.id;
@@ -549,5 +590,6 @@ export const methods = {
   joinEvent,
   leaveEvent,
   getEventParticipants,
+  getEventParticipantsDetailed,
   getMyJoinedEvents,
 };
