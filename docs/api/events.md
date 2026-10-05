@@ -390,16 +390,16 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 
 ---
 
-### 10. Listar participantes de un evento
+### 10. Listar participantes de un evento (público)
 
 **URL:** `GET /api/events/:id/participants`
 
-**Autenticación:** Requerida (`isLoged`).
+**Autenticación:** No requerida.
 
 **Parámetros de URL:**
 - `id` — UUID del evento.
 
-**Descripción:** Devuelve la lista de usuarios apuntados a un evento, ordenados por fecha de unión (más recientes primero). Incluye información pública de cada usuario (`id`, `name`, `img_perfil`) y la fecha en la que se unió (`joined_at`).
+**Descripción:** Devuelve la lista de usuarios apuntados a un evento, ordenados por fecha de unión (más recientes primero). Solo incluye información pública: `id`, `name`, `img_perfil` y `joined_at`.
 
 **Salida (200):**
 ```json
@@ -417,6 +417,40 @@ GET /api/events/nearby?lat=40.416775&lng=-3.703790&radius=25&limit=10
 ```
 
 **Errores:**
+- `404` — Evento no encontrado.
+
+---
+
+### 10b. Listar participantes de un evento (detallado)
+
+**URL:** `GET /api/events/:id/participants/details`
+
+**Autenticación:** Requerida (`isLoged`).
+
+**Parámetros de URL:**
+- `id` — UUID del evento.
+
+**Descripción:** Igual que el endpoint público, pero añade `ciudad` y `provincia` de cada usuario (pueden ser `null` si no las ha informado).
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "participants": [
+    {
+      "id": "uuid",
+      "name": "Nombre del usuario",
+      "img_perfil": "base64... o null",
+      "ciudad": "Madrid o null",
+      "provincia": "Madrid o null",
+      "joined_at": "2025-07-15T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+**Errores:**
+- `401` — No autenticado.
 - `404` — Evento no encontrado.
 
 ---
