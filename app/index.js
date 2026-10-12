@@ -35,6 +35,14 @@ import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
 import { methods as dbUtils } from "./utils/db.js";
 import { PRIVATE_KEY, JWT_ALGORITHM } from "./utils/jwtKeys.js";
+import helmet from "helmet";
+import { env } from "./config/env.js";
+import {
+  authLimiter,
+  paymentLimiter,
+  generalApiLimiter,
+} from "./middlewares/rateLimiter.js";
+import { UserDTO } from "./dto/userDto.js";
 dotenv.config();
 //Configuracion del servidor
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,7 +69,9 @@ const secret_id = process.env.GOOGLE_OAUTH;
 //Configuracion de la carpeta de archivos estaticos
 app.use(express.static(path.join(__dirname, "public")));
 app.set("trust proxy", 1); // <--- ESTO ES VITAL EN VERCEL
+app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
+app.use("/api/", generalApiLimiter);
 
 // Stripe webhooks need the raw body for signature verification
 app.use((req, res, next) => {
@@ -113,6 +123,17 @@ app.use(
 //     next();
 // });
 
+// Endpoint de salud y diagnóstico de disponibilidad (Healthcheck para K8s / PM2 / Uptime monitors)
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "carpooling-user",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+  });
+});
+
 //funcionalidades de la aplicacion
 app.get("/api/test", authorization.isLoged, async (req, res) => {
   res
@@ -120,7 +141,7 @@ app.get("/api/test", authorization.isLoged, async (req, res) => {
     .send({ status: "Success", message: "API is working correctly" });
 });
 
-app.get("/api/users", authorization.isLoged, async (req, res) => {
+app.get("/api/users", authorization.onlyAdmin, async (req, res) => {
   try {
     const users = await prisma.user.findMany({
       include: { role: true },
@@ -132,7 +153,7 @@ app.get("/api/users", authorization.isLoged, async (req, res) => {
       );
       return { ...decrypted, role: r.role?.name ?? "user" };
     });
-    return res.status(200).json(decryptedRows);
+    return res.status(200).json(UserDTO.toAdminList(decryptedRows));
   } catch (error) {
     console.error("Error fetching users:", error);
     return res
@@ -146,6 +167,15 @@ app.get("/api/users/unique-by-location", user.getUniqueUsersByLocation);
 app.get("/api/users/info", authorization.isLoged, user.getMyUserInfo);
 app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
   const { id } = req.params;
+  const isOwnerOrAdmin =
+    String(req.user?.id) === String(id) || req.user?.role?.name === "admin";
+  if (!isOwnerOrAdmin) {
+    return res.status(403).json({
+      status: "Error",
+      message: "No tienes autorización para acceder a este perfil de usuario.",
+    });
+  }
+
   try {
     const findUser = await prisma.user.findUnique({
       where: { id },
@@ -160,9 +190,12 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
       findUser,
       cryptoUtils.USER_SENSITIVE_FIELDS,
     );
-    return res
-      .status(200)
-      .json({ ...decrypted, role: findUser.role?.name ?? "user" });
+    return res.status(200).json(
+      UserDTO.toPrivate({
+        ...decrypted,
+        role: findUser.role?.name ?? "user",
+      }),
+    );
   } catch (error) {
     console.error("Error fetching user:", error);
     return res
@@ -170,7 +203,7 @@ app.get("/api/users/:id", authorization.isLoged, async (req, res) => {
       .json({ status: "Error", message: "Failed to fetch user" });
   }
 });
-app.get("/api/users/:id/info", user.getUserInfo);
+app.get("/api/users/:id/info", authorization.tryAuthenticate, user.getUserInfo);
 app.get("/api/users/:id/public", user.getPublicUserInfo);
 app.get("/api/users/:id/profile", user.getPublicUserProfile);
 app.post("/api/users/public/batch", user.getPublicUsersBatch);
@@ -180,9 +213,9 @@ app.patch("/api/users", authorization.isLoged, user.updateMyUserPatch);
 app.delete("/api/users/:id", authorization.isLoged, user.removeUser);
 
 app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"));
-app.post("/api/auth/login", authentication.login);
-app.get("/api/auth/register/email/:email", authentication.existEmail);
-app.post("/api/auth/register", authentication.register);
+app.post("/api/auth/login", authLimiter, authentication.login);
+app.get("/api/auth/register/email/:email", authLimiter, authentication.existEmail);
+app.post("/api/auth/register", authLimiter, authentication.register);
 app.get("/api/auth/logout", authentication.logout);
 app.post("/api/auth/refresh", authentication.refresh);
 app.get("/api/auth/validate", authentication.validate);
@@ -523,11 +556,13 @@ app.get(
 app.post(
   "/api/payment/wallet-payout",
   authorization.isLoged,
+  paymentLimiter,
   payment.createWalletPayout,
 );
 app.get(
   "/api/payment/wallet-payouts",
   authorization.isLoged,
+  paymentLimiter,
   payment.getWalletPayouts,
 );
 app.get(
@@ -576,10 +611,16 @@ app.post(
   authorization.isLoged,
   payment.cancelPaymentIntent,
 );
-app.post("/api/payment/payout", authorization.isLoged, payment.createPayout);
+app.post(
+  "/api/payment/payout",
+  authorization.isLoged,
+  paymentLimiter,
+  payment.createPayout,
+);
 app.post(
   "/api/payment/recharge",
   authorization.isLoged,
+  paymentLimiter,
   payment.rechargeWalletUser,
 );
 app.post(

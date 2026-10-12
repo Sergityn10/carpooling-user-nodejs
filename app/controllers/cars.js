@@ -62,6 +62,22 @@ async function updateCar(req, res) {
   }
 
   try {
+    const existingCar = await prisma.car.findUnique({ where: { id_coche } });
+    if (!existingCar) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Car not found" });
+    }
+    if (
+      String(existingCar.user_id) !== String(req.user?.id) &&
+      req.user?.role?.name !== "admin"
+    ) {
+      return res.status(403).send({
+        status: "Error",
+        message: "No tienes permiso para modificar este vehículo.",
+      });
+    }
+
     const car = await prisma.car.update({
       where: { id_coche },
       data: value,
@@ -85,6 +101,22 @@ async function updateCar(req, res) {
 async function removeCar(req, res) {
   const { id: id_coche } = req.params;
   try {
+    const existingCar = await prisma.car.findUnique({ where: { id_coche } });
+    if (!existingCar) {
+      return res
+        .status(404)
+        .send({ status: "Error", message: "Car not found" });
+    }
+    if (
+      String(existingCar.user_id) !== String(req.user?.id) &&
+      req.user?.role?.name !== "admin"
+    ) {
+      return res.status(403).send({
+        status: "Error",
+        message: "No tienes permiso para eliminar este vehículo.",
+      });
+    }
+
     await prisma.car.delete({ where: { id_coche } });
     await eventBus.carDeleted(id_coche);
     return res
@@ -108,6 +140,15 @@ async function getCar(req, res) {
   if (!car) {
     return res.status(404).send({ status: "Error", message: "Car not found" });
   }
+  if (
+    String(car.user_id) !== String(req.user?.id) &&
+    req.user?.role?.name !== "admin"
+  ) {
+    return res.status(403).send({
+      status: "Error",
+      message: "No tienes autorización para acceder a los datos de este vehículo.",
+    });
+  }
   return res.status(200).send({
     status: "Success",
     message: "Car found successfully",
@@ -117,6 +158,16 @@ async function getCar(req, res) {
 
 async function getCarsByUserId(req, res) {
   const { userId } = req.params;
+  if (
+    String(userId) !== String(req.user?.id) &&
+    req.user?.role?.name !== "admin"
+  ) {
+    return res.status(403).send({
+      status: "Error",
+      message: "No tienes autorización para consultar los vehículos de este usuario.",
+    });
+  }
+
   const existingUser = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true },

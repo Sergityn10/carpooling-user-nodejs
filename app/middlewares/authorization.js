@@ -286,6 +286,18 @@ async function onlyUser(req, res, next) {
   }
 }
 
+async function tryAuthenticate(req, res, next) {
+  try {
+    const user = (await reviseBearer(req)) || (await reviseCookie(req));
+    if (user) {
+      req.user = user;
+    }
+  } catch (_e) {
+    // Optional auth - continue without interruption
+  }
+  next();
+}
+
 function getBearerTokenFromReq(req) {
   const rawHeader = req?.headers?.authorization || req?.headers?.authentication;
   if (!rawHeader || typeof rawHeader !== "string") {
@@ -444,5 +456,6 @@ export const authorization = {
   reviseCookie,
   onlyAdmin,
   onlyUser,
+  tryAuthenticate,
   tryRefreshAccessToken,
 };

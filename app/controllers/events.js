@@ -7,6 +7,7 @@ import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
 import { GeoPoint } from "../utils/geoPoint.js";
+import { findNearbyPlatformEvents } from "../services/geoSpatialService.js";
 dotenv.config();
 
 function generateUniqueCode() {
@@ -378,59 +379,23 @@ const getNearbyEvents = catchAsync(async (req, res, next) => {
   const radiusKm = Math.max(0.1, parseFloat(radius) || 50);
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
-  const skip = (pageNum - 1) * limitNum;
 
-  // Pre-filtrado mediante Bounding Box para optimización con índices
-  const bbox = userPoint.getBoundingBox(radiusKm);
-
-  const where = {
-    latitude: {
-      gte: bbox.minLat,
-      lte: bbox.maxLat,
-    },
-    longitude: {
-      gte: bbox.minLng,
-      lte: bbox.maxLng,
-    },
-    end_date: { gte: new Date() },
-  };
-
-  if (tag) {
-    where.tags = { some: { tag: { name: tag } } };
-  }
-
-  // Obtenemos solo los candidatos dentro de la caja delimitadora espacial
-  const candidateEvents = await prisma.platformEvent.findMany({
-    where,
-    include: {
-      company: { select: { id: true, name: true, logo: true } },
-      tags: { include: { tag: true } },
-    },
+  const { events, total, totalPages } = await findNearbyPlatformEvents({
+    point: userPoint,
+    radiusKm,
+    tag,
+    page: pageNum,
+    limit: limitNum,
   });
-
-  // Calculamos la distancia esférica exacta y filtramos por radio circular
-  const filteredAndSorted = candidateEvents
-    .map((event) => {
-      const distance = userPoint.distanceTo({
-        lat: parseFloat(event.latitude),
-        lng: parseFloat(event.longitude),
-      });
-      return { ...event, distance_km: Math.round(distance * 100) / 100 };
-    })
-    .filter((event) => event.distance_km <= radiusKm)
-    .sort((a, b) => a.distance_km - b.distance_km);
-
-  const total = filteredAndSorted.length;
-  const paginatedEvents = filteredAndSorted.slice(skip, skip + limitNum);
 
   return res.status(200).send({
     status: "Success",
-    events: paginatedEvents,
+    events,
     pagination: {
       page: pageNum,
       limit: limitNum,
       total,
-      totalPages: Math.ceil(total / limitNum) || 1,
+      totalPages,
       radius_km: radiusKm,
     },
   });

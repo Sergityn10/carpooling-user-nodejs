@@ -162,9 +162,9 @@ const login = catchAsync(async (req, res, next) => {
   if (!comprobarUser) {
     return next(
       new AppError(
-        "No existe ninguna cuenta con este correo electrónico. ¿Te has registrado ya?",
-        404,
-        "EMAIL_NOT_REGISTERED",
+        "Correo electrónico o contraseña incorrectos.",
+        401,
+        "INVALID_CREDENTIALS",
       ),
     );
   }
@@ -187,7 +187,7 @@ const login = catchAsync(async (req, res, next) => {
   if (!isPasswordValid) {
     return next(
       new AppError(
-        "La contraseña introducida no es correcta. Inténtalo de nuevo.",
+        "Correo electrónico o contraseña incorrectos.",
         401,
         "INVALID_CREDENTIALS",
       ),

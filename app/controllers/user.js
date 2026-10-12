@@ -11,6 +11,7 @@ import { DEFAULT_CONFIG as DEFAULT_WALLET_CONFIG } from "./walletConfig.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { eventBus } from "../services/eventBus.js";
+import { UserDTO } from "../dto/userDto.js";
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -379,7 +380,7 @@ const getUserInfo = catchAsync(async (req, res, next) => {
       select: { id: true, balance: true, status: true },
     }),
   ]);
-  console.log(stripeAccount)
+  console.log(stripeAccount);
 
   const numOpinions = receivedComments.length;
   const averageRating =
@@ -392,49 +393,55 @@ const getUserInfo = catchAsync(async (req, res, next) => {
     preferences[row.pref_key] = row.value;
   });
 
+  const isOwnerOrAdmin =
+    req.user &&
+    (String(req.user.id) === String(id) || req.user.role?.name === "admin");
+
+  const responseData = {
+    userId: user.id,
+    name: user.name,
+    surname: user.surname,
+    img_perfil: user.img_perfil,
+    role: user.role?.name ?? "user",
+    averageRating,
+    numOpinions,
+    myNumOpinions: givenComments.length,
+    about_me: user.about_me,
+    preferences,
+  };
+
+  if (isOwnerOrAdmin) {
+    responseData.phone = user.phone;
+    responseData.email = user.email;
+    responseData.fecha_nacimiento = user.fecha_nacimiento;
+    responseData.genero = user.genero;
+    responseData.ciudad = user.ciudad;
+    responseData.provincia = user.provincia;
+    responseData.codigo_postal = user.codigo_postal;
+    responseData.direccion = user.direccion;
+    responseData.pais = user.pais;
+    responseData.wallet_config = walletConfigRow ?? {
+      user_id: id,
+      ...DEFAULT_WALLET_CONFIG,
+    };
+    responseData.monedero = {
+      disponible:
+        Boolean(stripeAccount?.charges_enabled) ||
+        Boolean(stripeAccount?.transfers_enabled),
+      stripe_account: Boolean(rawUser.stripe_account),
+      onboarding_completado: Boolean(rawUser.onboarding_ended),
+      charges_enabled: Boolean(stripeAccount?.charges_enabled),
+      transfers_enabled: Boolean(stripeAccount?.transfers_enabled),
+      details_submitted: Boolean(stripeAccount?.details_submitted),
+      wallet_activa: walletAccount?.status === "active",
+      wallet_balance: walletAccount ? Number(walletAccount.balance) : 0,
+    };
+  }
+
   return res.status(200).send({
     status: "Success",
     message: "User found successfully",
-    data: {
-      userId: user.id,
-      name: user.name,
-      surname: user.surname,
-      phone: user.phone,
-      email: user.email,
-      img_perfil: user.img_perfil,
-      role: user.role?.name ?? "user",
-      fecha_nacimiento: user.fecha_nacimiento,
-      genero: user.genero,
-      dni: user.dni,
-      ciudad: user.ciudad,
-      provincia: user.provincia,
-      codigo_postal: user.codigo_postal,
-      direccion: user.direccion,
-      pais: user.pais,
-      averageRating,
-      numOpinions,
-      myNumOpinions: givenComments.length,
-      about_me: user.about_me,
-      preferences,
-      wallet_config: walletConfigRow ?? {
-        user_id: id,
-        ...DEFAULT_WALLET_CONFIG,
-      },
-      monedero: {
-        disponible:
-          Boolean(stripeAccount?.charges_enabled) ||
-          Boolean(stripeAccount?.transfers_enabled),
-        stripe_account: Boolean(rawUser.stripe_account),
-        stripe_account_id: rawUser.stripe_account ?? null,
-        stripe_customer_account: rawUser.stripe_customer_account ?? null,
-        onboarding_completado: Boolean(rawUser.onboarding_ended),
-        charges_enabled: Boolean(stripeAccount?.charges_enabled),
-        transfers_enabled: Boolean(stripeAccount?.transfers_enabled),
-        details_submitted: Boolean(stripeAccount?.details_submitted),
-        wallet_activa: walletAccount?.status === "active",
-        wallet_balance: walletAccount ? Number(walletAccount.balance) : 0,
-      },
-    },
+    data: UserDTO.sanitize(responseData),
   });
 });
 
@@ -685,8 +692,6 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
       Boolean(stripeAccount?.charges_enabled) ||
       Boolean(stripeAccount?.transfers_enabled),
     stripe_account: Boolean(findUser.stripe_account),
-    stripe_account_id: findUser.stripe_account ?? null,
-    stripe_customer_account: findUser.stripe_customer_account ?? null,
     onboarding_completado: Boolean(findUser.onboarding_ended),
     charges_enabled: Boolean(stripeAccount?.charges_enabled),
     transfers_enabled: Boolean(stripeAccount?.transfers_enabled),
@@ -710,33 +715,34 @@ const getMyUserInfo = catchAsync(async (req, res, next) => {
               : "Tu monedero está disponible para recibir ganancias.",
   };
 
+  const myData = {
+    name: findUser.name,
+    surname: findUser.surname,
+    phone: findUser.phone,
+    email: findUser.email,
+    img_perfil: findUser.img_perfil,
+    role: findUser.role?.name ?? "user",
+    fecha_nacimiento: findUser.fecha_nacimiento,
+    genero: findUser.genero,
+    ciudad: findUser.ciudad,
+    provincia: findUser.provincia,
+    codigo_postal: findUser.codigo_postal,
+    direccion: findUser.direccion,
+    pais: findUser.pais,
+    averageRating,
+    numOpinions,
+    myNumOpinions: givenComments.length,
+    about_me: findUser.about_me,
+    preferences,
+  };
+
   return res.status(200).send({
     status: "Success",
     message: "User found successfully",
-    data: {
-      name: findUser.name,
-      surname: findUser.surname,
-      phone: findUser.phone,
-      email: findUser.email,
-      img_perfil: findUser.img_perfil,
-      role: findUser.role?.name ?? "user",
-      fecha_nacimiento: findUser.fecha_nacimiento,
-      genero: findUser.genero,
-      dni: findUser.dni,
-      ciudad: findUser.ciudad,
-      provincia: findUser.provincia,
-      codigo_postal: findUser.codigo_postal,
-      direccion: findUser.direccion,
-      pais: findUser.pais,
-      averageRating,
-      numOpinions,
-      myNumOpinions: givenComments.length,
-      about_me: findUser.about_me,
-      preferences,
-    },
+    data: UserDTO.sanitize(myData),
     completitud,
     completitud_cae,
-    monedero,
+    monedero: UserDTO.sanitize(monedero),
   });
 });
 

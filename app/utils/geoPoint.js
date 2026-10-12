@@ -79,6 +79,23 @@ export class GeoPoint {
 
     return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
+
+  /**
+   * Genera un polígono WKT (POLYGON) que representa el envelope rectangular (MBR)
+   * correspondiente a un radio en kilómetros alrededor del punto.
+   * Este polígono permite que MySQL active el índice espacial R-Tree mediante
+   * MBRWithin(location, ST_GeomFromText(polygon, 4326)).
+   *
+   * Formato WKT generado (sentido horario, cerrado):
+   * POLYGON((minLng minLat, maxLng minLat, maxLng maxLat, minLng maxLat, minLng minLat))
+   *
+   * @param {number} radiusKm - Radio en kilómetros
+   * @returns {string} Polígono en formato WKT
+   */
+  toEnvelopePolygonWKT(radiusKm) {
+    const bbox = this.getBoundingBox(radiusKm);
+    return `POLYGON((${bbox.minLng} ${bbox.minLat}, ${bbox.maxLng} ${bbox.minLat}, ${bbox.maxLng} ${bbox.maxLat}, ${bbox.minLng} ${bbox.maxLat}, ${bbox.minLng} ${bbox.minLat}))`;
+  }
 }
 
 export default GeoPoint;
