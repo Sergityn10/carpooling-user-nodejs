@@ -22,7 +22,8 @@ export class GeoPoint {
   }
 
   /**
-   * Genera el texto en formato WKT (Well-Known Text) para MySQL GIS: POINT(longitude latitude)
+   * Genera el texto en formato WKT (Well-Known Text) estándar OGC: POINT(longitude latitude)
+   * Diseñado para usarse en MySQL con ST_GeomFromText(..., 4326, 'axis-order=long-lat')
    * @returns {string}
    */
   toWKT() {
@@ -83,10 +84,10 @@ export class GeoPoint {
   /**
    * Genera un polígono WKT (POLYGON) que representa el envelope rectangular (MBR)
    * correspondiente a un radio en kilómetros alrededor del punto.
-   * Este polígono permite que MySQL active el índice espacial R-Tree mediante
-   * MBRWithin(location, ST_GeomFromText(polygon, 4326)).
+   * Este polígono permite que MySQL active el índice espacial R-Tree mediante:
+   * MBRContains(ST_GeomFromText(polygon, 4326, 'axis-order=long-lat'), pe.location)
    *
-   * Formato WKT generado (sentido horario, cerrado):
+   * Formato WKT generado estándar OGC (longitud latitud, anillo cerrado):
    * POLYGON((minLng minLat, maxLng minLat, maxLng maxLat, minLng maxLat, minLng minLat))
    *
    * @param {number} radiusKm - Radio en kilómetros

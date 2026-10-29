@@ -181,27 +181,6 @@ async function handleReservaPaymentRequired(event) {
     stripe_fee_cents: String(pricing.stripe_fee_cents),
   };
 
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: pricing.total_cents,
-    currency,
-    capture_method: "manual",
-    application_fee_amount: pricing.application_fee_cents,
-    transfer_data: {
-      destination: recipient.stripe_account,
-    },
-    customer: sender.stripe_customer_account,
-    metadata: sharedMetadata,
-    description: description || `Pago a ${recipient.name || "conductor"}`,
-  });
-
-  const paymentIntentId = paymentIntent.id;
-
-  console.log("[paymentEventHandler] Payment intent created", {
-    id_reserva,
-    payment_intent_id: paymentIntentId,
-    status: paymentIntent.status,
-  });
-
   const checkout_session = await stripe.checkout.sessions.create({
     customer: sender.stripe_customer_account,
     line_items: [
@@ -229,15 +208,24 @@ async function handleReservaPaymentRequired(event) {
     metadata: sharedMetadata,
     submit_type: "pay",
     mode: "payment",
+    expand: ["payment_intent"],
     success_url: successUrl,
     cancel_url: cancelUrl,
   });
+
+  const paymentIntentId =
+    typeof checkout_session.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : (checkout_session.payment_intent?.id ?? checkout_session.id);
+  const paymentIntentStatus =
+    checkout_session.payment_intent?.status || "pending";
 
   console.log("[paymentEventHandler] Checkout session created", {
     id_reserva,
     checkout_session_id: checkout_session.id,
     checkout_url: checkout_session.url,
     payment_intent_id: paymentIntentId,
+    status: paymentIntentStatus,
   });
 
   console.log("[paymentEventHandler] Saving payment intent to DB", {
@@ -254,7 +242,7 @@ async function handleReservaPaymentRequired(event) {
       description: description || undefined,
       destination_account: recipient.stripe_account,
       sender_account: sender.stripe_account ?? undefined,
-      state: paymentIntent.status,
+      state: paymentIntentStatus,
       checkout_session_id: checkout_session.id,
       id_reserva: String(id_reserva),
     },
@@ -264,7 +252,7 @@ async function handleReservaPaymentRequired(event) {
       description: description || undefined,
       destination_account: recipient.stripe_account,
       sender_account: sender.stripe_account ?? undefined,
-      state: paymentIntent.status,
+      state: paymentIntentStatus,
       checkout_session_id: checkout_session.id,
       id_reserva: String(id_reserva),
     },
@@ -463,30 +451,6 @@ async function handleReservaPaymentResume(event) {
     stripe_fee_cents: String(pricing.stripe_fee_cents),
   };
 
-  const newPaymentIntent = await stripe.paymentIntents.create({
-    amount: pricing.total_cents,
-    currency: String(paymentIntent.currency || currency),
-    capture_method: "manual",
-    application_fee_amount: pricing.application_fee_cents,
-    transfer_data: {
-      destination: destinationAccount,
-    },
-    customer: sender.stripe_customer_account,
-    metadata: sharedMetadata,
-    description:
-      dbPaymentIntent?.description ||
-      paymentIntent.description ||
-      `Pago a ${recipient?.name || "conductor"}`,
-  });
-
-  const newPaymentIntentId = newPaymentIntent.id;
-
-  console.log("[paymentEventHandler] New payment intent created for resume", {
-    id_reserva,
-    payment_intent_id: newPaymentIntentId,
-    status: newPaymentIntent.status,
-  });
-
   const checkout_session = await stripe.checkout.sessions.create({
     customer: sender.stripe_customer_account,
     line_items: [
@@ -516,8 +480,24 @@ async function handleReservaPaymentResume(event) {
     metadata: sharedMetadata,
     submit_type: "pay",
     mode: "payment",
+    expand: ["payment_intent"],
     success_url: successUrl,
     cancel_url: cancelUrl,
+  });
+
+  const newPaymentIntentId =
+    typeof checkout_session.payment_intent === "string"
+      ? checkout_session.payment_intent
+      : (checkout_session.payment_intent?.id ?? checkout_session.id);
+  const newPaymentIntentStatus =
+    checkout_session.payment_intent?.status || "pending";
+
+  console.log("[paymentEventHandler] Checkout session resumed", {
+    id_reserva,
+    checkout_session_id: checkout_session.id,
+    checkout_url: checkout_session.url,
+    payment_intent_id: newPaymentIntentId,
+    status: newPaymentIntentStatus,
   });
 
   await prisma.paymentIntent.upsert({
@@ -529,7 +509,7 @@ async function handleReservaPaymentResume(event) {
       description: dbPaymentIntent?.description ?? undefined,
       destination_account: destinationAccount,
       sender_account: sender.stripe_account ?? undefined,
-      state: newPaymentIntent.status,
+      state: newPaymentIntentStatus,
       checkout_session_id: checkout_session.id,
       id_reserva: String(id_reserva),
     },
@@ -539,7 +519,7 @@ async function handleReservaPaymentResume(event) {
       description: dbPaymentIntent?.description ?? undefined,
       destination_account: destinationAccount,
       sender_account: sender.stripe_account ?? undefined,
-      state: newPaymentIntent.status,
+      state: newPaymentIntentStatus,
       checkout_session_id: checkout_session.id,
       id_reserva: String(id_reserva),
     },

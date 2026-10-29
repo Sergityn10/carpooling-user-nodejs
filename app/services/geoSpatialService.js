@@ -3,7 +3,7 @@ import prisma from "../lib/prisma.js";
 /**
  * Busca eventos de plataforma cercanos usando optimización R-Tree nativa de MySQL.
  * Usa un enfoque de dos fases:
- * 1. MBRWithin con polígono envolvente para activar el índice espacial R-Tree (O(log N))
+ * 1. MBRContains con polígono envolvente forzando el índice espacial R-Tree (O(log N))
  * 2. ST_Distance_Sphere para filtrado preciso por radio circular
  *
  * @param {Object} params
@@ -47,17 +47,18 @@ export async function findNearbyPlatformEvents({ point, radiusKm, tag, page, lim
       ROUND(
         ST_Distance_Sphere(
           pe.location,
-          ST_SRID(POINT(${point.lng}, ${point.lat}), 4326)
+          ST_GeomFromText('${pointWkt}', 4326, 'axis-order=long-lat')
         ) / 1000, 2
       ) AS distance_km
-    FROM platform_events pe
+    FROM platform_events pe FORCE INDEX (idx_platform_events_location)
     LEFT JOIN companies c ON pe.company_id = c.id
-    WHERE pe.latitude IS NOT NULL
-      AND pe.longitude IS NOT NULL
-      AND MBRWithin(pe.location, ST_GeomFromText('${envelopeWkt}', 4326))
+    WHERE MBRContains(
+        ST_GeomFromText('${envelopeWkt}', 4326, 'axis-order=long-lat'),
+        pe.location
+      )
       AND ST_Distance_Sphere(
         pe.location,
-        ST_SRID(POINT(${point.lng}, ${point.lat}), 4326)
+        ST_GeomFromText('${pointWkt}', 4326, 'axis-order=long-lat')
       ) <= ${radiusMeters}
       AND pe.end_date >= NOW()
       ${tagCondition}
@@ -67,13 +68,14 @@ export async function findNearbyPlatformEvents({ point, radiusKm, tag, page, lim
 
   const countQuery = `
     SELECT COUNT(*) as total
-    FROM platform_events pe
-    WHERE pe.latitude IS NOT NULL
-      AND pe.longitude IS NOT NULL
-      AND MBRWithin(pe.location, ST_GeomFromText('${envelopeWkt}', 4326))
+    FROM platform_events pe FORCE INDEX (idx_platform_events_location)
+    WHERE MBRContains(
+        ST_GeomFromText('${envelopeWkt}', 4326, 'axis-order=long-lat'),
+        pe.location
+      )
       AND ST_Distance_Sphere(
         pe.location,
-        ST_SRID(POINT(${point.lng}, ${point.lat}), 4326)
+        ST_GeomFromText('${pointWkt}', 4326, 'axis-order=long-lat')
       ) <= ${radiusMeters}
       AND pe.end_date >= NOW()
       ${tagCondition};
@@ -86,18 +88,28 @@ export async function findNearbyPlatformEvents({ point, radiusKm, tag, page, lim
 
   const total = Number(countResult[0]?.total || 0);
 
-  const eventsWithTags = await Promise.all(
-    events.map(async (event) => {
-      const tags = await prisma.eventTag.findMany({
-        where: { event_id: event.id },
-        include: { tag: true },
-      });
-      return {
-        ...event,
-        tags: tags.map((et) => et.tag),
-      };
-    })
-  );
+  // Optimización Batch: resolver todos los tags en una sola consulta en lugar de N+1 consultas individuales
+  const eventIds = events.map((event) => event.id);
+  const tagsByEventId = new Map();
+
+  if (eventIds.length > 0) {
+    const eventTags = await prisma.eventTag.findMany({
+      where: { event_id: { in: eventIds } },
+      include: { tag: true },
+    });
+
+    for (const et of eventTags) {
+      if (!tagsByEventId.has(et.event_id)) {
+        tagsByEventId.set(et.event_id, []);
+      }
+      tagsByEventId.get(et.event_id).push(et.tag);
+    }
+  }
+
+  const eventsWithTags = events.map((event) => ({
+    ...event,
+    tags: tagsByEventId.get(event.id) || [],
+  }));
 
   return {
     events: eventsWithTags,

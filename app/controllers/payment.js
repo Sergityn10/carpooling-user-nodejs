@@ -4,6 +4,9 @@ dotenv.config();
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { trayectosService } from "../services/trayectosService.js";
+import { MovementDTO } from "../dto/movementDto.js";
+import { sseManager } from "../services/sseManager.js";
+import { notificationsService } from "../services/notificationsService.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
@@ -18,7 +21,7 @@ const PLATFORM_MARGIN_PERCENT = parseFloat(
   process.env.PLATFORM_MARGIN_PERCENT ?? "0.15",
 );
 
-function calculateTotalPrice(netPriceCents) {
+export function calculateTotalPrice(netPriceCents) {
   const driverPriceCents = Math.round(
     netPriceCents / (1 + PLATFORM_MARGIN_PERCENT),
   );
@@ -58,7 +61,7 @@ const createSession = catchAsync(async (req, res, next) => {
             description: description,
           },
 
-          currency: "usd",
+          currency: "eur",
           unit_amount: amount,
         },
         quantity: 1,
@@ -1232,6 +1235,162 @@ const getWalletTransactions = catchAsync(async (req, res, next) => {
     .send({ status: "Success", transactions, limit, offset });
 });
 
+const getMovements = catchAsync(async (req, res, next) => {
+  const user = req.user;
+  const { role, type, from_date, to_date } = req.query ?? {};
+  const limitRaw = req.query?.limit;
+  const offsetRaw = req.query?.offset;
+  const limit = Number.isFinite(Number(limitRaw))
+    ? Math.min(50, Math.max(1, Number(limitRaw)))
+    : 20;
+  const offset = Number.isFinite(Number(offsetRaw))
+    ? Math.max(0, Number(offsetRaw))
+    : 0;
+
+  // Filtro base con estricta prevención IDOR
+  const where = {
+    user_id: String(user.id),
+  };
+
+  // Filtro por tipo específico o por rol
+  if (type) {
+    where.type = String(type);
+  } else if (role === "driver") {
+    where.type = { in: ["reservation_revenue", "credit"] };
+  } else if (role === "passenger") {
+    where.type = { in: ["reservation_payment", "deposit", "refund"] };
+  }
+
+  // Filtro por rango temporal
+  if (from_date || to_date) {
+    where.created_at = {};
+    if (from_date) where.created_at.gte = new Date(from_date);
+    if (to_date) where.created_at.lte = new Date(to_date);
+  }
+
+  const [total, rawTransactions] = await Promise.all([
+    prisma.walletTransaction.count({ where }),
+    prisma.walletTransaction.findMany({
+      where,
+      orderBy: { created_at: "desc" },
+      take: limit,
+      skip: offset,
+      include: {
+        paymentIntent: {
+          select: {
+            stripe_payment_id: true,
+            amount: true,
+            state: true,
+            id_reserva: true,
+            destination_account: true,
+            sender_account: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  // Enriquecer contrapartes seguras de forma eficiente
+  const reservaIds = rawTransactions
+    .map((t) => t.id_reserva)
+    .filter(Boolean);
+
+  let reservationsMap = new Map();
+  if (reservaIds.length > 0) {
+    const relatedPIs = await prisma.paymentIntent.findMany({
+      where: { id_reserva: { in: reservaIds } },
+      select: {
+        id_reserva: true,
+        destination_account: true,
+        sender_account: true,
+      },
+    });
+
+    const destinationAccounts = [
+      ...new Set(relatedPIs.map((pi) => pi.destination_account).filter(Boolean)),
+    ];
+    const senderAccounts = [
+      ...new Set(relatedPIs.map((pi) => pi.sender_account).filter(Boolean)),
+    ];
+
+    const usersByAccount = await prisma.user.findMany({
+      where: {
+        OR: [
+          { stripe_account: { in: destinationAccounts } },
+          { stripe_account: { in: senderAccounts } },
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        surname: true,
+        img_perfil: true,
+        stripe_account: true,
+      },
+    });
+
+    const accountToUser = new Map(
+      usersByAccount.map((u) => [u.stripe_account, u]),
+    );
+
+    for (const pi of relatedPIs) {
+      if (pi.id_reserva) {
+        reservationsMap.set(pi.id_reserva, {
+          driverUser: accountToUser.get(pi.destination_account) || null,
+          passengerUser: accountToUser.get(pi.sender_account) || null,
+        });
+      }
+    }
+  }
+
+  const enriched = rawTransactions.map((tx) => {
+    let counterpart = null;
+    if (tx.id_reserva && reservationsMap.has(tx.id_reserva)) {
+      const resData = reservationsMap.get(tx.id_reserva);
+      counterpart =
+        tx.type === "reservation_revenue"
+          ? resData.passengerUser
+          : resData.driverUser;
+    }
+    return {
+      ...tx,
+      counterpart,
+    };
+  });
+
+  const movements = MovementDTO.toMovementList(enriched, user.id);
+
+  return res.status(200).send({
+    status: "Success",
+    movements,
+    total,
+    limit,
+    offset,
+  });
+});
+
+const streamMovements = catchAsync(async (req, res, next) => {
+  const user = req.user;
+  if (!user || !user.id) {
+    return next(new AppError("No autorizado", 401, "UNAUTHORIZED"));
+  }
+
+  sseManager.addClient(user.id, res);
+
+  // Enviar estado inicial con el saldo actual de monedero
+  const wallet = await prisma.walletAccount.findFirst({
+    where: { user_id: String(user.id) },
+    select: { balance: true, currency: true },
+  });
+
+  sseManager.sendToUser(user.id, "balance.current", {
+    balance_cents: Number(wallet?.balance ?? 0),
+    balance_eur: ((wallet?.balance ?? 0) / 100).toFixed(2),
+    currency: wallet?.currency || "eur",
+    timestamp: new Date().toISOString(),
+  });
+});
+
 const capturePaymentIntent = catchAsync(async (req, res, next) => {
   const { paymentIntentId } = req.body;
   if (!paymentIntentId) {
@@ -1329,12 +1488,32 @@ const captureTripPayments = catchAsync(async (req, res, next) => {
         pi.stripe_payment_id,
       );
 
+      if (stripePI.status === "succeeded") {
+        captured.push({
+          payment_intent_id: pi.stripe_payment_id,
+          id_reserva: pi.id_reserva,
+          status: "succeeded",
+          amount: stripePI.amount,
+          note: "already_captured",
+        });
+        continue;
+      }
+
       if (stripePI.status !== "requires_capture") {
+        const isExpired =
+          stripePI.status === "canceled" &&
+          (stripePI.cancellation_reason === "abandoned" ||
+            !stripePI.cancellation_reason);
         skipped.push({
           payment_intent_id: pi.stripe_payment_id,
           id_reserva: pi.id_reserva,
           status: stripePI.status,
-          reason: "not_in_requires_capture_state",
+          reason: isExpired
+            ? "authorization_expired"
+            : "not_in_requires_capture_state",
+          details: isExpired
+            ? "La preautorización de Stripe superó la ventana de 7 días y caducó."
+            : undefined,
         });
         continue;
       }
@@ -1480,16 +1659,30 @@ const createSetupIntent = catchAsync(async (req, res, next) => {
 });
 const createPayout = catchAsync(async (req, res, next) => {
   const { amount, currency } = req.body;
+  if (!req.user?.stripe_account) {
+    return next(
+      new AppError(
+        "No tienes una cuenta de Stripe Connect asociada",
+        404,
+        "STRIPE_ACCOUNT_NOT_FOUND",
+      ),
+    );
+  }
   let payout;
   try {
-    payout = await stripe.payouts.create({
-      amount: amount,
-      currency: currency,
-      method: "standard",
-      metadata: {
-        userId: String(req.user.id),
+    payout = await stripe.payouts.create(
+      {
+        amount: amount,
+        currency: currency || "eur",
+        method: "standard",
+        metadata: {
+          userId: String(req.user.id),
+        },
       },
-    });
+      {
+        stripeAccount: req.user.stripe_account,
+      },
+    );
   } catch (error) {
     if (error.code === "balance_insufficient") {
       return next(
@@ -2546,6 +2739,8 @@ export const methods = {
   getCashBalance,
   getWalletBalance,
   getWalletTransactions,
+  getMovements,
+  streamMovements,
   createPaymentIntent,
   capturePaymentIntent,
   captureTripPayments,
@@ -2568,4 +2763,5 @@ export const methods = {
   adminCreateStripeConnectAccount,
   adminCreateAccountLink,
   adminCreateLoginLink,
+  calculateTotalPrice,
 };

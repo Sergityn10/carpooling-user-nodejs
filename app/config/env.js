@@ -28,8 +28,15 @@ function validateEnv() {
   }
 
   // Comprobación de seguridad PSD2 / DAST: Evitar livemode en entornos que no sean producción
-  if (parsed.data.NODE_ENV !== "production" && parsed.data.STRIPE_SECRET_KEY?.startsWith("sk_live_")) {
-    console.warn("⚠️ [SECURITY WARNING] ¡ALERTA PSD2! Se ha detectado una clave de Stripe en modo producción (sk_live) en un entorno no productivo.");
+  const isLiveStripeKey =
+    parsed.data.STRIPE_SECRET_KEY?.startsWith("sk_live_") ||
+    parsed.data.STRIPE_SECRET_KEY?.startsWith("rk_live_");
+
+  if (parsed.data.NODE_ENV !== "production" && isLiveStripeKey) {
+    console.warn(
+      "⚠️ [SECURITY WARNING] ¡ALERTA PSD2! Se ha detectado una clave de Stripe en modo producción (live) en un entorno donde NODE_ENV no es 'production'. " +
+      "Para silenciar esta advertencia en tu servidor de despliegue, define 'NODE_ENV=production' en las variables de entorno del sistema o en tu archivo .env de producción.",
+    );
   }
 
   return parsed.data;

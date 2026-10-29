@@ -1,6 +1,8 @@
 import prisma from "../lib/prisma.js";
 import Stripe from "stripe";
 import { eventBus } from "../services/eventBus.js";
+import { sseManager } from "../services/sseManager.js";
+import { notificationsService } from "../services/notificationsService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
@@ -537,47 +539,71 @@ async function handlePaymentIntentSucceeded(jsonData) {
     },
   });
   const senderAccount = paymentIntentRow?.sender_account ?? null;
-  const destinationAccount = paymentIntentRow?.destination_account ?? null;
+  const destinationAccount =
+    paymentIntentRow?.destination_account ??
+    paymentIntent?.transfer_data?.destination ??
+    paymentIntent?.metadata?.destination_account ??
+    null;
   const paymentDescription = String(paymentIntentRow?.description ?? "");
 
-  if (!senderAccount || !destinationAccount) {
-    console.log("[webhook] Missing sender or destination account, aborting:", {
-      senderAccount,
+  // Resolver al pasajero (payerUser) sin requerir obligatoriamente sender_account
+  let payerUserId =
+    paymentIntent?.metadata?.id_user ??
+    paymentIntent?.metadata?.userId ??
+    null;
+
+  if (!payerUserId && paymentIntent?.customer) {
+    const customerUser = await prisma.user.findFirst({
+      where: { stripe_customer_account: String(paymentIntent.customer) },
+      select: { id: true },
+    });
+    payerUserId = customerUser?.id ?? null;
+  }
+
+  if (!payerUserId && senderAccount) {
+    const payerUser = await prisma.user.findFirst({
+      where: { stripe_account: senderAccount },
+      select: { id: true },
+    });
+    payerUserId = payerUser?.id ?? null;
+  }
+
+  // Resolver al conductor (receiverUser)
+  let receiverUserId =
+    paymentIntent?.metadata?.recipient_user_id ?? null;
+
+  if (!receiverUserId && destinationAccount) {
+    const receiverUser = await prisma.user.findFirst({
+      where: { stripe_account: destinationAccount },
+      select: { id: true },
+    });
+    receiverUserId = receiverUser?.id ?? null;
+  }
+
+  let platformUserId =
+    process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? null;
+
+  if (!platformUserId) {
+    const adminUser = await prisma.user.findFirst({
+      where: { role_id: 2 },
+      select: { id: true },
+    });
+    platformUserId = adminUser?.id ?? null;
+  }
+
+  console.log("[webhook] Resolved users for paymentIntent succeeded:", {
+    payerUserId,
+    receiverUserId,
+    platformUserId,
+  });
+
+  if (!payerUserId || !receiverUserId) {
+    console.error("[webhook] Cannot resolve payerUserId or receiverUserId:", {
+      payerUserId,
+      receiverUserId,
       destinationAccount,
     });
     return;
-  }
-
-  const payerUser = await prisma.user.findFirst({
-    where: { stripe_account: senderAccount },
-    select: { id: true },
-  });
-  const receiverUser = await prisma.user.findFirst({
-    where: { stripe_account: destinationAccount },
-    select: { id: true },
-  });
-
-  const payerUserId = payerUser?.id ?? null;
-  const receiverUserId = receiverUser?.id ?? null;
-  console.log("[webhook] Resolved users:", {
-    payerUserId,
-    receiverUserId,
-    platformUserId:
-      process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID,
-  });
-
-  const platformUserId =
-    process.env.PLATFORM_USER_ID ?? process.env.COMMISSION_USER_ID ?? null;
-
-  if (!payerUserId || !receiverUserId || !platformUserId) {
-    console.error("[webhook] Missing required user IDs:", {
-      payerUserId,
-      receiverUserId,
-      platformUserId,
-    });
-    throw new Error(
-      "Missing payer/receiver/platform user id for wallet transactions",
-    );
   }
 
   const driverPriceCents = paymentIntent?.metadata?.driver_price_cents
@@ -746,6 +772,59 @@ async function handlePaymentIntentSucceeded(jsonData) {
         description: `${baseDesc} (comisión ${PLATFORM_MARGIN_PERCENT * 100}%)`,
       });
     });
+
+    // Notificación en tiempo real vía SSE a los clientes conectados
+    try {
+      sseManager.sendToUser(payerUserId, "movement.created", {
+        type: "reservation_payment",
+        role: "passenger",
+        amount_cents: -grossAmountCents,
+        amount_eur: (-grossAmountCents / 100).toFixed(2),
+        currency,
+        id_reserva,
+        status: "succeeded",
+        timestamp: new Date().toISOString(),
+      });
+
+      sseManager.sendToUser(receiverUserId, "movement.created", {
+        type: "reservation_revenue",
+        role: "driver",
+        amount_cents: netAmountCents,
+        amount_eur: (netAmountCents / 100).toFixed(2),
+        currency,
+        id_reserva,
+        status: "succeeded",
+        timestamp: new Date().toISOString(),
+      });
+
+      sseManager.sendToUser(payerUserId, "balance.updated", {
+        currency,
+        timestamp: new Date().toISOString(),
+      });
+
+      sseManager.sendToUser(receiverUserId, "balance.updated", {
+        currency,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (sseErr) {
+      console.error("[webhook] Error enviando actualización SSE:", sseErr?.message ?? sseErr);
+    }
+
+    // Notificación push para dispositivos con app cerrada / segundo plano
+    try {
+      if (notificationsService?.sendPushNotification) {
+        notificationsService.sendPushNotification({
+          userId: receiverUserId,
+          title: "¡Ingreso recibido!",
+          body: `Has recibido ${(netAmountCents / 100).toFixed(2)}€ por tu trayecto.`,
+        }).catch(() => {});
+        notificationsService.sendPushNotification({
+          userId: payerUserId,
+          title: "Pago confirmado",
+          body: `Pago de ${(grossAmountCents / 100).toFixed(2)}€ confirmado para tu reserva.`,
+        }).catch(() => {});
+      }
+    } catch (_) {}
 
     console.log("[webhook] Emitting payment_intent.succeeded for reserva", {
       id_reserva,

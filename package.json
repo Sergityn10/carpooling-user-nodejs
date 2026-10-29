@@ -13,7 +13,8 @@
     "prisma:push": "prisma db push",
     "prisma:studio": "prisma studio",
     "prisma:seed": "node prisma/seed.js",
-    "migrate:spatial": "node scripts/migrate-spatial.js"
+    "migrate:spatial": "node scripts/migrate-spatial.js",
+    "test": "node --test test/stripe/*.test.js"
   },
   "prisma": {
     "seed": "node prisma/seed.js"

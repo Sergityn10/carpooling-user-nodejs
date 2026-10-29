@@ -116,13 +116,6 @@ app.use(
   }),
 );
 
-// Middleware
-// app.use((req, res, next) => {
-//     console.log("Mi primer middleware");
-
-//     next();
-// });
-
 // Endpoint de salud y diagnóstico de disponibilidad (Healthcheck para K8s / PM2 / Uptime monitors)
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -214,7 +207,11 @@ app.delete("/api/users/:id", authorization.isLoged, user.removeUser);
 
 app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"));
 app.post("/api/auth/login", authLimiter, authentication.login);
-app.get("/api/auth/register/email/:email", authLimiter, authentication.existEmail);
+app.get(
+  "/api/auth/register/email/:email",
+  authLimiter,
+  authentication.existEmail,
+);
 app.post("/api/auth/register", authLimiter, authentication.register);
 app.get("/api/auth/logout", authentication.logout);
 app.post("/api/auth/refresh", authentication.refresh);
@@ -552,6 +549,16 @@ app.get(
   "/api/payment/wallet-transactions",
   authorization.isLoged,
   payment.getWalletTransactions,
+);
+app.get(
+  "/api/payment/movements",
+  authorization.isLoged,
+  payment.getMovements,
+);
+app.get(
+  "/api/payment/movements/stream",
+  authorization.isLoged,
+  payment.streamMovements,
 );
 app.post(
   "/api/payment/wallet-payout",

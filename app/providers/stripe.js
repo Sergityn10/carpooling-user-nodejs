@@ -12,14 +12,13 @@ async function createStripeConnectAcount(user, country, email) {
       email: user.email,
       id: user.id,
     },
-
     business_type: "individual",
     business_profile: {
-      mcc: "5812",
+      mcc: "4121",
       name: user?.name,
-      product_description: "Servicio de carpooling",
+      product_description: "Servicio de carpooling YouConnext",
       support_email: email,
-      url: "https://carpooling.com",
+      url: process.env.ORIGIN || "https://carpooling-webapp-ten.vercel.app",
     },
     capabilities: {
       card_payments: {
@@ -28,9 +27,6 @@ async function createStripeConnectAcount(user, country, email) {
       transfers: {
         requested: true,
       },
-    },
-    tos_acceptance: {
-      service_agreement: "full",
     },
   });
   return account;
