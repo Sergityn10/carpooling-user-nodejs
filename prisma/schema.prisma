@@ -105,6 +105,18 @@ enum DocumentType {
   MARKETING
 }
 
+enum EnterpriseMemberRole {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum EnterpriseMemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
 // ---------------------------------------------------------------------------
 // MODELS
 // ---------------------------------------------------------------------------
@@ -114,7 +126,8 @@ model Role {
   name       String   @unique @db.VarChar(50)
   created_at DateTime @default(now())
 
-  users User[]
+  users       User[]
+  enterprises Enterprise[]
 
   @@map("roles")
 }
@@ -162,6 +175,7 @@ model User {
   commentsReceived     Comment[]    @relation("commentated")
   eventParticipations  EventParticipant[]
   promoterSuggestions  SugerenciasPromotoras[]
+  enterpriseMemberships EnterpriseMember[]
   legalConsents        LegalConsent[]
 
   @@index([role_id])
@@ -312,27 +326,85 @@ model Event {
 }
 
 model Enterprise {
-  id            String   @id @default(uuid()) @db.VarChar(36)
-  name          String   @db.VarChar(255)
-  email         String   @unique @db.VarChar(255)
-  password      String   @db.VarChar(255)
-  phone         String?  @db.VarChar(30)
-  cif           String?  @unique @db.VarChar(50)
-  website       String?  @db.VarChar(255)
-  address_line1 String?  @db.VarChar(255)
-  address_line2 String?  @db.VarChar(255)
-  city          String?  @db.VarChar(120)
-  province      String?  @db.VarChar(120)
-  postal_code   String?  @db.VarChar(20)
-  country       String   @default("ES") @db.Char(2)
-  verified      Boolean  @default(false)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  id             String    @id @default(uuid()) @db.VarChar(36)
+  name           String    @db.VarChar(255)
+  email          String    @unique @db.VarChar(255)
+  password       String    @db.VarChar(255)
+  description    String?   @db.Text
+  location       String?   @db.VarChar(255)
+  phone          String?   @db.VarChar(30)
+  cif            String?   @unique @db.VarChar(50)
+  website        String?   @db.VarChar(255)
+  logo           String?   @db.MediumText
+  contact_person String?   @db.VarChar(255)
+  sector         String?   @db.VarChar(100)
+  employee_count Int?
+  address_line1  String?   @db.VarChar(255)
+  address_line2  String?   @db.VarChar(255)
+  city           String?   @db.VarChar(120)
+  province       String?   @db.VarChar(120)
+  postal_code    String?   @db.VarChar(20)
+  country        String    @default("ES") @db.Char(2)
+  verified       Boolean   @default(false)
+  is_active      Boolean   @default(true)
+  is_deleted     Boolean   @default(false)
+  deleted_at     DateTime?
+  role_id        Int       @default(3)
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
 
-  serviceEvents ServiceEvent[]
+  role           Role            @relation(fields: [role_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  serviceEvents  ServiceEvent[]
+  platformEvents PlatformEvent[]
+  members        EnterpriseMember[]
+  invitations    EnterpriseInvitation[]
 
   @@index([verified])
+  @@index([is_active])
+  @@index([is_deleted])
+  @@index([role_id])
   @@map("enterprises")
+}
+
+model EnterpriseMember {
+  id            String                 @id @default(uuid()) @db.VarChar(36)
+  enterprise_id String                 @db.VarChar(36)
+  user_id       String                 @db.VarChar(36)
+  role          EnterpriseMemberRole   @default(EMPLOYEE)
+  status        EnterpriseMemberStatus @default(ACTIVE)
+  department    String?                @db.VarChar(100)
+  employee_code String?                @db.VarChar(50)
+  joined_at     DateTime               @default(now())
+  created_at    DateTime               @default(now())
+  updated_at    DateTime               @updatedAt
+
+  enterprise    Enterprise             @relation(fields: [enterprise_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  user          User                   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([enterprise_id, user_id])
+  @@index([enterprise_id])
+  @@index([user_id])
+  @@index([role])
+  @@map("enterprise_members")
+}
+
+model EnterpriseInvitation {
+  id            String               @id @default(uuid()) @db.VarChar(36)
+  enterprise_id String               @db.VarChar(36)
+  email         String               @db.VarChar(255)
+  role          EnterpriseMemberRole @default(EMPLOYEE)
+  department    String?              @db.VarChar(100)
+  employee_code String?              @db.VarChar(50)
+  token         String               @unique @db.VarChar(100)
+  expires_at    DateTime
+  accepted_at   DateTime?
+  created_at    DateTime             @default(now())
+
+  enterprise    Enterprise           @relation(fields: [enterprise_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([enterprise_id])
+  @@index([token])
+  @@map("enterprise_invitations")
 }
 
 model ServiceEvent {
@@ -539,27 +611,30 @@ model SugerenciasPromotoras {
   @@map("sugerencias_promotoras")
 }
 model PlatformEvent {
-  id           String   @id @default(uuid()) @db.VarChar(36)
-  name         String   @db.VarChar(255)
-  company_id   String   @db.VarChar(36)
-  latitude     Decimal? @db.Decimal(10, 7)
-  longitude    Decimal? @db.Decimal(10, 7)
-  image        String?  @db.MediumText
-  unique_code  String   @unique @db.VarChar(20)
-  description  String?  @db.Text
-  url          String?  @db.VarChar(500)
-  ticket_url   String?  @db.VarChar(500)
-  start_date   DateTime
-  end_date     DateTime
-  chat_id      Int?
-  created_at   DateTime @default(now())
-  updated_at   DateTime @updatedAt
+  id            String      @id @default(uuid()) @db.VarChar(36)
+  name          String      @db.VarChar(255)
+  company_id    String?     @db.VarChar(36)
+  enterprise_id String?     @db.VarChar(36)
+  latitude      Decimal?    @db.Decimal(10, 7)
+  longitude     Decimal?    @db.Decimal(10, 7)
+  image         String?     @db.MediumText
+  unique_code   String      @unique @db.VarChar(20)
+  description   String?     @db.Text
+  url           String?     @db.VarChar(500)
+  ticket_url    String?     @db.VarChar(500)
+  start_date    DateTime
+  end_date      DateTime
+  chat_id       Int?
+  created_at    DateTime    @default(now())
+  updated_at    DateTime    @updatedAt
 
-  company       Company            @relation(fields: [company_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  company       Company?           @relation(fields: [company_id], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  enterprise    Enterprise?        @relation(fields: [enterprise_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
   tags          EventTag[]
   participants  EventParticipant[]
 
   @@index([company_id])
+  @@index([enterprise_id])
   @@index([unique_code])
   @@map("platform_events")
 }

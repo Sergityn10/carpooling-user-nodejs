@@ -8,6 +8,7 @@ import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
 import { GeoPoint } from "../utils/geoPoint.js";
 import { findNearbyPlatformEvents } from "../services/geoSpatialService.js";
+import { GoogleMapsProvider } from "../providers/google-maps.js";
 dotenv.config();
 
 function generateUniqueCode() {
@@ -114,6 +115,8 @@ const createEvent = catchAsync(async (req, res, next) => {
     company_id,
     latitude,
     longitude,
+    location,
+    address,
     image,
     description,
     url,
@@ -123,27 +126,92 @@ const createEvent = catchAsync(async (req, res, next) => {
     tags = [],
   } = req.body;
 
-  if (!name || !company_id) {
-    return next(
-      new AppError("name and company_id are required", 400, "VALIDATION_ERROR"),
-    );
-  }
+  // 1. Determinar el creador del evento (Empresa/Organizador o Admin)
+  const isEnterprise = Boolean(req.enterprise);
+  const enterpriseId = req.enterprise?.id || req.body.enterprise_id || null;
+  let targetCompanyId = company_id || null;
 
-  if (!start_date || !end_date) {
+  if (!isEnterprise && !enterpriseId && !targetCompanyId) {
     return next(
       new AppError(
-        "start_date and end_date are required",
+        "Se requiere un organizador (enterprise_id o company_id) para crear el evento",
         400,
         "VALIDATION_ERROR",
       ),
     );
   }
 
-  const company = await prisma.company.findUnique({
-    where: { id: company_id },
-  });
-  if (!company) {
-    return next(new AppError("Company not found", 404, "COMPANY_NOT_FOUND"));
+  if (!name) {
+    return next(
+      new AppError("El nombre del evento es obligatorio", 400, "VALIDATION_ERROR"),
+    );
+  }
+
+  if (!start_date || !end_date) {
+    return next(
+      new AppError(
+        "Las fechas start_date y end_date son obligatorias",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  const startDate = parseUTCDate(start_date);
+  const endDate = parseUTCDate(end_date);
+
+  if (endDate < startDate) {
+    return next(
+      new AppError(
+        "La fecha de finalización (end_date) debe ser posterior o igual a la de inicio (start_date)",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
+
+  if (targetCompanyId) {
+    const company = await prisma.company.findUnique({
+      where: { id: targetCompanyId },
+    });
+    if (!company) {
+      targetCompanyId = null;
+    }
+  }
+
+  if (enterpriseId) {
+    const enterprise = await prisma.enterprise.findUnique({
+      where: { id: enterpriseId },
+    });
+    if (!enterprise) {
+      return next(new AppError("Enterprise not found", 404, "ENTERPRISE_NOT_FOUND"));
+    }
+    if (enterprise.is_deleted || !enterprise.is_active) {
+      return next(
+        new AppError(
+          "La empresa organizadora está inactiva o dada de baja",
+          403,
+          "FORBIDDEN",
+        ),
+      );
+    }
+  }
+
+  // 2. Geocodificación inteligente si no se proporcionan coordenadas explícitas
+  let lat = latitude ? parseFloat(latitude) : null;
+  let lng = longitude ? parseFloat(longitude) : null;
+  const addressToGeocode = location || address;
+
+  if ((lat == null || lng == null) && addressToGeocode) {
+    try {
+      const coords = await GoogleMapsProvider.geocodeAddress(addressToGeocode);
+      if (coords?.lat && coords?.lng) {
+        lat = coords.lat;
+        lng = coords.lng;
+      }
+    } catch (_geoError) {
+      // Continuar con coordenadas nulas si geocodificación falla
+    }
   }
 
   const unique_code = generateUniqueCode();
@@ -151,15 +219,16 @@ const createEvent = catchAsync(async (req, res, next) => {
   const event = await prisma.platformEvent.create({
     data: {
       name,
-      company_id,
-      latitude: latitude ? parseFloat(latitude) : null,
-      longitude: longitude ? parseFloat(longitude) : null,
+      company_id: targetCompanyId,
+      enterprise_id: enterpriseId,
+      latitude: lat,
+      longitude: lng,
       image,
       description,
       url,
       ticket_url,
-      start_date: parseUTCDate(start_date),
-      end_date: parseUTCDate(end_date),
+      start_date: startDate,
+      end_date: endDate,
       unique_code,
       tags:
         tags.length > 0
@@ -170,32 +239,37 @@ const createEvent = catchAsync(async (req, res, next) => {
     },
     include: {
       company: { select: { id: true, name: true } },
+      enterprise: { select: { id: true, name: true, logo: true } },
       tags: { include: { tag: true } },
     },
   });
 
-  const adminId = req.user?.id;
+  const creatorId = req.user?.id || req.enterprise?.id;
   const userToken = req.headers.authorization?.replace("Bearer ", "");
-  if (adminId && userToken) {
-    const chatId = await messagesService.createEventChat(
-      event.id,
-      name,
-      adminId,
-      userToken,
-    );
-    if (chatId) {
-      await prisma.platformEvent.update({
-        where: { id: event.id },
-        data: { chat_id: chatId },
-      });
-      event.chat_id = chatId;
+  if (creatorId && userToken) {
+    try {
+      const chatId = await messagesService.createEventChat(
+        event.id,
+        name,
+        creatorId,
+        userToken,
+      );
+      if (chatId) {
+        await prisma.platformEvent.update({
+          where: { id: event.id },
+          data: { chat_id: chatId },
+        });
+        event.chat_id = chatId;
+      }
+    } catch (_chatErr) {
+      // Continuar si el microservicio de chat no responde
     }
   }
 
   await eventBus.platformEventCreated(
     event.id,
     event.name,
-    event.company_id,
+    event.company_id || event.enterprise_id,
     event.unique_code,
   );
 
@@ -213,6 +287,8 @@ const updateEvent = catchAsync(async (req, res, next) => {
     company_id,
     latitude,
     longitude,
+    location,
+    address,
     image,
     description,
     url,
@@ -227,7 +303,21 @@ const updateEvent = catchAsync(async (req, res, next) => {
     return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
   }
 
-  if (company_id) {
+  // Verificación de permisos: Admin o empresa propietaria
+  const isAdmin = req.user?.role?.name === "admin" || req.isAdmin;
+  const isOwner = req.enterprise && String(existing.enterprise_id) === String(req.enterprise.id);
+
+  if (!isAdmin && !isOwner) {
+    return next(
+      new AppError(
+        "No tienes permisos para modificar este evento.",
+        403,
+        "FORBIDDEN",
+      ),
+    );
+  }
+
+  if (company_id && isAdmin) {
     const company = await prisma.company.findUnique({
       where: { id: company_id },
     });
@@ -238,17 +328,42 @@ const updateEvent = catchAsync(async (req, res, next) => {
 
   const data = {};
   if (name !== undefined) data.name = name;
-  if (company_id !== undefined) data.company_id = company_id;
+  if (company_id !== undefined && isAdmin) data.company_id = company_id;
   if (latitude !== undefined)
     data.latitude = latitude ? parseFloat(latitude) : null;
   if (longitude !== undefined)
     data.longitude = longitude ? parseFloat(longitude) : null;
+
+  // Geocodificación si se actualiza la dirección sin coordenadas
+  const addressToGeocode = location || address;
+  if (addressToGeocode && latitude === undefined && longitude === undefined) {
+    try {
+      const coords = await GoogleMapsProvider.geocodeAddress(addressToGeocode);
+      if (coords?.lat && coords?.lng) {
+        data.latitude = coords.lat;
+        data.longitude = coords.lng;
+      }
+    } catch (_e) {
+      // Continuar sin modificar lat/lng
+    }
+  }
+
   if (image !== undefined) data.image = image;
   if (description !== undefined) data.description = description;
   if (url !== undefined) data.url = url;
   if (ticket_url !== undefined) data.ticket_url = ticket_url;
   if (start_date !== undefined) data.start_date = parseUTCDate(start_date);
   if (end_date !== undefined) data.end_date = parseUTCDate(end_date);
+
+  if (data.start_date && data.end_date && data.end_date < data.start_date) {
+    return next(
+      new AppError(
+        "La fecha de finalización debe ser posterior o igual a la de inicio",
+        400,
+        "VALIDATION_ERROR",
+      ),
+    );
+  }
 
   if (tags !== undefined) {
     await prisma.eventTag.deleteMany({ where: { event_id: id } });
@@ -264,6 +379,7 @@ const updateEvent = catchAsync(async (req, res, next) => {
     data,
     include: {
       company: { select: { id: true, name: true } },
+      enterprise: { select: { id: true, name: true, logo: true } },
       tags: { include: { tag: true } },
     },
   });
@@ -285,6 +401,20 @@ const deleteEvent = catchAsync(async (req, res, next) => {
     return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
   }
 
+  // Verificación de permisos: Admin o empresa propietaria
+  const isAdmin = req.user?.role?.name === "admin" || req.isAdmin;
+  const isOwner = req.enterprise && String(existing.enterprise_id) === String(req.enterprise.id);
+
+  if (!isAdmin && !isOwner) {
+    return next(
+      new AppError(
+        "No tienes permisos para eliminar este evento.",
+        403,
+        "FORBIDDEN",
+      ),
+    );
+  }
+
   if (existing.chat_id) {
     const userToken = req.headers.authorization?.replace("Bearer ", "");
     if (userToken) {
@@ -299,6 +429,52 @@ const deleteEvent = catchAsync(async (req, res, next) => {
   return res.status(200).send({
     status: "Success",
     message: "Event deleted successfully",
+  });
+});
+
+/**
+ * Consulta de eventos creados por la empresa/organización en sesión.
+ */
+const getMyEnterpriseEvents = catchAsync(async (req, res, next) => {
+  const enterpriseId = req.enterprise?.id;
+  if (!enterpriseId) {
+    return next(
+      new AppError(
+        "Se requiere autenticación como organización",
+        401,
+        "UNAUTHORIZED",
+      ),
+    );
+  }
+
+  const { page = 1, limit = 20 } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10));
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+  const skip = (pageNum - 1) * limitNum;
+
+  const [events, total] = await Promise.all([
+    prisma.platformEvent.findMany({
+      where: { enterprise_id: enterpriseId },
+      include: {
+        tags: { include: { tag: true } },
+        _count: { select: { participants: true } },
+      },
+      skip,
+      take: limitNum,
+      orderBy: { start_date: "asc" },
+    }),
+    prisma.platformEvent.count({ where: { enterprise_id: enterpriseId } }),
+  ]);
+
+  return res.status(200).json({
+    status: "Success",
+    events,
+    pagination: {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum),
+    },
   });
 });
 
@@ -557,4 +733,5 @@ export const methods = {
   getEventParticipants,
   getEventParticipantsDetailed,
   getMyJoinedEvents,
+  getMyEnterpriseEvents,
 };
