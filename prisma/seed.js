@@ -17,7 +17,13 @@ async function main() {
     create: { id: 2, name: "admin" },
   });
 
-  console.log("Roles created:", { userRole, adminRole });
+  const enterpriseRole = await prisma.role.upsert({
+    where: { name: "enterprise" },
+    update: {},
+    create: { id: 3, name: "enterprise" },
+  });
+
+  console.log("Roles created:", { userRole, adminRole, enterpriseRole });
 
   // 2. Create default admin user
   const adminEmail = process.env.ADMIN_EMAIL || "admin@youconnext.com";

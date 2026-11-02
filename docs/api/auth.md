@@ -1,10 +1,150 @@
 # Autenticación de Usuarios (`/api/auth`)
 
-Endpoints para registro, login, logout, validación de sesión y OAuth con Google para usuarios normales de la aplicación.
+Endpoints para inicio de sesión unificado, registro, login clásico, logout, validación de sesión y OAuth con Google para usuarios y organizaciones de YouConnext.
 
 ---
 
-## 1. Login
+## 1. Inicio de Sesión Unificado (Recomendado para App Móvil y Clientes Modernos)
+
+**URL:** `POST /api/auth/unified-login`
+
+**Autenticación:** No requerida.
+
+**Descripción:** Endpoint polimórfico unificado que permite autenticar en una única función tanto mediante **Email + Contraseña** como mediante **Token de Google OAuth (`id_token`)**. Detecta automáticamente si la cuenta corresponde a una **Persona Jurídica (Organización/Empresa)** o a una **Persona Física (Usuario Particular o Empleado)** y devuelve una respuesta estructurada con su clasificación, datos corporativos y mapa de permisos para gobernar la interfaz y navegación móvil.
+
+### Formato de Entrada A: Email y Contraseña (JSON)
+```json
+{
+  "email": "usuario@empresa.com",
+  "password": "Password123#",
+  "auth_type": "auto" // Opcional: "auto" (default), "enterprise", "user"
+}
+```
+
+### Formato de Entrada B: Google OAuth (JSON)
+```json
+{
+  "id_token": "<google_id_token_jwt>",
+  "auth_method": "google"
+}
+```
+
+### Salida Estandarizada (200 OK)
+
+#### Ejemplo 1: Persona Física con Puesto Corporativo (Empleado / Gestor / Admin de Empresa)
+```json
+{
+  "status": "Success",
+  "message": "Autenticación exitosa",
+  "token": "<JWT_access_token>",
+  "refreshToken": "<refresh_token_uuid>",
+  "identity": {
+    "type": "NATURAL_PERSON",
+    "classification": "ENTERPRISE_MANAGER",
+    "user_id": "usr-uuid-1234",
+    "email": "carlos.gomez@empresa.com",
+    "display_name": "Carlos Gómez",
+    "avatar": "https://youconnext.es/avatars/carlos.jpg",
+    "system_role": "user"
+  },
+  "legal_entity": null,
+  "natural_person": {
+    "dni": "12345678Z",
+    "first_name": "Carlos",
+    "last_name": "Gómez",
+    "phone": "+34600112233",
+    "is_driver": true,
+    "cars_count": 1,
+    "is_corporate_member": true,
+    "primary_membership": {
+      "enterprise_id": "ent-uuid-999",
+      "enterprise_name": "Iberdrola S.A.",
+      "corporate_role": "MANAGER",
+      "corporate_role_title": "Gestor de Movilidad",
+      "department": "Sostenibilidad y RSC",
+      "employee_code": "IB-902",
+      "joined_at": "2026-10-29T10:00:00.000Z"
+    },
+    "memberships": [
+      {
+        "enterprise_id": "ent-uuid-999",
+        "enterprise_name": "Iberdrola S.A.",
+        "corporate_role": "MANAGER",
+        "corporate_role_title": "Gestor de Movilidad",
+        "department": "Sostenibilidad y RSC",
+        "employee_code": "IB-902",
+        "joined_at": "2026-10-29T10:00:00.000Z"
+      }
+    ]
+  },
+  "permissions": {
+    "can_access_personal_mode": true,
+    "can_access_corporate_mode": true,
+    "can_switch_dashboard": true,
+    "can_manage_enterprise": false,
+    "can_invite_members": false,
+    "can_remove_members": false,
+    "can_change_member_role": false,
+    "can_create_corporate_events": true,
+    "can_view_cae_metrics": true,
+    "can_access_corporate_routes": true
+  },
+  "initial_mode": "personal"
+}
+```
+
+#### Ejemplo 2: Persona Jurídica (Cuenta de Organización / Empresa)
+```json
+{
+  "status": "Success",
+  "message": "Autenticación exitosa",
+  "token": "<JWT_access_token>",
+  "refreshToken": null,
+  "identity": {
+    "type": "LEGAL_ENTITY",
+    "classification": "ORGANIZATION",
+    "user_id": "ent-uuid-999",
+    "email": "movilidad@iberdrola.com",
+    "display_name": "Iberdrola S.A.",
+    "avatar": "https://iberdrola.com/logo.png",
+    "system_role": "enterprise"
+  },
+  "legal_entity": {
+    "enterprise_id": "ent-uuid-999",
+    "cif": "A48010611",
+    "name": "Iberdrola S.A.",
+    "sector": "Energía y Sostenibilidad",
+    "location": "Bilbao / Madrid",
+    "description": "Líder global en energías renovables",
+    "phone": "+34910000000",
+    "website": "https://www.iberdrola.com",
+    "verified": true
+  },
+  "natural_person": null,
+  "permissions": {
+    "can_access_personal_mode": false,
+    "can_access_corporate_mode": true,
+    "can_switch_dashboard": false,
+    "can_manage_enterprise": true,
+    "can_invite_members": true,
+    "can_remove_members": true,
+    "can_change_member_role": true,
+    "can_create_corporate_events": true,
+    "can_view_cae_metrics": true,
+    "can_access_corporate_routes": true
+  },
+  "initial_mode": "enterprise"
+}
+```
+
+**Errores comunes:**
+- `400` — Validación de esquema fallida (falta email/contraseña o token de Google).
+- `401` — Credenciales incorrectas o token de Google expirado.
+- `403` — Cuenta suspendida o dada de baja por borrado lógico.
+
+---
+
+## 2. Login Tradicional (Webapp B2C)
 
 **URL:** `POST /api/auth/login`
 

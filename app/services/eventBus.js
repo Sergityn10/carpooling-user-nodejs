@@ -296,6 +296,65 @@ async function walletConfigUpdated(userId, config, adminId) {
   });
 }
 
+async function enterpriseMemberInvited(
+  payloadOrEnterpriseId,
+  email,
+  role,
+  token,
+) {
+  let eventPayload;
+  if (
+    typeof payloadOrEnterpriseId === "object" &&
+    payloadOrEnterpriseId !== null
+  ) {
+    eventPayload = {
+      invitation_id: payloadOrEnterpriseId.invitation_id ?? null,
+      enterprise_id: payloadOrEnterpriseId.enterprise_id,
+      enterprise_name: payloadOrEnterpriseId.enterprise_name ?? null,
+      email: payloadOrEnterpriseId.email,
+      role: payloadOrEnterpriseId.role,
+      department: payloadOrEnterpriseId.department ?? null,
+      employee_code: payloadOrEnterpriseId.employee_code ?? null,
+      token: payloadOrEnterpriseId.token,
+      expires_at: payloadOrEnterpriseId.expires_at ?? null,
+      invitation_link: payloadOrEnterpriseId.invitation_link ?? null,
+      invited_by: payloadOrEnterpriseId.invited_by ?? null,
+    };
+  } else {
+    eventPayload = {
+      enterprise_id: payloadOrEnterpriseId,
+      email,
+      role,
+      token,
+    };
+  }
+  await rabbitmq.publish("enterprise.member.invited", eventPayload);
+}
+
+async function enterpriseMemberJoined(enterpriseId, userId, role) {
+  await rabbitmq.publish("enterprise.member.joined", {
+    enterprise_id: enterpriseId,
+    user_id: userId,
+    role,
+  });
+}
+
+async function enterpriseMemberRemoved(enterpriseId, userId, memberId) {
+  await rabbitmq.publish("enterprise.member.removed", {
+    enterprise_id: enterpriseId,
+    user_id: userId,
+    member_id: memberId,
+  });
+}
+
+async function enterpriseMemberRoleChanged(enterpriseId, memberId, newRole) {
+  await rabbitmq.publish("enterprise.member.role_changed", {
+    enterprise_id: enterpriseId,
+    member_id: memberId,
+    new_role: newRole,
+  });
+}
+
 export const eventBus = {
   userRegistered,
   userLogin,
@@ -325,4 +384,8 @@ export const eventBus = {
   suggestionCreated,
   suggestionAccepted,
   walletConfigUpdated,
+  enterpriseMemberInvited,
+  enterpriseMemberJoined,
+  enterpriseMemberRemoved,
+  enterpriseMemberRoleChanged,
 };

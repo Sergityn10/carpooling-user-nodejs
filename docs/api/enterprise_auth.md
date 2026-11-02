@@ -1,32 +1,35 @@
 # Autenticación de Empresas (`/api/enterprise/auth`)
 
-Endpoints para registro, login, logout y validación de sesión para cuentas de empresa (enterprise).
+Endpoints para gestión de cuentas de organización/empresa (`role_id: 3`, rol `"enterprise"`), autenticación corporativa, cambio de contraseñas y compatibilidad con el inicio de sesión unificado.
+
+> **Nota de Arquitectura:** Las organizaciones también pueden autenticarse a través del endpoint unificado [`POST /api/auth/unified-login`](auth.md#1-inicio-de-sesion-unificado), el cual clasifica su identidad como `LEGAL_ENTITY` / `ORGANIZATION`.
 
 ---
 
-## 1. Registro de Empresa
+## 1. Registro de Empresa (Exclusivo Administrador)
 
-**URL:** `POST /api/enterprise/auth/register`
+**URL:** `POST /api/enterprise/auth/register` (o `POST /api/admin/enterprises`)
 
-**Autenticación:** No requerida.
+**Autenticación:** Requerida (Solo Super Administrador de la plataforma).
 
-**Descripción:** Registra una nueva empresa en la BD. Hashea la contraseña con bcrypt. Genera un JWT y lo guarda en una cookie `enterprise_access_token`.
+**Descripción:** Da de alta una nueva organización corporativa en el sistema. Hashea la contraseña con bcrypt (10 rondas de salt). Registra la empresa con `role_id: 3` (`enterprise`), estado activo y borrado lógico habilitado (`is_deleted: false`).
 
 **Entrada (body JSON):**
 ```json
 {
-  "name": "string (requerido)",
-  "email": "string (email válido, único)",
-  "password": "string (requerido)",
-  "phone": "string (opcional)",
-  "cif": "string (opcional, único)",
-  "website": "string (opcional)",
-  "address_line1": "string (opcional)",
-  "address_line2": "string (opcional)",
-  "city": "string (opcional)",
-  "province": "string (opcional)",
-  "postal_code": "string (opcional)",
-  "country": "string (default: ES)"
+  "name": "Iberdrola S.A.",
+  "email": "movilidad@iberdrola.com",
+  "password": "Password123#",
+  "description": "Líder global en sostenibilidad y movilidad compartida",
+  "location": "Bilbao / Madrid",
+  "phone": "+34910000000",
+  "cif": "A48010611",
+  "website": "https://www.iberdrola.com",
+  "sector": "Energía",
+  "employee_count": 35000,
+  "city": "Madrid",
+  "province": "Madrid",
+  "country": "ES"
 }
 ```
 
@@ -34,48 +37,46 @@ Endpoints para registro, login, logout y validación de sesión para cuentas de 
 ```json
 {
   "status": "Success",
-  "message": "Enterprise registered successfully",
-  "token": "<JWT>",
+  "message": "Organización registrada exitosamente por el administrador.",
   "enterprise": {
-    "id": 1,
-    "name": "Mi Empresa",
-    "email": "info@empresa.com",
-    "phone": null,
-    "cif": null,
-    "website": null,
-    "address_line1": null,
-    "address_line2": null,
-    "city": null,
-    "province": null,
-    "postal_code": null,
-    "country": "ES",
-    "verified": 0,
-    "created_at": "2024-01-01T00:00:00Z"
+    "id": "ent-uuid-999",
+    "name": "Iberdrola S.A.",
+    "email": "movilidad@iberdrola.com",
+    "description": "Líder global en sostenibilidad y movilidad compartida",
+    "location": "Bilbao / Madrid",
+    "phone": "+34910000000",
+    "cif": "A48010611",
+    "website": "https://www.iberdrola.com",
+    "sector": "Energía",
+    "employeeCount": 35000,
+    "role": "enterprise",
+    "isActive": true,
+    "verified": false,
+    "createdAt": "2026-10-29T10:00:00.000Z"
   }
 }
 ```
 
 **Errores:**
-- `400` — Validación fallida o empresa ya existe.
-- `500` — Error al registrar.
-
-**Cookies establecidas:** `enterprise_access_token` (JWT, expira en `JWT_COOKIES_EXPIRATION_TIME` días).
+- `400` — Validación de esquema fallida (campos obligatorios ausentes o formato inválido).
+- `403` — Acceso denegado (el solicitante no es Super Administrador).
+- `409` — Ya existe una empresa registrada con ese correo electrónico o CIF.
 
 ---
 
-## 2. Login de Empresa
+## 2. Login Directo de Empresa
 
 **URL:** `POST /api/enterprise/auth/login`
 
 **Autenticación:** No requerida.
 
-**Descripción:** Autentica una empresa con email y contraseña. Si es válida, genera un JWT y lo guarda en cookie.
+**Descripción:** Autentica una empresa con email y contraseña corporativa. Valida que la empresa no haya sido eliminada lógicamente (`is_deleted: false`) y que esté activa (`is_active: true`). Emite un JWT con `role: "enterprise"` y establece la cookie `enterprise_access_token`.
 
 **Entrada (body JSON):**
 ```json
 {
-  "email": "string (email válido)",
-  "password": "string"
+  "email": "movilidad@iberdrola.com",
+  "password": "Password123#"
 }
 ```
 
@@ -83,20 +84,52 @@ Endpoints para registro, login, logout y validación de sesión para cuentas de 
 ```json
 {
   "status": "Success",
-  "message": "Login successful",
-  "token": "<JWT>",
+  "message": "Inicio de sesión correcto.",
+  "token": "<JWT_access_token>",
+  "role": "enterprise",
   "enterprise": {
-    "id": 1,
-    "name": "Mi Empresa",
-    "email": "info@empresa.com",
-    "verified": 0
+    "id": "ent-uuid-999",
+    "name": "Iberdrola S.A.",
+    "email": "movilidad@iberdrola.com",
+    "sector": "Energía",
+    "location": "Bilbao / Madrid",
+    "role": "enterprise",
+    "isActive": true
   }
 }
 ```
 
 **Errores:**
-- `400` — Validación fallida.
-- `404` — Login fallido (empresa no encontrada o password incorrecto).
+- `400` — Validación de esquema fallida.
+- `401` — Credenciales incorrectas.
+- `403` — Organización dada de baja o suspendida temporalmente.
+
+---
+
+## 3. Cambio de Contraseña de Empresa
+
+**URL:** `POST /api/enterprise/auth/change-password`
+
+**Autenticación:** Requerida (`isEnterpriseLoged`).
+
+**Descripción:** Permite a la organización actualizar su clave corporativa. Valida la contraseña actual, exige complejidad de seguridad y previene reutilización inmediata.
+
+**Entrada (body JSON):**
+```json
+{
+  "current_password": "OldPassword123#",
+  "new_password": "NewStrongPassword2026@",
+  "confirm_password": "NewStrongPassword2026@"
+}
+```
+
+**Salida (200):**
+```json
+{
+  "status": "Success",
+  "message": "Contraseña actualizada exitosamente."
+}
+```
 
 **Cookies establecidas:** `enterprise_access_token`.
 

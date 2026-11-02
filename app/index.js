@@ -9,6 +9,7 @@ import { authorization } from "./middlewares/authorization.js";
 import { methods as cryptoUtils } from "./utils/crypto.js";
 import { fileURLToPath } from "url";
 import { methods as authentication } from "./controllers/authentication.js";
+import { unifiedAuthentication } from "./controllers/unified_authentication.js";
 import { TelegramInfoServices as telegramInfo } from "./controllers/telegramInfo.js";
 import prisma from "./lib/prisma.js";
 import { methods as user } from "./controllers/user.js";
@@ -20,6 +21,7 @@ import { enterpriseAuthorization } from "./middlewares/enterpriseAuthorization.j
 import { methods as enterpriseAuthentication } from "./controllers/enterprise_authentication.js";
 import { methods as enterprise } from "./controllers/enterprise.js";
 import { methods as enterpriseServiceEvents } from "./controllers/enterprise_service_events.js";
+import { enterpriseMembers } from "./controllers/enterprise_members.js";
 import { methods as events } from "./controllers/events.js";
 import { methods as companies } from "./controllers/companies.js";
 import { methods as suggestions } from "./controllers/suggestions.js";
@@ -206,6 +208,7 @@ app.patch("/api/users", authorization.isLoged, user.updateMyUserPatch);
 app.delete("/api/users/:id", authorization.isLoged, user.removeUser);
 
 app.get("/", (req, res) => res.sendFile(__dirname + "/pages/login.html"));
+app.post("/api/auth/unified-login", authLimiter, unifiedAuthentication.unifiedLogin);
 app.post("/api/auth/login", authLimiter, authentication.login);
 app.get(
   "/api/auth/register/email/:email",
@@ -219,6 +222,7 @@ app.get("/api/auth/validate", authentication.validate);
 app.post("/api/auth/oauth", authentication.oauthGoogle);
 app.post("/api/auth/oauth/android", authentication.oauthGoogleAndroid);
 
+// --- Enterprise Public Auth ---
 app.post("/api/enterprise/auth/register", (req, res) =>
   enterpriseAuthentication.register(req, res),
 );
@@ -232,6 +236,7 @@ app.get("/api/enterprise/auth/validate", (req, res) =>
   enterpriseAuthentication.validate(req, res),
 );
 
+// --- Enterprise Self-Service ---
 app.get(
   "/api/enterprise/me",
   enterpriseAuthorization.isEnterpriseLoged,
@@ -241,6 +246,60 @@ app.patch(
   "/api/enterprise/me",
   enterpriseAuthorization.isEnterpriseLoged,
   (req, res) => enterprise.patchMe(req, res),
+);
+app.patch(
+  "/api/enterprise/auth/change-password",
+  enterpriseAuthorization.isEnterpriseLoged,
+  (req, res) => enterpriseAuthentication.changePassword(req, res),
+);
+
+// --- Enterprise Admin Management ---
+app.post(
+  "/api/admin/enterprises",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.createEnterpriseByAdmin(req, res),
+);
+app.get(
+  "/api/admin/enterprises",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.getAllEnterprises(req, res),
+);
+app.get(
+  "/api/admin/enterprises/metrics",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.getEnterpriseMetrics(req, res),
+);
+app.delete(
+  "/api/admin/enterprises/:id",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.softDeleteEnterprise(req, res),
+);
+app.patch(
+  "/api/admin/enterprises/:id/restore",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.restoreEnterprise(req, res),
+);
+app.patch(
+  "/api/admin/enterprises/:id/password",
+  authorization.onlyAdmin,
+  (req, res) => enterprise.adminResetPassword(req, res),
+);
+
+// --- Shared Enterprise Operations (Admin or matching Enterprise) ---
+app.get(
+  "/api/enterprises/:id",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  (req, res) => enterprise.getEnterpriseById(req, res),
+);
+app.patch(
+  "/api/enterprises/:id",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  (req, res) => enterprise.updateEnterprise(req, res),
+);
+app.put(
+  "/api/enterprises/:id",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  (req, res) => enterprise.updateEnterprise(req, res),
 );
 
 app.post(
@@ -267,6 +326,60 @@ app.delete(
   "/api/enterprise/service-events/:id",
   enterpriseAuthorization.isEnterpriseLoged,
   (req, res) => enterpriseServiceEvents.remove(req, res),
+);
+
+// --- Gestión de Empleados, Miembros B2B e Invitaciones por Email ---
+app.post(
+  "/api/enterprise/:enterpriseId/members/invite",
+  enterpriseAuthorization.requireEnterpriseRole("ADMIN"),
+  (req, res) => enterpriseMembers.inviteMember(req, res),
+);
+
+app.get(
+  "/api/enterprise/invitations/validate",
+  (req, res) => enterpriseMembers.validateInvitation(req, res),
+);
+
+app.post(
+  "/api/enterprise/invitations/accept",
+  authorization.isLoged,
+  (req, res) => enterpriseMembers.acceptInvitation(req, res),
+);
+
+app.get(
+  "/api/enterprise/:enterpriseId/members",
+  enterpriseAuthorization.requireEnterpriseRole("MANAGER"),
+  (req, res) => enterpriseMembers.getMembers(req, res),
+);
+
+app.patch(
+  "/api/enterprise/:enterpriseId/members/:memberId/role",
+  enterpriseAuthorization.requireEnterpriseRole("ADMIN"),
+  (req, res) => enterpriseMembers.changeMemberRole(req, res),
+);
+
+app.delete(
+  "/api/enterprise/:enterpriseId/members/:memberId",
+  enterpriseAuthorization.requireEnterpriseRole("ADMIN"),
+  (req, res) => enterpriseMembers.removeMember(req, res),
+);
+
+app.get(
+  "/api/enterprise/:enterpriseId/invitations",
+  enterpriseAuthorization.requireEnterpriseRole("ADMIN"),
+  (req, res) => enterpriseMembers.getPendingInvitations(req, res),
+);
+
+app.delete(
+  "/api/enterprise/:enterpriseId/invitations/:invitationId",
+  enterpriseAuthorization.requireEnterpriseRole("ADMIN"),
+  (req, res) => enterpriseMembers.revokeInvitation(req, res),
+);
+
+app.get(
+  "/api/user/my-organizations",
+  authorization.isLoged,
+  (req, res) => enterpriseMembers.getMyCorporateMemberships(req, res),
 );
 
 app.get("/api/auth/oauth/register", async (req, res) => {
@@ -690,9 +803,26 @@ app.get(
 );
 app.get("/api/events/code/:code", authorization.isLoged, events.getEventByCode);
 app.get("/api/events/:id", events.getEventById);
-app.post("/api/events", authorization.isLoged, events.createEvent);
-app.patch("/api/events/:id", authorization.onlyAdmin, events.updateEvent);
-app.delete("/api/events/:id", authorization.onlyAdmin, events.deleteEvent);
+app.post(
+  "/api/events",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  events.createEvent,
+);
+app.get(
+  "/api/enterprise/events",
+  enterpriseAuthorization.isEnterpriseLoged,
+  events.getMyEnterpriseEvents,
+);
+app.patch(
+  "/api/events/:id",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  events.updateEvent,
+);
+app.delete(
+  "/api/events/:id",
+  enterpriseAuthorization.isEnterpriseOrAdmin,
+  events.deleteEvent,
+);
 app.post("/api/events/:id/join", authorization.isLoged, events.joinEvent);
 app.delete("/api/events/:id/join", authorization.isLoged, events.leaveEvent);
 app.get("/api/events/:id/participants", events.getEventParticipants);

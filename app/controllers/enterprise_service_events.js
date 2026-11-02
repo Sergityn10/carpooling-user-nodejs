@@ -38,7 +38,7 @@ async function create(req, res) {
   });
   const enterpriseId = enterpriseRecord?.id;
 
-  if (!Number.isFinite(enterpriseId)) {
+  if (!enterpriseId) {
     return res.status(400).send({
       status: "Error",
       message: "Empresa no encontrada en BD (enterprise_id inválido).",

@@ -1,6 +1,26 @@
 # Gestión de Usuarios (`/api/users`)
 
-Endpoints para consultar, actualizar y eliminar usuarios. La mayoría requieren autenticación.
+Endpoints para consultar, actualizar y gestionar usuarios en YouConnext, incluyendo la diferenciación de identidades y membresías corporativas B2B.
+
+---
+
+## Modelo de Identidad: Persona Jurídica vs. Persona Física
+
+YouConnext distingue de forma estricta entre dos categorías jurídicas:
+
+### 1. Persona Jurídica (`LEGAL_ENTITY` - Rol `enterprise`)
+- Entidad institucional (empresa u organización registrada mediante CIF/NIF).
+- Posee métricas globales de ahorro energético (CAE), eventos corporativos y gestión de flota laboral.
+- Inicia sesión directamente en la suite de Organización (`initial_mode: "enterprise"`).
+
+### 2. Persona Física (`NATURAL_PERSON` - Rol `user` o `admin`)
+- Ser humano particular con DNI/NIE, número de teléfono, vehículos personales y monedero.
+- Puede tener vinculación laboral activa con una o varias empresas (`EnterpriseMember`):
+  - **`EnterpriseAdmin`**: Administrador corporativo. Gestiona altas/bajas de empleados, invitaciones por email y roles internos.
+  - **`EnterpriseManager`**: Coordinador de movilidad. Crea eventos corporativos, modera chats y monitoriza emisiones de CO2.
+  - **`EnterpriseEmployee`**: Empleado. Accede a rutas corporativas exclusivas y porta el carnet digital de la empresa.
+  - **`RegularUser`**: Usuario particular independiente sin vinculación corporativa activa.
+- **Independencia de cuenta:** Si un empleado es desvinculado de una empresa, su cuenta de YouConnext, sus coches y su saldo permanecen 100% intactos.
 
 ---
 
