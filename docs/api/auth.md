@@ -142,6 +142,26 @@ Endpoints para inicio de sesión unificado, registro, login clásico, logout, va
 - `401` — Credenciales incorrectas o token de Google expirado.
 - `403` — Cuenta suspendida o dada de baja por borrado lógico.
 
+### Matriz de Permisos por Clasificación de Identidad
+
+| Clasificación | Tipo | `can_access_personal_mode` | `can_access_corporate_mode` | `can_switch_dashboard` | `can_manage_enterprise` | `can_invite_members` / `can_remove_members` / `can_change_member_role` | `can_create_corporate_events` | `can_view_cae_metrics` | `initial_mode` | Redirección Inicial Frontend |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ORGANIZATION` | Persona Jurídica | `false` | `true` | `false` | `true` | `true` | `true` | `true` | `"enterprise"` | `/enterprise/dashboard` |
+| `ENTERPRISE_ADMIN` | Persona Física | `true` | `true` | `true` | `true` | `true` | `true` | `true` | `"personal"` | `/dashboard` (con toggle B2B) |
+| `ENTERPRISE_MANAGER` | Persona Física | `true` | `true` | `true` | `false` | `false` | `true` | `true` | `"personal"` | `/dashboard` (con toggle B2B) |
+| `ENTERPRISE_EMPLOYEE` | Persona Física | `true` | `true` | `true` | `false` | `false` | `false` | `false` | `"personal"` | `/dashboard` (con toggle B2B) |
+| `REGULAR_USER` | Persona Física | `true` | `false` | `false` | `false` | `false` | `false` | `false` | `"personal"` | `/dashboard` |
+
+### Guía de Enrutamiento para Frontend y Móvil
+
+1. **Almacenar el Estado Global:** Al recibir la respuesta del login unificado, persistir `identity`, `permissions`, `natural_person`, `legal_entity` y el token en el estado de autenticación (React Context, Redux o Zustand).
+2. **Redirección de Pantalla Inicial:**
+   - Si `initial_mode === "enterprise"`, navegar directamente a la ruta `/enterprise/dashboard`.
+   - Si `initial_mode === "personal"`, navegar a la ruta estándar `/dashboard` (o home).
+3. **Selector de Modo Personal / Corporativo:**
+   - Si `permissions.can_switch_dashboard === true`, renderizar en la barra de navegación o cabecera el interruptor para alternar la vista entre el modo Particular (viajes compartidos, coches personales) y el modo Empresa (eventos corporativos, métricas de ahorro de CO2 / CAE).
+4. **Consulta posterior de membresías:** Un usuario autenticado puede consultar o refrescar sus membresías corporativas activas en cualquier momento mediante [`GET /api/user/my-organizations`](enterprise_members.md#9-mis-membresias-corporativas-usuario-en-sesion).
+
 ---
 
 ## 2. Login Tradicional (Webapp B2C)

@@ -2,7 +2,10 @@
 
 Endpoints para gestión de cuentas de organización/empresa (`role_id: 3`, rol `"enterprise"`), autenticación corporativa, cambio de contraseñas y compatibilidad con el inicio de sesión unificado.
 
-> **Nota de Arquitectura:** Las organizaciones también pueden autenticarse a través del endpoint unificado [`POST /api/auth/unified-login`](auth.md#1-inicio-de-sesion-unificado), el cual clasifica su identidad como `LEGAL_ENTITY` / `ORGANIZATION`.
+> **Nota de Arquitectura:**
+> - Las organizaciones también pueden autenticarse a través del endpoint unificado [`POST /api/auth/unified-login`](auth.md#1-inicio-de-sesion-unificado), el cual clasifica su identidad como `LEGAL_ENTITY` / `ORGANIZATION`.
+> - Para gestionar a los empleados, colaboradores e invitaciones corporativas de la organización, consulta [Gestión de Miembros e Invitaciones](enterprise_members.md).
+> - Para la implementación en la Webapp y App Móvil, consulta la [Guía de Integración Frontend para Empresas](../frontend-enterprise-guide.md).
 
 ---
 

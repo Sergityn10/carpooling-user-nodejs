@@ -558,6 +558,72 @@ async function getEnterpriseMetrics(req, res) {
   }
 }
 
+async function getMyMetrics(req, res) {
+  try {
+    const enterpriseId = req.enterprise?.id;
+    if (!enterpriseId) {
+      return res.status(401).json({
+        status: "Error",
+        message: "Se requiere autenticación corporativa activa.",
+      });
+    }
+
+    const now = new Date();
+
+    const [
+      totalPlatformEvents,
+      activePlatformEvents,
+      totalServiceEvents,
+      activeServiceEvents,
+      membersCount,
+      serviceParticipantsCount,
+      platformParticipantsCount,
+    ] = await Promise.all([
+      prisma.platformEvent.count({ where: { enterprise_id: enterpriseId } }),
+      prisma.platformEvent.count({
+        where: { enterprise_id: enterpriseId, end_date: { gte: now } },
+      }),
+      prisma.serviceEvent.count({ where: { enterprise_id: enterpriseId } }),
+      prisma.serviceEvent.count({
+        where: { enterprise_id: enterpriseId, end_at: { gte: now } },
+      }),
+      prisma.enterpriseMember.count({
+        where: { enterprise_id: enterpriseId, status: "ACTIVE" },
+      }),
+      prisma.serviceEventParticipant.count({
+        where: { serviceEvent: { enterprise_id: enterpriseId } },
+      }),
+      prisma.eventParticipant.count({
+        where: { event: { enterprise_id: enterpriseId } },
+      }),
+    ]);
+
+    const totalEvents = totalPlatformEvents + totalServiceEvents;
+    const activeEvents = activePlatformEvents + activeServiceEvents;
+    const usersRegistered =
+      membersCount + serviceParticipantsCount + platformParticipantsCount;
+    const co2Avoided = Number((usersRegistered * 4.2).toFixed(1));
+
+    return res.status(200).json({
+      status: "Success",
+      usersRegistered,
+      users_registered: usersRegistered,
+      activeEvents,
+      active_events: activeEvents,
+      totalEvents,
+      total_events: totalEvents,
+      co2Avoided,
+      co2_avoided: co2Avoided,
+    });
+  } catch (error) {
+    console.error("Error al obtener métricas corporativas:", error);
+    return res.status(500).json({
+      status: "Error",
+      message: "No se pudieron calcular las métricas corporativas.",
+    });
+  }
+}
+
 export const methods = {
   getMe,
   patchMe,
@@ -569,4 +635,5 @@ export const methods = {
   restoreEnterprise,
   adminResetPassword,
   getEnterpriseMetrics,
+  getMyMetrics,
 };

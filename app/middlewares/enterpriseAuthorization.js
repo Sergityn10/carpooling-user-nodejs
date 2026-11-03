@@ -36,15 +36,51 @@ async function reviseEnterprise(req) {
       return false;
     }
 
-    const enterpriseId = decoded?.enterprise_id || decoded?.userId;
+    const enterpriseId = decoded?.enterprise_id;
+    const userId = decoded?.userId;
     const email = decoded?.email;
 
-    if (!enterpriseId && !email) return false;
+    if (!enterpriseId && !userId && !email) return false;
 
-    const enterprise = await prisma.enterprise.findFirst({
-      where: enterpriseId ? { id: enterpriseId } : { email },
-      include: { role: true },
-    });
+    let enterprise = null;
+
+    // 1. Si el token tiene enterprise_id explícito
+    if (enterpriseId) {
+      enterprise = await prisma.enterprise.findUnique({
+        where: { id: enterpriseId },
+        include: { role: true },
+      });
+    }
+
+    // 2. Si no se encontró y hay email directo de empresa
+    if (!enterprise && email) {
+      enterprise = await prisma.enterprise.findUnique({
+        where: { email },
+        include: { role: true },
+      });
+    }
+
+    // 3. Si no se encontró y hay userId (o el enterpriseId era en realidad un userId de usuario físico)
+    const targetUserId = userId || (enterpriseId && !enterprise ? enterpriseId : null);
+    if (!enterprise && targetUserId) {
+      // Probar si targetUserId existe directamente en enterprises
+      enterprise = await prisma.enterprise.findUnique({
+        where: { id: targetUserId },
+        include: { role: true },
+      });
+
+      // Si no es empresa directa, buscar membresía corporativa activa del usuario
+      if (!enterprise) {
+        const member = await prisma.enterpriseMember.findFirst({
+          where: { user_id: targetUserId, status: "ACTIVE" },
+          include: { enterprise: { include: { role: true } } },
+        });
+        if (member?.enterprise) {
+          enterprise = member.enterprise;
+          req.enterpriseMember = member;
+        }
+      }
+    }
 
     if (!enterprise) return false;
 

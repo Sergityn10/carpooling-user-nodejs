@@ -174,6 +174,7 @@ model User {
   commentsGiven        Comment[]    @relation("commentator")
   commentsReceived     Comment[]    @relation("commentated")
   eventParticipations  EventParticipant[]
+  serviceEventParticipations ServiceEventParticipant[]
   promoterSuggestions  SugerenciasPromotoras[]
   enterpriseMemberships EnterpriseMember[]
   legalConsents        LegalConsent[]
@@ -424,6 +425,7 @@ model ServiceEvent {
   country            String             @default("ES") @db.Char(2)
   latitude           Decimal?           @db.Decimal(10, 7)
   longitude          Decimal?           @db.Decimal(10, 7)
+  location           Unsupported("point")?
   contact_name       String?            @db.VarChar(255)
   contact_email      String?            @db.VarChar(255)
   contact_phone      String?            @db.VarChar(30)
@@ -434,6 +436,7 @@ model ServiceEvent {
   updated_at         DateTime           @updatedAt
 
   enterprise Enterprise @relation(fields: [enterprise_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  participants ServiceEventParticipant[]
 
   @@index([enterprise_id])
   @@index([status])
@@ -617,6 +620,7 @@ model PlatformEvent {
   enterprise_id String?     @db.VarChar(36)
   latitude      Decimal?    @db.Decimal(10, 7)
   longitude     Decimal?    @db.Decimal(10, 7)
+  location      Unsupported("point")?
   image         String?     @db.MediumText
   unique_code   String      @unique @db.VarChar(20)
   description   String?     @db.Text
@@ -673,6 +677,20 @@ model EventParticipant {
   @@id([user_id, event_id])
   @@index([event_id])
   @@map("event_participants")
+}
+
+model ServiceEventParticipant {
+  user_id          String       @db.VarChar(36)
+  service_event_id String       @db.VarChar(36)
+  joined_at        DateTime     @default(now())
+
+  user         User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  serviceEvent ServiceEvent @relation(fields: [service_event_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([user_id, service_event_id])
+  @@index([service_event_id])
+  @@index([user_id])
+  @@map("service_event_participants")
 }
 
 model LegalConsent {

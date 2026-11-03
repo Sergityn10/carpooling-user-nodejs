@@ -7,8 +7,17 @@ import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
 import { GeoPoint } from "../utils/geoPoint.js";
-import { findNearbyPlatformEvents } from "../services/geoSpatialService.js";
+import {
+  findNearbyEvents,
+  findNearbyPlatformEvents,
+} from "../services/geoSpatialService.js";
+import {
+  mapServiceEventToStandardEvent,
+  normalizePlatformEvent,
+} from "../adapters/serviceEventAdapter.js";
 import { GoogleMapsProvider } from "../providers/google-maps.js";
+import { methods as cryptoUtils } from "../utils/crypto.js";
+import { enterpriseAuthorization } from "../middlewares/enterpriseAuthorization.js";
 dotenv.config();
 
 function generateUniqueCode() {
@@ -29,84 +38,327 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 
 const getAllEvents = catchAsync(async (req, res, next) => {
   const { tag, search, page = 1, limit = 20 } = req.query;
-  const pageNum = Math.max(1, parseInt(page, 10));
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const skip = (pageNum - 1) * limitNum;
 
-  const where = {
+  // Filtros para platform_events
+  const platformWhere = {
     end_date: { gte: new Date() },
   };
   if (search) {
-    where.name = { contains: search };
+    platformWhere.OR = [
+      { name: { contains: search } },
+      { description: { contains: search } },
+      { company: { name: { contains: search } } },
+      { enterprise: { name: { contains: search } } },
+    ];
   }
   if (tag) {
-    where.tags = {
+    platformWhere.tags = {
       some: {
         tag: { name: tag },
       },
     };
   }
 
-  const [events, total] = await Promise.all([
-    prisma.platformEvent.findMany({
-      where,
-      include: {
-        company: { select: { id: true, name: true, logo: true } },
-        tags: { include: { tag: true } },
+  // Filtros para service_events (organizaciones)
+  // Se incluyen si no hay filtro de tag o si el tag es "corporativo"
+  const isCorporateTag = !tag || tag.toLowerCase() === "corporativo";
+  let serviceWhere = null;
+
+  if (isCorporateTag) {
+    serviceWhere = {
+      OR: [
+        { end_at: { gte: new Date() } },
+        { end_at: null, start_at: { gte: new Date() } },
+      ],
+      status: { in: ["approved", "requested"] },
+    };
+    if (search) {
+      serviceWhere.AND = [
+        {
+          OR: [
+            { title: { contains: search } },
+            { description: { contains: search } },
+            { venue_name: { contains: search } },
+            { address_line1: { contains: search } },
+            { city: { contains: search } },
+            { enterprise: { name: { contains: search } } },
+          ],
+        },
+      ];
+    }
+  }
+
+  // Ejecución en paralelo de ambas consultas
+  const platformPromise = prisma.platformEvent.findMany({
+    where: platformWhere,
+    include: {
+      company: { select: { id: true, name: true, logo: true, website: true } },
+      enterprise: {
+        select: { id: true, name: true, logo: true, website: true },
       },
-      skip,
-      take: limitNum,
-      orderBy: { start_date: "asc" },
-    }),
-    prisma.platformEvent.count({ where }),
-  ]);
+      tags: { include: { tag: true } },
+    },
+    orderBy: { start_date: "asc" },
+  });
+  const platformCountPromise = prisma.platformEvent.count({
+    where: platformWhere,
+  });
+
+  const servicePromise = serviceWhere
+    ? prisma.serviceEvent.findMany({
+        where: serviceWhere,
+        include: {
+          enterprise: {
+            select: { id: true, name: true, logo: true, website: true },
+          },
+        },
+        orderBy: { start_at: "asc" },
+      })
+    : Promise.resolve([]);
+
+  const serviceCountPromise = serviceWhere
+    ? prisma.serviceEvent.count({ where: serviceWhere })
+    : Promise.resolve(0);
+
+  const [platformEvents, totalPlatform, serviceEvents, totalService] =
+    await Promise.all([
+      platformPromise,
+      platformCountPromise,
+      servicePromise,
+      serviceCountPromise,
+    ]);
+
+  // Normalización polimórfica de eventos a la misma estructura
+  const mappedPlatformEvents = platformEvents.map((pe) =>
+    normalizePlatformEvent(pe),
+  );
+  const mappedServiceEvents = serviceEvents.map((se) =>
+    mapServiceEventToStandardEvent(se),
+  );
+
+  const allCombined = [...mappedPlatformEvents, ...mappedServiceEvents].sort(
+    (a, b) =>
+      new Date(a.start_date).getTime() - new Date(b.start_date).getTime(),
+  );
+
+  const total = totalPlatform + totalService;
+  const paginatedEvents = allCombined.slice(skip, skip + limitNum);
 
   return res.status(200).send({
     status: "Success",
-    events,
+    events: paginatedEvents,
     pagination: {
       page: pageNum,
       limit: limitNum,
       total,
-      totalPages: Math.ceil(total / limitNum),
+      totalPages: Math.ceil(total / limitNum) || 1,
     },
   });
 });
 
 const getEventById = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const event = await prisma.platformEvent.findUnique({
+
+  // 1. Resolver usuario o empresa autenticada de forma opcional (no bloqueante)
+  const user = req.user || null;
+  let enterprise = req.enterprise || null;
+  if (!enterprise) {
+    try {
+      const revised = await enterpriseAuthorization.reviseEnterprise(req);
+      if (revised) enterprise = revised;
+    } catch (_e) {
+      // Ignorar error de verificación opcional
+    }
+  }
+
+  // 2. Búsqueda en platform_events
+  const rawEvent = await prisma.platformEvent.findUnique({
     where: { id },
     include: {
-      company: true,
+      company: {
+        select: { id: true, name: true, logo: true, website: true },
+      },
+      enterprise: {
+        select: {
+          id: true,
+          name: true,
+          logo: true,
+          website: true,
+          cif: true,
+          email: true,
+          phone: true,
+        },
+      },
       tags: { include: { tag: true } },
     },
   });
 
-  if (!event) {
-    return res.status(200).send({ status: "Success", event: null });
+  let event = null;
+  let isPlatformEvent = false;
+
+  if (rawEvent) {
+    event = normalizePlatformEvent(rawEvent);
+    isPlatformEvent = true;
+  } else {
+    // Fallback a eventos de servicio corporativo (service_events)
+    const serviceEvent = await prisma.serviceEvent.findUnique({
+      where: { id },
+      include: {
+        enterprise: {
+          select: {
+            id: true,
+            name: true,
+            logo: true,
+            website: true,
+            cif: true,
+            email: true,
+            phone: true,
+          },
+        },
+      },
+    });
+
+    if (serviceEvent) {
+      event = mapServiceEventToStandardEvent(serviceEvent);
+    }
   }
 
-  return res.status(200).send({ status: "Success", event });
+  if (!event) {
+    return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
+  }
+
+  // 3. Determinar si el solicitante es el organizador del evento o administrador
+  const isAdmin = user?.role?.name === "admin" || req.isAdmin || false;
+  const isOwnerEnterprise =
+    enterprise &&
+    (String(event.enterprise_id) === String(enterprise.id) ||
+      String(event.company_id) === String(enterprise.id));
+  const isOwnerUserCompany =
+    user?.company_id && String(event.company_id) === String(user.company_id);
+  const isOrganizer = Boolean(isAdmin || isOwnerEnterprise || isOwnerUserCompany);
+
+  // 4. Obtener participantes inscritos en el evento (de la base de datos de usuarios)
+  let participantsList = [];
+  const participantSelect = {
+    id: true,
+    name: true,
+    surname: true,
+    email: true,
+    phone: true,
+    img_perfil: true,
+    ciudad: true,
+    provincia: true,
+  };
+
+  const participantsData = isPlatformEvent
+    ? await prisma.eventParticipant.findMany({
+        where: { event_id: id },
+        include: { user: { select: participantSelect } },
+        orderBy: { joined_at: "desc" },
+      })
+    : await prisma.serviceEventParticipant.findMany({
+        where: { service_event_id: id },
+        include: { user: { select: participantSelect } },
+        orderBy: { joined_at: "desc" },
+      });
+
+  participantsList = (participantsData || []).map((p) => {
+    const decryptedUser = cryptoUtils.decryptFields(p.user, [
+      "name",
+      "surname",
+      "email",
+      "phone",
+      "ciudad",
+      "provincia",
+    ]);
+
+    const participantObj = {
+      id: decryptedUser.id,
+      name: decryptedUser.name || "Usuario",
+      surname: decryptedUser.surname || "",
+      img_perfil: decryptedUser.img_perfil || null,
+      ciudad: decryptedUser.ciudad || null,
+      provincia: decryptedUser.provincia || null,
+      joined_at: p.joined_at,
+    };
+
+    // Si quien consulta es la organización organizadora o admin, incluir datos de contacto
+    if (isOrganizer) {
+      participantObj.email = decryptedUser.email || null;
+      participantObj.phone = decryptedUser.phone || null;
+    }
+
+    return participantObj;
+  });
+
+  const totalParticipants = participantsList.length;
+
+  // 5. Estado de sesión del usuario con respecto al evento
+  const hasJoined = user
+    ? participantsList.some((p) => String(p.id) === String(user.id))
+    : false;
+
+  // 6. Ensamblado de propiedades completas y métricas organizacionales
+  const enrichedEvent = {
+    ...event,
+    has_joined: hasJoined,
+    is_organizer: isOrganizer,
+    total_participants: totalParticipants,
+    participants: participantsList,
+  };
+
+  return res.status(200).send({
+    status: "Success",
+    event: enrichedEvent,
+    participants: participantsList,
+    total_participants: totalParticipants,
+    has_joined: hasJoined,
+    is_organizer: isOrganizer,
+  });
 });
 
 const getEventByCode = catchAsync(async (req, res, next) => {
   const { code } = req.params;
-  const event = await prisma.platformEvent.findUnique({
-    where: { unique_code: code },
+  const trimmedCode = String(code).trim();
+
+  let event = await prisma.platformEvent.findUnique({
+    where: { unique_code: trimmedCode },
     include: {
       company: {
+        select: { id: true, name: true, logo: true, website: true },
+      },
+      enterprise: {
         select: { id: true, name: true, logo: true, website: true },
       },
       tags: { include: { tag: true } },
     },
   });
 
-  if (!event) {
-    return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
+  if (event) {
+    event = normalizePlatformEvent(event);
+    return res.status(200).send({ status: "Success", event });
   }
 
-  return res.status(200).send({ status: "Success", event });
+  // Fallback a eventos corporativos (por código ORG-XXXXXXXX o prefijo de ID)
+  const cleanCode = trimmedCode.replace(/^ORG-/i, "");
+  const serviceEvent = await prisma.serviceEvent.findFirst({
+    where: {
+      OR: [{ id: trimmedCode }, { id: { startsWith: cleanCode } }],
+    },
+    include: {
+      enterprise: true,
+    },
+  });
+
+  if (serviceEvent) {
+    event = mapServiceEventToStandardEvent(serviceEvent);
+    return res.status(200).send({ status: "Success", event });
+  }
+
+  return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
 });
 
 const createEvent = catchAsync(async (req, res, next) => {
@@ -128,8 +380,26 @@ const createEvent = catchAsync(async (req, res, next) => {
 
   // 1. Determinar el creador del evento (Empresa/Organizador o Admin)
   const isEnterprise = Boolean(req.enterprise);
-  const enterpriseId = req.enterprise?.id || req.body.enterprise_id || null;
+  let enterpriseId = req.enterprise?.id || req.body.enterprise_id || null;
   let targetCompanyId = company_id || null;
+
+  if (targetCompanyId) {
+    const company = await prisma.company.findUnique({
+      where: { id: targetCompanyId },
+    });
+    if (!company) {
+      // Si no es una Company convencional, verificar si corresponde a una Enterprise
+      const ent = await prisma.enterprise.findUnique({
+        where: { id: targetCompanyId },
+      });
+      if (ent) {
+        enterpriseId = ent.id;
+        targetCompanyId = null;
+      } else {
+        targetCompanyId = null;
+      }
+    }
+  }
 
   if (!isEnterprise && !enterpriseId && !targetCompanyId) {
     return next(
@@ -143,7 +413,11 @@ const createEvent = catchAsync(async (req, res, next) => {
 
   if (!name) {
     return next(
-      new AppError("El nombre del evento es obligatorio", 400, "VALIDATION_ERROR"),
+      new AppError(
+        "El nombre del evento es obligatorio",
+        400,
+        "VALIDATION_ERROR",
+      ),
     );
   }
 
@@ -184,7 +458,9 @@ const createEvent = catchAsync(async (req, res, next) => {
       where: { id: enterpriseId },
     });
     if (!enterprise) {
-      return next(new AppError("Enterprise not found", 404, "ENTERPRISE_NOT_FOUND"));
+      return next(
+        new AppError("Enterprise not found", 404, "ENTERPRISE_NOT_FOUND"),
+      );
     }
     if (enterprise.is_deleted || !enterprise.is_active) {
       return next(
@@ -305,7 +581,9 @@ const updateEvent = catchAsync(async (req, res, next) => {
 
   // Verificación de permisos: Admin o empresa propietaria
   const isAdmin = req.user?.role?.name === "admin" || req.isAdmin;
-  const isOwner = req.enterprise && String(existing.enterprise_id) === String(req.enterprise.id);
+  const isOwner =
+    req.enterprise &&
+    String(existing.enterprise_id) === String(req.enterprise.id);
 
   if (!isAdmin && !isOwner) {
     return next(
@@ -403,7 +681,9 @@ const deleteEvent = catchAsync(async (req, res, next) => {
 
   // Verificación de permisos: Admin o empresa propietaria
   const isAdmin = req.user?.role?.name === "admin" || req.isAdmin;
-  const isOwner = req.enterprise && String(existing.enterprise_id) === String(req.enterprise.id);
+  const isOwner =
+    req.enterprise &&
+    String(existing.enterprise_id) === String(req.enterprise.id);
 
   if (!isAdmin && !isOwner) {
     return next(
@@ -452,28 +732,73 @@ const getMyEnterpriseEvents = catchAsync(async (req, res, next) => {
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
   const skip = (pageNum - 1) * limitNum;
 
-  const [events, total] = await Promise.all([
-    prisma.platformEvent.findMany({
-      where: { enterprise_id: enterpriseId },
-      include: {
-        tags: { include: { tag: true } },
-        _count: { select: { participants: true } },
-      },
-      skip,
-      take: limitNum,
-      orderBy: { start_date: "asc" },
-    }),
-    prisma.platformEvent.count({ where: { enterprise_id: enterpriseId } }),
-  ]);
+  const [platformEvents, totalPlatform, serviceEvents, totalService] =
+    await Promise.all([
+      prisma.platformEvent.findMany({
+        where: { enterprise_id: enterpriseId },
+        include: {
+          tags: { include: { tag: true } },
+          enterprise: {
+            select: { id: true, name: true, logo: true, website: true },
+          },
+          _count: { select: { participants: true } },
+        },
+        orderBy: { start_date: "asc" },
+      }),
+      prisma.platformEvent.count({ where: { enterprise_id: enterpriseId } }),
+      prisma.serviceEvent.findMany({
+        where: { enterprise_id: enterpriseId },
+        include: {
+          enterprise: {
+            select: { id: true, name: true, logo: true, website: true },
+          },
+          _count: { select: { participants: true } },
+        },
+        orderBy: { start_at: "asc" },
+      }),
+      prisma.serviceEvent.count({ where: { enterprise_id: enterpriseId } }),
+    ]);
+
+  const mappedPlatform = platformEvents.map((pe) => {
+    const norm = normalizePlatformEvent(pe);
+    const count = pe._count?.participants ?? 0;
+    return {
+      ...norm,
+      total_participants: count,
+      participants_count: count,
+      inscribed_count: count,
+      _count: { participants: count },
+    };
+  });
+
+  const mappedService = serviceEvents.map((se) => {
+    const norm = mapServiceEventToStandardEvent(se);
+    const count = se._count?.participants ?? 0;
+    return {
+      ...norm,
+      total_participants: count,
+      participants_count: count,
+      inscribed_count: count,
+      _count: { participants: count },
+    };
+  });
+
+  const allCombined = [...mappedPlatform, ...mappedService].sort(
+    (a, b) =>
+      new Date(a.start_date).getTime() - new Date(b.start_date).getTime(),
+  );
+
+  const total = totalPlatform + totalService;
+  const paginatedEvents = allCombined.slice(skip, skip + limitNum);
 
   return res.status(200).json({
     status: "Success",
-    events,
+    events: paginatedEvents,
     pagination: {
       page: pageNum,
       limit: limitNum,
       total,
-      totalPages: Math.ceil(total / limitNum),
+      totalPages: Math.ceil(total / limitNum) || 1,
     },
   });
 });
@@ -535,7 +860,15 @@ const deleteTag = catchAsync(async (req, res, next) => {
 });
 
 const getNearbyEvents = catchAsync(async (req, res, next) => {
-  const { lat, lng, radius = 50, tag, limit = 20, page = 1 } = req.query;
+  const {
+    lat,
+    lng,
+    radius = 50,
+    search,
+    tag,
+    limit = 20,
+    page = 1,
+  } = req.query;
 
   if (lat === undefined || lat === null || lng === undefined || lng === null) {
     return next(
@@ -547,18 +880,17 @@ const getNearbyEvents = catchAsync(async (req, res, next) => {
   try {
     userPoint = new GeoPoint(lat, lng);
   } catch (err) {
-    return next(
-      new AppError(err.message, 400, "VALIDATION_ERROR"),
-    );
+    return next(new AppError(err.message, 400, "VALIDATION_ERROR"));
   }
 
   const radiusKm = Math.max(0.1, parseFloat(radius) || 50);
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
-  const { events, total, totalPages } = await findNearbyPlatformEvents({
+  const { events, total, totalPages } = await findNearbyEvents({
     point: userPoint,
     radiusKm,
+    search,
     tag,
     page: pageNum,
     limit: limitNum,
@@ -582,31 +914,60 @@ const joinEvent = catchAsync(async (req, res, next) => {
   const userId = req.user.id;
 
   const event = await prisma.platformEvent.findUnique({ where: { id } });
-  if (!event) {
+  if (event) {
+    const existing = await prisma.eventParticipant.findUnique({
+      where: { user_id_event_id: { user_id: userId, event_id: id } },
+    });
+    if (existing) {
+      return next(
+        new AppError("Already joined this event", 409, "ALREADY_JOINED_EVENT"),
+      );
+    }
+
+    await prisma.eventParticipant.create({
+      data: { user_id: userId, event_id: id },
+    });
+
+    await eventBus.platformEventJoined(id, userId);
+
+    if (event.chat_id) {
+      const userToken = req.headers.authorization?.replace("Bearer ", "");
+      if (userToken) {
+        await messagesService.joinChat(event.chat_id, userToken);
+      }
+    }
+
+    return res
+      .status(201)
+      .send({ status: "Success", message: "Joined event successfully" });
+  }
+
+  // Si no es un evento de plataforma, buscar en eventos corporativos de servicio
+  const serviceEvent = await prisma.serviceEvent.findUnique({
+    where: { id },
+  });
+
+  if (!serviceEvent) {
     return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
   }
 
-  const existing = await prisma.eventParticipant.findUnique({
-    where: { user_id_event_id: { user_id: userId, event_id: id } },
+  const existingService = await prisma.serviceEventParticipant.findUnique({
+    where: {
+      user_id_service_event_id: { user_id: userId, service_event_id: id },
+    },
   });
-  if (existing) {
+
+  if (existingService) {
     return next(
       new AppError("Already joined this event", 409, "ALREADY_JOINED_EVENT"),
     );
   }
 
-  await prisma.eventParticipant.create({
-    data: { user_id: userId, event_id: id },
+  await prisma.serviceEventParticipant.create({
+    data: { user_id: userId, service_event_id: id },
   });
 
   await eventBus.platformEventJoined(id, userId);
-
-  if (event.chat_id) {
-    const userToken = req.headers.authorization?.replace("Bearer ", "");
-    if (userToken) {
-      await messagesService.joinChat(event.chat_id, userToken);
-    }
-  }
 
   return res
     .status(201)
@@ -617,29 +978,64 @@ const leaveEvent = catchAsync(async (req, res, next) => {
   const { id } = req.params;
   const userId = req.user.id;
 
-  const existing = await prisma.eventParticipant.findUnique({
-    where: { user_id_event_id: { user_id: userId, event_id: id } },
-  });
-  if (!existing) {
-    return next(new AppError("Not joined this event", 404, "NOT_JOINED_EVENT"));
-  }
-
-  await prisma.eventParticipant.delete({
-    where: { user_id_event_id: { user_id: userId, event_id: id } },
-  });
-
-  await eventBus.platformEventLeft(id, userId);
-
   const event = await prisma.platformEvent.findUnique({
     where: { id },
     select: { chat_id: true },
   });
-  if (event?.chat_id) {
-    const userToken = req.headers.authorization?.replace("Bearer ", "");
-    if (userToken) {
-      await messagesService.leaveChat(event.chat_id, userToken);
+
+  if (event) {
+    const existing = await prisma.eventParticipant.findUnique({
+      where: { user_id_event_id: { user_id: userId, event_id: id } },
+    });
+    if (!existing) {
+      return next(new AppError("Not joined this event", 404, "NOT_JOINED_EVENT"));
     }
+
+    await prisma.eventParticipant.delete({
+      where: { user_id_event_id: { user_id: userId, event_id: id } },
+    });
+
+    await eventBus.platformEventLeft(id, userId);
+
+    if (event.chat_id) {
+      const userToken = req.headers.authorization?.replace("Bearer ", "");
+      if (userToken) {
+        await messagesService.leaveChat(event.chat_id, userToken);
+      }
+    }
+
+    return res
+      .status(200)
+      .send({ status: "Success", message: "Left event successfully" });
   }
+
+  // Si es un evento de servicio corporativo
+  const serviceEvent = await prisma.serviceEvent.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+
+  if (!serviceEvent) {
+    return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
+  }
+
+  const existingService = await prisma.serviceEventParticipant.findUnique({
+    where: {
+      user_id_service_event_id: { user_id: userId, service_event_id: id },
+    },
+  });
+
+  if (!existingService) {
+    return next(new AppError("Not joined this event", 404, "NOT_JOINED_EVENT"));
+  }
+
+  await prisma.serviceEventParticipant.delete({
+    where: {
+      user_id_service_event_id: { user_id: userId, service_event_id: id },
+    },
+  });
+
+  await eventBus.platformEventLeft(id, userId);
 
   return res
     .status(200)
@@ -664,6 +1060,39 @@ const buildParticipantsHandler = (userSelect) =>
 
     const event = await prisma.platformEvent.findUnique({ where: { id } });
     if (!event) {
+      // Verificar si es un evento de servicio corporativo
+      const isService = await prisma.serviceEvent.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (isService) {
+        const serviceParticipants =
+          await prisma.serviceEventParticipant.findMany({
+            where: { service_event_id: id },
+            include: { user: { select: userSelect } },
+            orderBy: { joined_at: "desc" },
+          });
+
+        const decryptedList = serviceParticipants.map((p) => {
+          const decryptedUser = p.user
+            ? cryptoUtils.decryptFields(p.user, [
+                "name",
+                "surname",
+                "ciudad",
+                "provincia",
+              ])
+            : {};
+          return {
+            ...decryptedUser,
+            joined_at: p.joined_at,
+          };
+        });
+
+        return res.status(200).send({
+          status: "Success",
+          participants: decryptedList,
+        });
+      }
       return next(new AppError("Event not found", 404, "EVENT_NOT_FOUND"));
     }
 
@@ -673,12 +1102,24 @@ const buildParticipantsHandler = (userSelect) =>
       orderBy: { joined_at: "desc" },
     });
 
+    const decryptedParticipants = participants.map((p) => {
+      const decryptedUser = p.user
+        ? cryptoUtils.decryptFields(p.user, [
+            "name",
+            "surname",
+            "ciudad",
+            "provincia",
+          ])
+        : {};
+      return {
+        ...decryptedUser,
+        joined_at: p.joined_at,
+      };
+    });
+
     return res.status(200).send({
       status: "Success",
-      participants: participants.map((p) => ({
-        ...p.user,
-        joined_at: p.joined_at,
-      })),
+      participants: decryptedParticipants,
     });
   });
 
@@ -692,29 +1133,67 @@ const getEventParticipantsDetailed = buildParticipantsHandler(
 
 const getMyJoinedEvents = catchAsync(async (req, res, next) => {
   const userId = req.user.id;
+  const now = new Date();
 
-  const participations = await prisma.eventParticipant.findMany({
-    where: {
-      user_id: userId,
-      event: { end_date: { gte: new Date() } },
-    },
-    include: {
-      event: {
-        include: {
-          company: { select: { id: true, name: true, logo: true } },
-          tags: { include: { tag: true } },
+  const [platformParticipations, serviceParticipations] = await Promise.all([
+    prisma.eventParticipant.findMany({
+      where: {
+        user_id: userId,
+        event: { end_date: { gte: now } },
+      },
+      include: {
+        event: {
+          include: {
+            company: {
+              select: { id: true, name: true, logo: true, website: true },
+            },
+            enterprise: {
+              select: { id: true, name: true, logo: true, website: true },
+            },
+            tags: { include: { tag: true } },
+          },
         },
       },
-    },
-    orderBy: { event: { start_date: "asc" } },
-  });
+      orderBy: { event: { start_date: "asc" } },
+    }),
+    prisma.serviceEventParticipant.findMany({
+      where: {
+        user_id: userId,
+        serviceEvent: {
+          OR: [
+            { end_at: { gte: now } },
+            { end_at: null, start_at: { gte: now } },
+          ],
+        },
+      },
+      include: {
+        serviceEvent: {
+          include: {
+            enterprise: {
+              select: { id: true, name: true, logo: true, website: true },
+            },
+          },
+        },
+      },
+      orderBy: { serviceEvent: { start_at: "asc" } },
+    }),
+  ]);
 
-  const events = participations.map((p) => ({
-    ...p.event,
+  const mappedPlatform = platformParticipations.map((p) => ({
+    ...normalizePlatformEvent(p.event),
     joined_at: p.joined_at,
   }));
 
-  return res.status(200).send({ status: "Success", events });
+  const mappedService = serviceParticipations.map((p) => ({
+    ...mapServiceEventToStandardEvent(p.serviceEvent),
+    joined_at: p.joined_at,
+  }));
+
+  const allEvents = [...mappedPlatform, ...mappedService].sort(
+    (a, b) => new Date(a.start_date) - new Date(b.start_date),
+  );
+
+  return res.status(200).send({ status: "Success", events: allEvents });
 });
 
 export const methods = {

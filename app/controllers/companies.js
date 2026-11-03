@@ -9,32 +9,78 @@ async function getAllCompanies(req, res) {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
     const skip = (pageNum - 1) * limitNum;
 
-    const where = {};
+    const companyWhere = {};
+    const enterpriseWhere = { is_active: true, is_deleted: false };
     if (search) {
-      where.name = { contains: search };
+      companyWhere.name = { contains: search };
+      enterpriseWhere.OR = [
+        { name: { contains: search } },
+        { cif: { contains: search } },
+      ];
     }
 
-    const [companies, total] = await Promise.all([
-      prisma.company.findMany({
-        where,
-        include: {
-          _count: { select: { events: true } },
-        },
-        skip,
-        take: limitNum,
-        orderBy: { created_at: "desc" },
-      }),
-      prisma.company.count({ where }),
-    ]);
+    const [companies, totalCompanies, enterprises, totalEnterprises] =
+      await Promise.all([
+        prisma.company.findMany({
+          where: companyWhere,
+          include: {
+            _count: { select: { events: true } },
+          },
+          orderBy: { created_at: "desc" },
+        }),
+        prisma.company.count({ where: companyWhere }),
+        prisma.enterprise.findMany({
+          where: enterpriseWhere,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            website: true,
+            logo: true,
+            description: true,
+            cif: true,
+            created_at: true,
+            _count: { select: { serviceEvents: true, platformEvents: true } },
+          },
+          orderBy: { created_at: "desc" },
+        }),
+        prisma.enterprise.count({ where: enterpriseWhere }),
+      ]);
+
+    const formattedEnterprises = enterprises.map((e) => ({
+      id: e.id,
+      name: e.name,
+      email: e.email,
+      phone: e.phone,
+      website: e.website,
+      logo: e.logo,
+      description: e.description,
+      cif: e.cif,
+      created_at: e.created_at,
+      is_enterprise: true,
+      _count: {
+        events:
+          (e._count?.serviceEvents ?? 0) + (e._count?.platformEvents ?? 0),
+      },
+    }));
+
+    const all = [...companies, ...formattedEnterprises].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+
+    const total = totalCompanies + totalEnterprises;
+    const paginated = all.slice(skip, skip + limitNum);
 
     return res.status(200).send({
       status: "Success",
-      companies,
+      companies: paginated,
       pagination: {
         page: pageNum,
         limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (error) {
@@ -57,9 +103,36 @@ async function getCompanyById(req, res) {
     });
 
     if (!company) {
-      return res
-        .status(404)
-        .send({ status: "Error", message: "Company not found" });
+      const enterprise = await prisma.enterprise.findUnique({
+        where: { id },
+        include: {
+          platformEvents: {
+            include: { tags: { include: { tag: true } } },
+          },
+          serviceEvents: true,
+        },
+      });
+
+      if (!enterprise) {
+        return res
+          .status(404)
+          .send({ status: "Error", message: "Company not found" });
+      }
+
+      return res.status(200).send({
+        status: "Success",
+        company: {
+          id: enterprise.id,
+          name: enterprise.name,
+          email: enterprise.email,
+          phone: enterprise.phone,
+          website: enterprise.website,
+          logo: enterprise.logo,
+          description: enterprise.description,
+          is_enterprise: true,
+          events: enterprise.platformEvents || [],
+        },
+      });
     }
 
     return res.status(200).send({ status: "Success", company });

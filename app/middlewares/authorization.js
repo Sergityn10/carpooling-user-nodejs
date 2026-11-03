@@ -160,7 +160,7 @@ async function tryRefreshAccessToken(req, res) {
   }
 }
 
-function send401(res, message = "Token inválido o expirado.") {
+function send401(res, message = "Token invÃ¡lido o expirado.") {
   res.clearCookie("access_token", {
     httpOnly: true,
     secure: isProduction,
@@ -208,7 +208,7 @@ async function silentlyRefreshAccessToken(req, res, user) {
       oldTokenHash: hashedRefresh,
     });
   } catch (_e) {
-    // Silent failure — don't interrupt the request
+    // Silent failure â€” don't interrupt the request
   }
 }
 
@@ -224,7 +224,7 @@ async function authenticate(req, res) {
     } else {
       return {
         user: null,
-        error: send401(res, `Token inválido: ${e.message}`),
+        error: send401(res, `Token invÃ¡lido: ${e.message}`),
       };
     }
   }
@@ -234,7 +234,7 @@ async function authenticate(req, res) {
   }
 
   if (!user) {
-    return { user: null, error: send401(res, "Token inválido o expirado.") };
+    return { user: null, error: send401(res, "Token invÃ¡lido o expirado.") };
   }
 
   // Proactive refresh: if the access token is valid but expires soon,
@@ -253,6 +253,10 @@ async function isLoged(req, res, next) {
   const { user, error } = await authenticate(req, res);
   if (error) return error;
   req.user = user;
+  if (user?.isEnterprise) {
+    req.enterprise = user;
+    req.isEnterprise = true;
+  }
   next();
 }
 
@@ -291,6 +295,10 @@ async function tryAuthenticate(req, res, next) {
     const user = (await reviseBearer(req)) || (await reviseCookie(req));
     if (user) {
       req.user = user;
+      if (user?.isEnterprise) {
+        req.enterprise = user;
+        req.isEnterprise = true;
+      }
     }
   } catch (_e) {
     // Optional auth - continue without interruption
@@ -335,6 +343,42 @@ function getDecodedToken(req) {
   }
 }
 
+async function resolveEnterpriseFromToken(decodificado) {
+  if (!decodificado) return null;
+
+  const enterpriseId =
+    decodificado?.enterprise_id ||
+    (decodificado?.type === "enterprise" || decodificado?.role === "enterprise"
+      ? decodificado?.userId
+      : null);
+
+  const isEnterpriseRole =
+    decodificado?.role === "enterprise" ||
+    decodificado?.type === "enterprise" ||
+    Boolean(decodificado?.enterprise_id);
+
+  if (!enterpriseId && !isEnterpriseRole) {
+    return null;
+  }
+
+  const findEnterprise = await prisma.enterprise.findFirst({
+    where: enterpriseId
+      ? { id: String(enterpriseId) }
+      : { email: decodificado.email },
+    include: { role: true },
+  });
+
+  if (!findEnterprise || findEnterprise.is_deleted || !findEnterprise.is_active) {
+    return null;
+  }
+
+  return {
+    ...findEnterprise,
+    isEnterprise: true,
+    role: findEnterprise.role || { id: 3, name: "enterprise" },
+  };
+}
+
 async function reviseBearer(req) {
   try {
     const bearerToken = getBearerTokenFromReq(req);
@@ -365,13 +409,20 @@ async function reviseBearer(req) {
       include: { role: true },
     });
 
-    if (!findUser) {
-      return false;
+    if (findUser) {
+      return cryptoUtils.decryptFields(
+        findUser,
+        cryptoUtils.USER_SENSITIVE_FIELDS,
+      );
     }
-    return cryptoUtils.decryptFields(
-      findUser,
-      cryptoUtils.USER_SENSITIVE_FIELDS,
-    );
+
+    // Si no es un usuario particular, verificar si es una Organización / Empresa
+    const enterprise = await resolveEnterpriseFromToken(decodificado);
+    if (enterprise) {
+      return enterprise;
+    }
+
+    return false;
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       const expiredError = new Error("Token expired");
@@ -385,7 +436,8 @@ async function reviseBearer(req) {
 
 async function reviseCookie(req) {
   try {
-    const cookieJWT = req.cookies.access_token;
+    const cookieJWT =
+      req.cookies?.access_token || req.cookies?.enterprise_access_token;
 
     if (!cookieJWT) {
       return false;
@@ -414,22 +466,22 @@ async function reviseCookie(req) {
       include: { role: true },
     });
 
-    if (!findUser) {
-      if (typeof req?.res?.clearCookie === "function") {
-        req.res.clearCookie("access_token", {
-          httpOnly: true,
-          secure: true,
-          sameSite: "none",
-          path: "/",
-          domain: process.env.ORIGIN,
-        });
-      }
-      return false;
+    if (findUser) {
+      return cryptoUtils.decryptFields(
+        findUser,
+        cryptoUtils.USER_SENSITIVE_FIELDS,
+      );
     }
-    return cryptoUtils.decryptFields(
-      findUser,
-      cryptoUtils.USER_SENSITIVE_FIELDS,
-    );
+
+    // Si no es un usuario particular, verificar si es una Organización / Empresa
+    const enterprise = await resolveEnterpriseFromToken(decodificado);
+    if (enterprise) {
+      return enterprise;
+    }
+
+    clearAccessCookie(req?.res);
+    clearRefreshCookie(req?.res);
+    return false;
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       const expiredError = new Error("Token expired");
@@ -437,6 +489,8 @@ async function reviseCookie(req) {
       throw expiredError;
     }
     console.error("Error al verificar la cookie:", error);
+    clearAccessCookie(req?.res);
+    clearRefreshCookie(req?.res);
     return false;
   }
 }
