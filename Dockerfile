@@ -16,4 +16,4 @@ COPY . .
 RUN npx prisma generate
 
 EXPOSE 4000
-CMD ["sh", "-c", "npx prisma db push && npm run prisma:seed & stripe listen --api-key ${STRIPE_SECRET_KEY} --forward-to http://localhost:4000/api/webhook/stripe --forward-connect-to http://localhost:4000/api/webhook/stripe & npm run dev"]
+CMD ["sh", "-c", "npx prisma db push && npm run migrate:spatial && npm run prisma:seed & stripe listen --api-key ${STRIPE_SECRET_KEY} --forward-to http://localhost:4000/api/webhook/stripe --forward-connect-to http://localhost:4000/api/webhook/stripe & npm run dev"]

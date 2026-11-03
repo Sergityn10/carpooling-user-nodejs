@@ -12,8 +12,10 @@ let connection = null;
 let channel = null;
 let isConnecting = false;
 let pendingConnection = null;
+let isExplicitClose = false;
 
 async function connect() {
+  if (isExplicitClose) return null;
   if (isConnecting && pendingConnection) {
     return pendingConnection;
   }
@@ -33,6 +35,7 @@ async function connect() {
       console.log("[rabbitmq] Connected and exchange asserted:", EXCHANGE_NAME);
 
       connection.on("close", () => {
+        if (isExplicitClose) return;
         console.warn("[rabbitmq] Connection closed. Reconnecting...");
         connection = null;
         channel = null;
@@ -42,9 +45,11 @@ async function connect() {
       });
 
       connection.on("error", (err) => {
+        if (isExplicitClose) return;
         console.error("[rabbitmq] Connection error:", err?.message ?? err);
       });
     } catch (error) {
+      if (isExplicitClose) return;
       console.error(
         "[rabbitmq] Failed to connect:",
         error?.message ?? error,
@@ -102,7 +107,26 @@ async function publish(routingKey, payload) {
   }
 }
 
+async function close() {
+  isExplicitClose = true;
+  try {
+    if (pendingConnection) {
+      await pendingConnection.catch(() => {});
+    }
+    if (channel) {
+      const ch = channel;
+      channel = null;
+      await ch.close().catch(() => {});
+    }
+    if (connection) {
+      const conn = connection;
+      connection = null;
+      await conn.close().catch(() => {});
+    }
+  } catch (_e) {}
+}
+
 connect();
 
-export default { publish, connect, getChannel };
-export { EXCHANGE_NAME };
+export default { publish, connect, getChannel, close };
+export { EXCHANGE_NAME, close };

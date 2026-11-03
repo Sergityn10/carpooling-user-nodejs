@@ -41,7 +41,7 @@ async function create(req, res) {
   if (!enterpriseId) {
     return res.status(400).send({
       status: "Error",
-      message: "Empresa no encontrada en BD (enterprise_id inválido).",
+      message: "Empresa no encontrada en BD (enterprise_id invÃ¡lido).",
     });
   }
 
@@ -54,10 +54,10 @@ async function create(req, res) {
       latitude = coords.lat;
       longitude = coords.lng;
     } catch (error) {
-      return res.status(400).send({
-        status: "Error",
-        message: `No se pudo geocodificar la dirección del evento: ${error.message}`,
-      });
+      // return res.status(400).send({
+      //   status: "Error",
+      //   message: `No se pudo geocodificar la direcciÃ³n del evento: ${error.message}`,
+      // });
     }
   }
 
@@ -113,7 +113,7 @@ async function create(req, res) {
       return res.status(400).send({
         status: "Error",
         message:
-          "Empresa no válida para crear el evento (enterprise_id no existe o relación inválida).",
+          "Empresa no vÃ¡lida para crear el evento (enterprise_id no existe o relaciÃ³n invÃ¡lida).",
       });
     }
     return res.status(500).send({
@@ -136,16 +136,84 @@ async function list(req, res) {
     : 0;
 
   try {
-    const rows = await prisma.serviceEvent.findMany({
-      where: { enterprise_id: enterprise.id },
-      orderBy: { created_at: "desc" },
-      take: limit,
-      skip: offset,
+    const [serviceRows, platformRows] = await Promise.all([
+      prisma.serviceEvent.findMany({
+        where: { enterprise_id: enterprise.id },
+        include: {
+          _count: {
+            select: { participants: true },
+          },
+        },
+        orderBy: { created_at: "desc" },
+      }),
+      prisma.platformEvent.findMany({
+        where: { enterprise_id: enterprise.id },
+        include: {
+          _count: {
+            select: { participants: true },
+          },
+        },
+        orderBy: { created_at: "desc" },
+      }),
+    ]);
+
+    const enrichedService = serviceRows.map((ev) => {
+      const count = ev._count?.participants ?? 0;
+      return {
+        ...ev,
+        total_participants: count,
+        participants_count: count,
+        inscribed_count: count,
+        _count: {
+          participants: count,
+        },
+      };
     });
 
-    return res
-      .status(200)
-      .send({ status: "Success", service_events: rows, limit, offset });
+    const enrichedPlatform = platformRows.map((pe) => {
+      const count = pe._count?.participants ?? 0;
+      return {
+        id: pe.id,
+        enterprise_id: pe.enterprise_id,
+        title: pe.name,
+        name: pe.name,
+        description: pe.description,
+        start_at: pe.start_date,
+        end_at: pe.end_date,
+        startDate: pe.start_date,
+        endDate: pe.end_date,
+        start_date: pe.start_date,
+        end_date: pe.end_date,
+        address_line1: pe.location_name || pe.address || "Sede",
+        location: pe.location_name || pe.address || "Sede",
+        status: "active",
+        latitude: pe.latitude != null ? Number(pe.latitude) : null,
+        longitude: pe.longitude != null ? Number(pe.longitude) : null,
+        total_participants: count,
+        participants_count: count,
+        inscribed_count: count,
+        _count: {
+          participants: count,
+        },
+        created_at: pe.created_at,
+        updated_at: pe.updated_at,
+      };
+    });
+
+    const allRows = [...enrichedService, ...enrichedPlatform].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+
+    const paginated = allRows.slice(offset, offset + limit);
+
+    return res.status(200).send({
+      status: "Success",
+      service_events: paginated,
+      limit,
+      offset,
+      total: allRows.length,
+    });
   } catch (error) {
     return res
       .status(500)
@@ -155,14 +223,19 @@ async function list(req, res) {
 
 async function getById(req, res) {
   const enterprise = req.enterprise;
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
+  const id = req.params.id ? String(req.params.id).trim() : "";
+  if (!id) {
     return res.status(400).send({ status: "Error", message: "Invalid id" });
   }
 
   try {
     const row = await prisma.serviceEvent.findFirst({
       where: { id, enterprise_id: enterprise.id },
+      include: {
+        _count: {
+          select: { participants: true },
+        },
+      },
     });
 
     if (!row) {
@@ -171,7 +244,20 @@ async function getById(req, res) {
         .send({ status: "Error", message: "Service event not found" });
     }
 
-    return res.status(200).send({ status: "Success", service_event: row });
+    const count = row._count?.participants ?? 0;
+    const enrichedRow = {
+      ...row,
+      total_participants: count,
+      participants_count: count,
+      inscribed_count: count,
+      _count: {
+        participants: count,
+      },
+    };
+
+    return res
+      .status(200)
+      .send({ status: "Success", service_event: enrichedRow });
   } catch (error) {
     return res
       .status(500)
@@ -181,8 +267,8 @@ async function getById(req, res) {
 
 async function patch(req, res) {
   const enterprise = req.enterprise;
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
+  const id = req.params.id ? String(req.params.id).trim() : "";
+  if (!id) {
     return res.status(400).send({ status: "Error", message: "Invalid id" });
   }
 
@@ -244,8 +330,8 @@ async function patch(req, res) {
 
 async function remove(req, res) {
   const enterprise = req.enterprise;
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
+  const id = req.params.id ? String(req.params.id).trim() : "";
+  if (!id) {
     return res.status(400).send({ status: "Error", message: "Invalid id" });
   }
 

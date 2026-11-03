@@ -302,6 +302,13 @@ app.put(
   (req, res) => enterprise.updateEnterprise(req, res),
 );
 
+// --- Métricas para el Dashboard de la Empresa en Sesión ---
+app.get(
+  "/api/enterprise/metrics",
+  enterpriseAuthorization.isEnterpriseLoged,
+  (req, res) => enterprise.getMyMetrics(req, res),
+);
+
 app.post(
   "/api/enterprise/service-events",
   enterpriseAuthorization.isEnterpriseLoged,
@@ -802,7 +809,12 @@ app.get(
   events.getMyJoinedEvents,
 );
 app.get("/api/events/code/:code", authorization.isLoged, events.getEventByCode);
-app.get("/api/events/:id", events.getEventById);
+app.get("/api/events/:id", authorization.tryAuthenticate, events.getEventById);
+app.get(
+  "/api/events/:id/details",
+  authorization.tryAuthenticate,
+  events.getEventById,
+);
 app.post(
   "/api/events",
   enterpriseAuthorization.isEnterpriseOrAdmin,
