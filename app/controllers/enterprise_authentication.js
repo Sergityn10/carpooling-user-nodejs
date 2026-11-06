@@ -11,7 +11,7 @@ import { PRIVATE_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
 import { authorization } from "../middlewares/authorization.js";
 import { EnterpriseUser } from "../domain/EnterpriseUser.js";
 import { getUserData } from "../providers/google-auth.js";
-import AppError from "../utils/AppError.js";
+import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 
 dotenv.config();
