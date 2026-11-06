@@ -97,7 +97,6 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
 app.use("/api/", generalApiLimiter);
