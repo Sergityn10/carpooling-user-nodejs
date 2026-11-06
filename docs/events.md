@@ -343,6 +343,72 @@ Se emite cuando se elimina un evento de servicio.
 
 ---
 
+## Miembros de Empresa (Enterprise Members)
+
+### `enterprise.member.invited`
+
+Se emite cuando una organización invita a un nuevo empleado o gestor a unirse.
+
+| Campo             | Tipo             | Descripción                                          |
+| ----------------- | ---------------- | ---------------------------------------------------- |
+| `invitation_id`   | `string \| null` | ID único del registro de invitación                  |
+| `enterprise_id`   | `string`         | ID de la empresa emisora                             |
+| `enterprise_name` | `string \| null` | Nombre comercial de la empresa                       |
+| `email`           | `string`         | Correo electrónico destinatario                      |
+| `role`            | `string`         | Rol asignado (`ADMIN`, `MANAGER`, `EMPLOYEE`)        |
+| `department`      | `string \| null` | Departamento o área de trabajo                       |
+| `employee_code`   | `string \| null` | Código interno de empleado                           |
+| `token`           | `string`         | Token criptográfico de invitación                    |
+| `expires_at`      | `string \| null` | Fecha límite de validez (7 días)                     |
+| `invitation_link` | `string \| null` | Enlace directo para aceptar la invitación            |
+| `invited_by`      | `string \| null` | ID del administrador corporativo que cursó la invitación |
+
+**Controladores que lo emiten:** `enterprise_members.js` (`inviteMember`)
+
+---
+
+### `enterprise.member.joined`
+
+Se emite cuando un usuario acepta formalmente la invitación y se incorpora como miembro activo.
+
+| Campo           | Tipo     | Descripción                                   |
+| --------------- | -------- | --------------------------------------------- |
+| `enterprise_id` | `string` | ID de la organización                         |
+| `user_id`       | `string` | ID del usuario de YouConnext que se incorpora |
+| `role`          | `string` | Rol corporativo asignado                      |
+
+**Controladores que lo emiten:** `enterprise_members.js` (`acceptInvitation`)
+
+---
+
+### `enterprise.member.removed`
+
+Se emite cuando un miembro es desvinculado de la empresa (protegido con salvaguarda anti-orfandad).
+
+| Campo           | Tipo             | Descripción                        |
+| --------------- | ---------------- | ---------------------------------- |
+| `enterprise_id` | `string`         | ID de la organización              |
+| `user_id`       | `string \| null` | ID del usuario de la plataforma    |
+| `member_id`     | `string`         | ID de la membresía eliminada       |
+
+**Controladores que lo emiten:** `enterprise_members.js` (`removeMember`)
+
+---
+
+### `enterprise.member.role_changed`
+
+Se emite cuando se actualiza el rol corporativo de un miembro existente.
+
+| Campo           | Tipo     | Descripción                                  |
+| --------------- | -------- | -------------------------------------------- |
+| `enterprise_id` | `string` | ID de la organización                        |
+| `member_id`     | `string` | ID de la membresía modificada                |
+| `new_role`      | `string` | Nuevo rol corporativo (`ADMIN`, `MANAGER`, etc.) |
+
+**Controladores que lo emiten:** `enterprise_members.js` (`changeMemberRole`)
+
+---
+
 ## Sugerencias de promotoras
 
 ### `suggestion.created`
@@ -423,6 +489,7 @@ Para consumir eventos desde otro microservicio, usar routing key patterns del ex
 | `checkout_session.expired`   | Solo expiración de checkout                                                 |
 | `stripe.account.updated`     | Solo actualizaciones de cuenta Stripe                                       |
 | `enterprise_service_event.*` | Todos los eventos de empresa                                                |
+| `enterprise.member.*`        | Todos los eventos de miembros de empresa (`.invited`, `.joined`, etc.)      |
 | `suggestion.*`               | `suggestion.created`, `suggestion.accepted`                                 |
 | `#`                          | **Todos los eventos**                                                       |
 

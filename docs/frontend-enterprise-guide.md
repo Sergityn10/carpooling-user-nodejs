@@ -115,7 +115,7 @@ export interface UnifiedAuthResponse {
 
 ### Manejador de Login y Redirección en el Cliente
 
-Al invocar `POST /api/auth/unified-login`:
+Al invocar `POST /api/auth/unified-login` o `POST /api/enterprise/auth/login`:
 
 ```typescript
 async function handleUnifiedLogin(credentials: { email: string; password?: string; id_token?: string }) {
@@ -129,9 +129,14 @@ async function handleUnifiedLogin(credentials: { email: string; password?: strin
   const currentMode: ActiveAppMode = data.initial_mode === "enterprise" ? "corporate" : "personal";
   setAppMode(currentMode);
 
-  // 3. Redirigir según el modo inicial
+  // 3. Comprobar onboarding en caso de entidad corporativa
   if (data.initial_mode === "enterprise") {
-    navigate("/enterprise/dashboard");
+    const onboardingEnded = data.legal_entity?.onboarding_ended ?? true;
+    if (!onboardingEnded) {
+      navigate("/enterprise/onboarding");
+    } else {
+      navigate("/enterprise/dashboard");
+    }
   } else {
     navigate("/dashboard");
   }
@@ -140,7 +145,98 @@ async function handleUnifiedLogin(credentials: { email: string; password?: strin
 
 ---
 
-## 3. Alternancia de Dashboard (Dashboard Switcher)
+## 3. Flujo de Auto-Registro, Onboarding y Guardia Corporativa
+
+El espacio corporativo cuenta con un ciclo de vida independiente al de usuarios particulares:
+
+```mermaid
+flowchart TD
+    Reg["/enterprise/register<br/>(Email + Contraseña)"] -->|"POST /api/enterprise/auth/register"| Auth["Sesión Iniciada<br/>(onboarding_ended: false)"]
+    Auth --> Guard{"¿onboarding_ended?"}
+    Guard -->|"false"| Onb["/enterprise/onboarding<br/>(Wizard de 3 pasos)"]
+    Guard -->|"true"| Dash["/enterprise/dashboard"]
+    
+    Onb -->|"PUT /api/enterprises/:id (onboarding_ended: true)"| Save["Persistencia Segura (Anti-IDOR)"]
+    Save --> Dash
+    Dash --> Prof["/enterprise/profile<br/>(Edición posterior en Perfil & Sede)"]
+```
+
+### 1. Auto-Registro Público (`/enterprise/register`)
+- Exige únicamente **Correo Electrónico Corporativo** y **Contraseña** (mínimo 8 caracteres, mayúscula, minúscula, número y símbolo).
+- Emite inmediatamente el JWT corporativo (`enterprise_access_token`) y establece `onboarding_ended: false`.
+- Redirige directamente al onboarding en lugar del dashboard.
+
+### 1.1. Inicio de Sesión y Registro con Google para Empresas
+Las pantallas de `/enterprise/login` y `/enterprise/register` admiten autenticación con Google (Google Workspace corporativo o Google personal):
+
+#### Opción A: Botón de Redirección Web Estándar (OAuth 2.0)
+```tsx
+const handleGoogleAuth = async (method: "login" | "register") => {
+  const res = await fetch(`/api/enterprise/auth/oauth?method=${method}`, { method: "POST" });
+  const data = await res.json();
+  if (data.url) {
+    window.location.href = data.url;
+  }
+};
+
+// En el JSX:
+<button onClick={() => handleGoogleAuth("login")} className="btn-google">
+  Iniciar sesión con Google
+</button>
+<button onClick={() => handleGoogleAuth("register")} className="btn-google">
+  Registrar organización con Google
+</button>
+```
+*Tras la autorización, Google redirige a `/api/enterprise/auth/oauth/(login|register)` y el backend reenvía automáticamente al navegador a `/enterprise/onboarding` (si es nueva empresa) o `/enterprise/dashboard` (si ya completó el onboarding).*
+
+#### Opción B: Botón Google Identity Services / One-Tap (`@react-oauth/google`)
+```tsx
+import { GoogleLogin } from "@react-oauth/google";
+
+<GoogleLogin
+  onSuccess={async (credentialResponse) => {
+    const res = await api.post("/api/enterprise/auth/google", {
+      id_token: credentialResponse.credential,
+      method: "auto", // "auto", "login" o "register"
+    });
+    
+    const { token, enterprise, is_new } = res.data;
+    // Guardar sesión corporativa
+    setEnterpriseToken(token);
+    
+    if (!enterprise.onboarding_ended) {
+      navigate("/enterprise/onboarding");
+    } else {
+      navigate("/enterprise/dashboard");
+    }
+  }}
+  onError={() => {
+    console.error("Error al autenticar con Google");
+  }}
+/>
+```
+
+### 2. Onboarding Corporativo en 3 Pasos (`/enterprise/onboarding`)
+- **Paso 1: Identidad Corporativa:** Razón Social (`name`), NIF/CIF opcional (`cif`), Sector de actividad (`sector`) y Número de empleados (`employee_count`).
+- **Paso 2: Presencia Digital & Contacto:** URL de la página web (`website`), Teléfono (`phone`) y Persona o departamento de contacto (`contact_person`).
+- **Paso 3: Sede & Propósito:** Descripción corporativa (`description`, min. 10 car.), Ubicación/Ciudad (`location`), Dirección (`address_line1`) y Código Postal (`postal_code`).
+- **Envío (`PUT`):** Ejecuta `PUT /api/enterprises/:id` enviando los atributos y `onboarding_ended: true`.
+
+### 3. Salvaguarda de Propiedad Anti-IDOR en el `PUT`
+- El cliente siempre utiliza el identificador de la propia empresa en sesión (`enterprise.id`).
+- El backend (`isEnterpriseOrAdmin`) verifica que `req.enterprise.id === req.params.id`. Si se detecta un intento de modificar otra empresa, rechaza la solicitud con código `403 Forbidden`.
+- Si el NIF/CIF o web se dejan vacíos, se persisten como `null` para respetar la restricción `UNIQUE` en base de datos.
+
+### 4. Guardia de Navegación (`EnterpriseProtectedRoutes`)
+- Si un usuario con sesión corporativa intenta acceder directamente a `/enterprise/dashboard`, `/enterprise/events`, etc., teniendo `onboarding_ended: false`, el frontend lo redirige automáticamente a `/enterprise/onboarding`.
+- Si el onboarding ya está completado e intenta volver a `/enterprise/onboarding`, se le redirige al Dashboard.
+
+### 5. Edición Posterior ("Perfil & Sede" en `/enterprise/profile`)
+- La empresa puede acceder en todo momento desde el Sidebar corporativo a la pantalla de perfil para modificar cualquiera de sus datos mediante el mismo método `PUT`.
+
+---
+
+## 4. Alternancia de Dashboard (Dashboard Switcher)
 
 Para los usuarios que son empleados o administradores (`permissions.can_switch_dashboard === true`), la barra superior de navegación (o el drawer lateral en móvil) debe incluir un botón o selector de modo:
 

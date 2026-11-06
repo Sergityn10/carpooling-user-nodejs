@@ -2,6 +2,12 @@ import dotenv from "dotenv";
 import prisma from "../lib/prisma.js";
 dotenv.config();
 
+function getSafeLogo(rawLogo) {
+  if (!rawLogo || typeof rawLogo !== "string") return null;
+  if (rawLogo.length <= 10000) return rawLogo;
+  return null;
+}
+
 async function getAllCompanies(req, res) {
   try {
     const { search, page = 1, limit = 20 } = req.query;
@@ -54,7 +60,7 @@ async function getAllCompanies(req, res) {
       email: e.email,
       phone: e.phone,
       website: e.website,
-      logo: e.logo,
+      logo: getSafeLogo(e.logo),
       description: e.description,
       cif: e.cif,
       created_at: e.created_at,
@@ -109,7 +115,6 @@ async function getCompanyById(req, res) {
           platformEvents: {
             include: { tags: { include: { tag: true } } },
           },
-          serviceEvents: true,
         },
       });
 
@@ -127,7 +132,7 @@ async function getCompanyById(req, res) {
           email: enterprise.email,
           phone: enterprise.phone,
           website: enterprise.website,
-          logo: enterprise.logo,
+          logo: getSafeLogo(enterprise.logo),
           description: enterprise.description,
           is_enterprise: true,
           events: enterprise.platformEvents || [],

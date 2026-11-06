@@ -16,14 +16,22 @@ const EnterpriseBaseSchema = z.object({
   name: z
     .string({ required_error: "El nombre de la empresa es obligatorio" })
     .min(2, "El nombre de la empresa debe tener al menos 2 caracteres")
-    .max(255, "El nombre no puede superar los 255 caracteres"),
+    .max(255, "El nombre no puede superar los 255 caracteres")
+    .optional()
+    .nullable(),
   description: z
-    .string({ required_error: "La descripción es obligatoria" })
-    .min(10, "La descripción debe tener al menos 10 caracteres"),
+    .string()
+    .min(10, "La descripción debe tener al menos 10 caracteres")
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   location: z
-    .string({ required_error: "La ubicación de la empresa es obligatoria" })
-    .min(3, "La ubicación debe tener al menos 3 caracteres")
-    .max(255),
+    .string()
+    .min(2, "La ubicación debe tener al menos 2 caracteres")
+    .max(255)
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   email: z
     .string({ required_error: "El correo electrónico es obligatorio" })
     .email("El formato del correo electrónico no es válido")
@@ -37,25 +45,61 @@ const EnterpriseBaseSchema = z.object({
       strongPasswordRegex,
       "La contraseña debe contener al menos una mayúscula, una minúscula, un número y un carácter especial (@$!%*?&_-#)"
     ),
-  phone: z.string().max(30).optional().nullable(),
-  cif: z.string().max(50).optional().nullable(),
-  website: z.string().max(255).optional().nullable(),
-  logo: z.string().optional().nullable(),
-  contact_person: z.string().max(255).optional().nullable(),
-  sector: z.string().max(100).optional().nullable(),
+  phone: z.string().max(30).optional().nullable().or(z.literal("")),
+  cif: z.string().max(50).optional().nullable().or(z.literal("")),
+  website: z.string().max(255).optional().nullable().or(z.literal("")),
+  logo: z.string().optional().nullable().or(z.literal("")),
+  contact_person: z.string().max(255).optional().nullable().or(z.literal("")),
+  sector: z.string().max(100).optional().nullable().or(z.literal("")),
   employee_count: z.number().int().positive().optional().nullable(),
-  address_line1: z.string().max(255).optional().nullable(),
-  address_line2: z.string().max(255).optional().nullable(),
-  city: z.string().max(120).optional().nullable(),
-  province: z.string().max(120).optional().nullable(),
-  postal_code: z.string().max(20).optional().nullable(),
+  address_line1: z.string().max(255).optional().nullable().or(z.literal("")),
+  address_line2: z.string().max(255).optional().nullable().or(z.literal("")),
+  city: z.string().max(120).optional().nullable().or(z.literal("")),
+  province: z.string().max(120).optional().nullable().or(z.literal("")),
+  postal_code: z.string().max(20).optional().nullable().or(z.literal("")),
   country: z.string().min(2).max(2).default("ES"),
   verified: z.boolean().optional(),
+  onboarding_ended: z.boolean().optional(),
   is_active: z.boolean().optional(),
 });
 
-// Alta creada por el administrador
-const EnterpriseCreateSchema = EnterpriseBaseSchema;
+// Auto-registro público para empresas: únicamente correo y contraseña requeridos
+const EnterpriseRegisterSchema = z.object({
+  email: z
+    .string({ required_error: "El correo electrónico es obligatorio" })
+    .email("El formato del correo electrónico no es válido")
+    .max(255)
+    .toLowerCase(),
+  password: z
+    .string({ required_error: "La contraseña es obligatoria" })
+    .min(8, "La contraseña debe tener al menos 8 caracteres")
+    .max(128, "La contraseña no puede superar los 128 caracteres")
+    .regex(
+      strongPasswordRegex,
+      "La contraseña debe contener al menos una mayúscula, una minúscula, un número y un carácter especial (@$!%*?&_-#)"
+    ),
+  name: z
+    .string()
+    .min(2, "El nombre de la empresa debe tener al menos 2 caracteres")
+    .max(255)
+    .optional()
+    .nullable(),
+});
+
+// Alta creada por el administrador (requiere los campos fundamentales)
+const EnterpriseCreateSchema = EnterpriseBaseSchema.extend({
+  name: z
+    .string({ required_error: "El nombre de la empresa es obligatorio" })
+    .min(2, "El nombre de la empresa debe tener al menos 2 caracteres")
+    .max(255, "El nombre no puede superar los 255 caracteres"),
+  description: z
+    .string({ required_error: "La descripción es obligatoria" })
+    .min(10, "La descripción debe tener al menos 10 caracteres"),
+  location: z
+    .string({ required_error: "La ubicación de la empresa es obligatoria" })
+    .min(3, "La ubicación debe tener al menos 3 caracteres")
+    .max(255),
+});
 
 // Login de la organización
 const EnterpriseLoginSchema = z.object({
@@ -120,6 +164,14 @@ const EnterpriseQueryFilterSchema = z.object({
     .optional(),
 });
 
+// Autenticación directa por ID Token de Google para Organizaciones
+const EnterpriseGoogleAuthSchema = z.object({
+  id_token: z
+    .string({ required_error: "El token de Google (id_token) es obligatorio" })
+    .min(1, "El token de Google no puede estar vacío"),
+  method: z.enum(["login", "register", "auto"]).default("auto").optional(),
+});
+
 export const EnterpriseSchemas = {
   validateEnterpriseCreate: (data) => EnterpriseCreateSchema.safeParse(data),
   validateEnterpriseLogin: (data) => EnterpriseLoginSchema.safeParse(data),
@@ -129,8 +181,10 @@ export const EnterpriseSchemas = {
   validateAdminResetPassword: (data) =>
     AdminResetPasswordSchema.safeParse(data),
   validateQueryFilters: (data) => EnterpriseQueryFilterSchema.safeParse(data),
-  // Compatibilidad con código previo
-  validateEnterpriseRegister: (data) => EnterpriseCreateSchema.safeParse(data),
+  // Auto-registro público para empresas
+  validateEnterpriseRegister: (data) => EnterpriseRegisterSchema.safeParse(data),
   validateEnterprisePartialWithoutSensitive: (data) =>
     EnterpriseUpdateSchema.safeParse(data),
+  validateEnterpriseGoogleAuth: (data) =>
+    EnterpriseGoogleAuthSchema.safeParse(data),
 };

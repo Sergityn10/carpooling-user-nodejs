@@ -10,6 +10,7 @@ import { notificationsService } from "../services/notificationsService.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import parseUTCDate from "../utils/parseUTCDate.js";
+import { cacheService } from "../services/cacheService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
@@ -256,6 +257,11 @@ const createCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     payment_intent_data: {
       application_fee_amount: pricing.application_fee_cents,
       capture_method: "manual",
+      payment_method_options: {
+        card: {
+          request_extended_authorization: "if_available",
+        },
+      },
       transfer_data: {
         destination: recipient.stripe_account,
       },
@@ -461,6 +467,11 @@ const resumeCheckoutPaymentIntent = catchAsync(async (req, res, next) => {
     payment_intent_data: {
       application_fee_amount: pricing.application_fee_cents,
       capture_method: "manual",
+      payment_method_options: {
+        card: {
+          request_extended_authorization: "if_available",
+        },
+      },
       transfer_data: {
         destination: destinationAccount,
       },
@@ -1139,12 +1150,31 @@ const createBillingPortal = catchAsync(async (req, res, next) => {
 });
 
 const getCashBalance = catchAsync(async (req, res, next) => {
-  let stripe_account = req.user.stripe_account;
+  const stripe_account =
+    req.user?.stripe_account || req.user?.stripe_account_id;
+  const userId = req.user?.id;
+
   if (!stripe_account) {
     return next(
       new AppError("You dont have an account", 404, "STRIPE_ACCOUNT_NOT_FOUND"),
     );
   }
+
+  const isForceRefresh =
+    req.query?.force === "true" ||
+    req.headers?.["cache-control"] === "no-cache";
+  const cacheKey = `stripe:balance:${userId || stripe_account}`;
+
+  // 1. Comprobar caché si no es refresco forzado
+  if (!isForceRefresh) {
+    const cached = await cacheService.get(cacheKey);
+    if (cached) {
+      res.set("Cache-Control", "private, max-age=30");
+      return res.status(200).json(JSON.parse(cached));
+    }
+  }
+
+  // 2. Si no está en caché o es forzado, consultar Stripe Connect
   const cashBalance = await stripe.balance.retrieve({
     stripeAccount: stripe_account,
   });
@@ -1159,13 +1189,26 @@ const getCashBalance = catchAsync(async (req, res, next) => {
   const pendingAmount = pendingEuros
     ? (pendingEuros.amount / 100).toFixed(2)
     : "0.00";
-  return res.status(200).send({
+
+  const responsePayload = {
     status: "Success",
     message: "Cash balance retrieved successfully",
     cashBalance,
     availableAmount,
     pendingAmount,
-  });
+  };
+
+  // Registrar vinculación cuenta-usuario para invalidación reactiva
+  if (userId) {
+    cacheService.registerUserAccount(stripe_account, userId);
+  }
+
+  // 3. Guardar en caché con expiración de 60 segundos
+  await cacheService.set(cacheKey, JSON.stringify(responsePayload), "EX", 60);
+
+  // 4. Cabecera HTTP de caché privada (30 segundos)
+  res.set("Cache-Control", "private, max-age=30");
+  return res.status(200).json(responsePayload);
 });
 
 const getWalletBalance = catchAsync(async (req, res, next) => {
@@ -1562,6 +1605,21 @@ const captureTripPayments = catchAsync(async (req, res, next) => {
   });
 });
 
+const triggerAutoCapture = catchAsync(async (req, res, next) => {
+  const thresholdDays = req.body?.thresholdDays
+    ? parseInt(req.body.thresholdDays, 10)
+    : undefined;
+  const { autoCaptureService } = await import(
+    "../services/autoCaptureService.js"
+  );
+  const result = await autoCaptureService.runAutoCaptureOnce({ thresholdDays });
+  return res.status(200).json({
+    status: "Success",
+    message: "Auto-capture job executed successfully",
+    result,
+  });
+});
+
 const cancelPaymentIntent = catchAsync(async (req, res, next) => {
   const paymentIntentId =
     req.body?.paymentIntentId ??
@@ -1600,14 +1658,51 @@ const cancelPaymentIntent = catchAsync(async (req, res, next) => {
     });
   }
 
-  if (currentStatus === "captured") {
-    return next(
-      new AppError(
-        "El pago ha sido ya realizado y no se puede cancelar.",
-        409,
-        "PAYMENT_INTENT_ALREADY_COMPLETED",
-      ),
-    );
+  if (currentStatus === "succeeded" || currentStatus === "captured") {
+    try {
+      console.log(
+        `[cancelPaymentIntent] El pago ${paymentIntentId} ya está capturado (${currentStatus}). Ejecutando reembolso...`,
+      );
+      const refund = await stripe.refunds.create({
+        payment_intent: paymentIntentId,
+        reverse_transfer: true,
+        refund_application_fee: true,
+      });
+
+      await prisma.paymentIntent.update({
+        where: { stripe_payment_id: paymentIntentId },
+        data: { state: "refunded" },
+      });
+
+      const idReserva =
+        current.metadata?.id_reserva ?? current.metadata?.idReserva ?? null;
+      if (idReserva) {
+        const { eventBus } = await import("../services/eventBus.js");
+        await eventBus.paymentIntentCanceled(
+          paymentIntentId,
+          String(idReserva),
+          "refunded",
+        );
+      }
+
+      return res.status(200).send({
+        status: "Success",
+        message: "Payment intent refunded successfully",
+        refund,
+      });
+    } catch (refundError) {
+      console.error(
+        "[cancelPaymentIntent] Error al procesar reembolso en Stripe:",
+        refundError?.message ?? refundError,
+      );
+      return next(
+        new AppError(
+          `No se pudo procesar el reembolso en Stripe: ${refundError?.message ?? "Error desconocido"}`,
+          500,
+          "PAYMENT_REFUND_FAILED",
+        ),
+      );
+    }
   }
 
   let canceled;
@@ -2422,6 +2517,11 @@ const getPaymentIntentCheckoutLink = catchAsync(async (req, res, next) => {
     payment_intent_data: {
       application_fee_amount: pricing.application_fee_cents,
       capture_method: "manual",
+      payment_method_options: {
+        card: {
+          request_extended_authorization: "if_available",
+        },
+      },
       transfer_data: {
         destination: destinationAccount,
       },
@@ -2744,6 +2844,7 @@ export const methods = {
   createPaymentIntent,
   capturePaymentIntent,
   captureTripPayments,
+  triggerAutoCapture,
   cancelPaymentIntent,
   createSetupIntent,
   createPayout,

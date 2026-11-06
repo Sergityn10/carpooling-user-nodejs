@@ -42,13 +42,43 @@ async function reviseEnterprise(req) {
 
     if (!enterpriseId && !userId && !email) return false;
 
+    const enterpriseAuthSelect = {
+      id: true,
+      name: true,
+      email: true,
+      password: true,
+      phone: true,
+      cif: true,
+      website: true,
+      location: true,
+      description: true,
+      contact_person: true,
+      sector: true,
+      employee_count: true,
+      address_line1: true,
+      address_line2: true,
+      city: true,
+      province: true,
+      postal_code: true,
+      country: true,
+      verified: true,
+      onboarding_ended: true,
+      is_active: true,
+      is_deleted: true,
+      deleted_at: true,
+      role_id: true,
+      role: true,
+      created_at: true,
+      updated_at: true,
+    };
+
     let enterprise = null;
 
     // 1. Si el token tiene enterprise_id explícito
     if (enterpriseId) {
       enterprise = await prisma.enterprise.findUnique({
         where: { id: enterpriseId },
-        include: { role: true },
+        select: enterpriseAuthSelect,
       });
     }
 
@@ -56,7 +86,7 @@ async function reviseEnterprise(req) {
     if (!enterprise && email) {
       enterprise = await prisma.enterprise.findUnique({
         where: { email },
-        include: { role: true },
+        select: enterpriseAuthSelect,
       });
     }
 
@@ -66,14 +96,14 @@ async function reviseEnterprise(req) {
       // Probar si targetUserId existe directamente en enterprises
       enterprise = await prisma.enterprise.findUnique({
         where: { id: targetUserId },
-        include: { role: true },
+        select: enterpriseAuthSelect,
       });
 
       // Si no es empresa directa, buscar membresía corporativa activa del usuario
       if (!enterprise) {
         const member = await prisma.enterpriseMember.findFirst({
           where: { user_id: targetUserId, status: "ACTIVE" },
-          include: { enterprise: { include: { role: true } } },
+          include: { enterprise: { select: enterpriseAuthSelect } },
         });
         if (member?.enterprise) {
           enterprise = member.enterprise;

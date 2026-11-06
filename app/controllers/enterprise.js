@@ -47,6 +47,29 @@ async function patchMe(req, res) {
   delete updates.role_id;
   delete updates.password;
 
+  const nullableFields = [
+    "cif",
+    "website",
+    "phone",
+    "logo",
+    "location",
+    "description",
+    "contact_person",
+    "sector",
+    "address_line1",
+    "address_line2",
+    "city",
+    "province",
+    "postal_code",
+  ];
+  for (const field of nullableFields) {
+    if (updates[field] !== undefined) {
+      if (typeof updates[field] === "string" && updates[field].trim() === "") {
+        updates[field] = null;
+      }
+    }
+  }
+
   if (Object.keys(updates).length === 0) {
     return res
       .status(400)
@@ -107,7 +130,13 @@ async function createEnterpriseByAdmin(req, res) {
     country,
     verified,
     is_active,
+    onboarding_ended,
   } = result.data;
+
+  const sanitizeNull = (val) =>
+    typeof val === "string" && val.trim() === "" ? null : (val ?? null);
+
+  const cleanCif = sanitizeNull(cif);
 
   const exists = await prisma.enterprise.findUnique({
     where: { email },
@@ -121,9 +150,9 @@ async function createEnterpriseByAdmin(req, res) {
     });
   }
 
-  if (cif) {
+  if (cleanCif) {
     const existingCif = await prisma.enterprise.findUnique({
-      where: { cif },
+      where: { cif: cleanCif },
       select: { id: true },
     });
     if (existingCif) {
@@ -144,21 +173,22 @@ async function createEnterpriseByAdmin(req, res) {
         password: hash,
         description,
         location,
-        phone: phone ?? null,
-        cif: cif ?? null,
-        website: website ?? null,
-        logo: logo ?? null,
-        contact_person: contact_person ?? null,
-        sector: sector ?? null,
+        phone: sanitizeNull(phone),
+        cif: cleanCif,
+        website: sanitizeNull(website),
+        logo: sanitizeNull(logo),
+        contact_person: sanitizeNull(contact_person),
+        sector: sanitizeNull(sector),
         employee_count: employee_count ?? null,
-        address_line1: address_line1 ?? null,
-        address_line2: address_line2 ?? null,
-        city: city ?? null,
-        province: province ?? null,
-        postal_code: postal_code ?? null,
+        address_line1: sanitizeNull(address_line1),
+        address_line2: sanitizeNull(address_line2),
+        city: sanitizeNull(city),
+        province: sanitizeNull(province),
+        postal_code: sanitizeNull(postal_code),
         country: country ?? "ES",
-        verified: verified ?? false,
+        verified: verified ?? true,
         is_active: is_active ?? true,
+        onboarding_ended: onboarding_ended ?? true,
         is_deleted: false,
         role_id: 3,
       },
@@ -169,7 +199,7 @@ async function createEnterpriseByAdmin(req, res) {
     return res.status(201).json({
       status: "Success",
       message: "Organización dada de alta con éxito.",
-      enterprise: domainEntity.toSafeJSON(),
+      enterprise: domainEntity.toAdminDetailJSON(),
     });
   } catch (error) {
     console.error("Error al crear organización:", error);
@@ -336,6 +366,14 @@ async function updateEnterprise(req, res) {
       });
     }
 
+    // Doble validación de seguridad anti-IDOR: Si no es admin, solo puede modificar su propia empresa
+    if (!req.isAdmin && (!req.enterprise || req.enterprise.id !== id)) {
+      return res.status(403).json({
+        status: "Error",
+        message: "No tienes permisos para acceder o modificar los datos de otra organización.",
+      });
+    }
+
     const updates = { ...result.data };
 
     // Si quien actualiza NO es administrador, despojar de campos restringidos
@@ -349,6 +387,30 @@ async function updateEnterprise(req, res) {
 
     delete updates.id;
     delete updates.password;
+
+    // Sanitización de campos opcionales: cadenas vacías a null para evitar violaciones de clave única o inconsistencias
+    const nullableFields = [
+      "cif",
+      "website",
+      "phone",
+      "logo",
+      "location",
+      "description",
+      "contact_person",
+      "sector",
+      "address_line1",
+      "address_line2",
+      "city",
+      "province",
+      "postal_code",
+    ];
+    for (const field of nullableFields) {
+      if (updates[field] !== undefined) {
+        if (typeof updates[field] === "string" && updates[field].trim() === "") {
+          updates[field] = null;
+        }
+      }
+    }
 
     // Validación de unicidad de email si se actualiza
     if (updates.email && updates.email !== existing.email) {
