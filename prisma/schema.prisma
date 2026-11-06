@@ -347,6 +347,7 @@ model Enterprise {
   postal_code    String?   @db.VarChar(20)
   country        String    @default("ES") @db.Char(2)
   verified       Boolean   @default(false)
+  onboarding_ended Boolean @default(false)
   is_active      Boolean   @default(true)
   is_deleted     Boolean   @default(false)
   deleted_at     DateTime?
@@ -439,6 +440,7 @@ model ServiceEvent {
   participants ServiceEventParticipant[]
 
   @@index([enterprise_id])
+  @@index([enterprise_id, created_at])
   @@index([status])
   @@index([start_at])
   @@map("service_events")
@@ -639,6 +641,7 @@ model PlatformEvent {
 
   @@index([company_id])
   @@index([enterprise_id])
+  @@index([enterprise_id, created_at])
   @@index([unique_code])
   @@map("platform_events")
 }

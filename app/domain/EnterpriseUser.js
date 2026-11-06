@@ -29,8 +29,13 @@ export class EnterpriseUser extends BaseUser {
     this.postalCode = data.postal_code ?? null;
     this.country = data.country ?? "ES";
     this.verified = Boolean(data.verified);
+    this.onboarding_ended = Boolean(data.onboarding_ended);
     this.serviceEvents = data.serviceEvents ?? [];
     this.platformEvents = data.platformEvents ?? [];
+  }
+
+  get isOnboardingEnded() {
+    return Boolean(this.onboarding_ended);
   }
 
   /**
@@ -106,6 +111,7 @@ export class EnterpriseUser extends BaseUser {
         phone: this.phone ?? null,
         website: this.website ?? null,
         verified: this.verified,
+        onboarding_ended: this.onboarding_ended,
       },
       natural_person: null,
       permissions: this.getPermissions(),
@@ -138,6 +144,7 @@ export class EnterpriseUser extends BaseUser {
       postalCode: this.postalCode,
       country: this.country,
       verified: this.verified,
+      onboarding_ended: this.onboarding_ended,
       isActive: this.isActive,
       role: "enterprise",
       createdAt: this.createdAt,

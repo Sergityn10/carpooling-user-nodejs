@@ -5,6 +5,7 @@ import {
   normalizePlatformEvent,
 } from "../../app/adapters/serviceEventAdapter.js";
 import { GeoPoint } from "../../app/utils/geoPoint.js";
+import { ServiceEventSchemas } from "../../app/schemas/service_event.js";
 
 describe("Búsqueda y Adaptación de Eventos Corporativos (service_events) con R-Tree y Search", () => {
   describe("1. Adaptador Polimórfico de Eventos (serviceEventAdapter)", () => {
@@ -246,6 +247,157 @@ describe("Búsqueda y Adaptación de Eventos Corporativos (service_events) con R
       const cleanCode = code.replace(/^ORG-/i, "");
       assert.equal(cleanCode, "BD32480C");
       assert.ok(uuid.toUpperCase().startsWith(cleanCode));
+    });
+  });
+
+  describe("5. Validación de Esquemas Zod y Coordenadas para Service Events", () => {
+    test("validateServiceEventCreate debe admitir y parsear latitude y longitude numéricas", () => {
+      const payload = {
+        name: "Jornada Sostenible Madrid",
+        location: "Paseo de la Castellana 50, Madrid",
+        startDate: "2026-12-10T09:00:00Z",
+        endDate: "2026-12-10T18:00:00Z",
+        description: "Reunión de empresa sobre movilidad",
+        latitude: 40.4354,
+        longitude: -3.6892,
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventCreate(payload);
+      assert.ok(result.success, "La validación debe ser exitosa");
+      assert.equal(result.data.latitude, 40.4354);
+      assert.equal(result.data.longitude, -3.6892);
+      assert.equal(result.data.name, "Jornada Sostenible Madrid");
+      assert.equal(result.data.location, "Paseo de la Castellana 50, Madrid");
+    });
+
+    test("validateServiceEventCreate debe convertir latitude y longitude en formato string a número", () => {
+      const payload = {
+        name: "Sede Barcelona",
+        location: "Avinguda Diagonal 200, Barcelona",
+        startDate: "2026-12-15T10:00:00Z",
+        description: "Encuentro tecnológico",
+        latitude: "41.4036",
+        longitude: "2.1744",
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventCreate(payload);
+      assert.ok(result.success);
+      assert.equal(typeof result.data.latitude, "number");
+      assert.equal(typeof result.data.longitude, "number");
+      assert.equal(result.data.latitude, 41.4036);
+      assert.equal(result.data.longitude, 2.1744);
+    });
+
+    test("validateServiceEventCreate debe permitir coordenadas nulas o no proporcionadas sin fallar", () => {
+      const payload = {
+        name: "Evento Sin GPS",
+        location: "Calle Mayor 1",
+        startDate: "2026-12-20T10:00:00Z",
+        description: "",
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventCreate(payload);
+      assert.ok(result.success);
+      assert.equal(result.data.latitude, null);
+      assert.equal(result.data.longitude, null);
+    });
+
+    test("validateServiceEventPartial debe mapear aliases de actualización (name->title, location->address_line1)", () => {
+      const updatePayload = {
+        name: "Nuevo Nombre Corporativo",
+        location: "Nueva Dirección 123",
+        startDate: "2026-12-20T11:00:00Z",
+        endDate: "2026-12-20T20:00:00Z",
+        latitude: 40.4168,
+        longitude: -3.7038,
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventPartial(updatePayload);
+      assert.ok(result.success);
+      assert.equal(result.data.title, "Nuevo Nombre Corporativo");
+      assert.equal(result.data.address_line1, "Nueva Dirección 123");
+      assert.equal(result.data.start_at, "2026-12-20T11:00:00Z");
+      assert.equal(result.data.end_at, "2026-12-20T20:00:00Z");
+      assert.equal(result.data.latitude, 40.4168);
+      assert.equal(result.data.longitude, -3.7038);
+    });
+
+    test("validateServiceEventCreate debe admitir y normalizar attendees_estimate numérico (ej. 20)", () => {
+      const payload = {
+        name: "Jornada 20 Personas",
+        location: "Calle Alcalá 10",
+        startDate: "2026-12-10T09:00:00Z",
+        attendees_estimate: 20,
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventCreate(payload);
+      assert.ok(result.success);
+      assert.equal(result.data.attendees_estimate, 20);
+    });
+
+    test("validateServiceEventCreate debe convertir strings numéricos a enteros en attendees_estimate", () => {
+      const payload = {
+        name: "Jornada String",
+        location: "Calle Gran Vía 1",
+        startDate: "2026-12-10T09:00:00Z",
+        attendees_estimate: "20",
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventCreate(payload);
+      assert.ok(result.success);
+      assert.equal(result.data.attendees_estimate, 20);
+    });
+
+    test("validateServiceEventCreate debe mapear aliases max_attendees y asistentes a attendees_estimate", () => {
+      const payloadMax = {
+        name: "Jornada Max",
+        location: "Calle Mayor 5",
+        startDate: "2026-12-10T09:00:00Z",
+        max_attendees: 20,
+      };
+
+      const resMax = ServiceEventSchemas.validateServiceEventCreate(payloadMax);
+      assert.ok(resMax.success);
+      assert.equal(resMax.data.attendees_estimate, 20);
+      assert.equal(resMax.data.max_attendees, undefined);
+
+      const payloadAsistentes = {
+        name: "Jornada Asistentes",
+        location: "Calle Mayor 5",
+        startDate: "2026-12-10T09:00:00Z",
+        asistentes: "20",
+      };
+
+      const resAsistentes = ServiceEventSchemas.validateServiceEventCreate(payloadAsistentes);
+      assert.ok(resAsistentes.success);
+      assert.equal(resAsistentes.data.attendees_estimate, 20);
+    });
+
+    test("validateServiceEventPartial debe mapear max_attendees a attendees_estimate", () => {
+      const updatePayload = {
+        max_attendees: 35,
+      };
+
+      const result = ServiceEventSchemas.validateServiceEventPartial(updatePayload);
+      assert.ok(result.success);
+      assert.equal(result.data.attendees_estimate, 35);
+      assert.equal(result.data.max_attendees, undefined);
+    });
+
+    test("mapServiceEventToStandardEvent debe incluir attendees_estimate y max_attendees en el contrato unificado", () => {
+      const eventWithAttendees = {
+        id: "srv-20",
+        enterprise_id: "ent-1",
+        title: "Evento 20 Plazas",
+        start_at: new Date("2026-12-10T09:00:00Z"),
+        end_at: new Date("2026-12-10T18:00:00Z"),
+        address_line1: "Calle Sol 1",
+        attendees_estimate: 20,
+      };
+
+      const mapped = mapServiceEventToStandardEvent(eventWithAttendees);
+      assert.equal(mapped.attendees_estimate, 20);
+      assert.equal(mapped.max_attendees, 20);
     });
   });
 });

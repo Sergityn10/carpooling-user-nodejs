@@ -8,9 +8,9 @@ Documentación de los endpoints de la API REST del backend de carpooling para us
 |---|---|---|---|
 | [auth.md](./auth.md) | Autenticación de usuarios | `/api/auth` | Login unificado, login clásico, registro, logout, refresh, validación, OAuth con Google |
 | [users.md](./users.md) | Gestión de usuarios | `/api/users` | Listar, obtener, actualizar, eliminar usuarios, búsqueda por ubicación |
-| [enterprise_auth.md](./enterprise_auth.md) | Autenticación de empresas | `/api/enterprise/auth` | Registro, login, logout, validación de empresas |
+| [enterprise_auth.md](./enterprise_auth.md) | Autenticación de empresas | `/api/enterprise/auth` | Auto-registro público (email + pass), login, logout, validación y flag de onboarding |
 | [enterprise_members.md](./enterprise_members.md) | Miembros e Invitaciones de Empresas | `/api/enterprise`, `/api/user` | Invitaciones por email (RabbitMQ), validación de tokens, asignación de roles, desvinculación |
-| [enterprise.md](./enterprise.md) | Gestión de empresas | `/api/enterprise` | Perfil de empresa (ver y actualizar) |
+| [enterprise.md](./enterprise.md) | Gestión de empresas | `/api/enterprise`, `/api/enterprises/:id` | Onboarding corporativo, PUT y PATCH con protección anti-IDOR, perfil y métricas |
 | [events.md](./events.md) | Eventos y Etiquetas | `/api/events`, `/api/enterprise/events` | Listado unificado (plataforma + empresas), búsqueda espacial R-Tree (`nearby`), creación autónoma por empresas |
 | [enterprise_service_events.md](./enterprise_service_events.md) | Eventos de servicio | `/api/enterprise/service-events` | CRUD de eventos de servicio empresariales e indexación espacial |
 | [cars.md](./cars.md) | Coches | `/api/cars` | CRUD de coches de usuarios |

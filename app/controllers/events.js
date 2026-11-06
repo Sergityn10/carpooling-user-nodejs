@@ -91,17 +91,20 @@ const getAllEvents = catchAsync(async (req, res, next) => {
     }
   }
 
+  const fetchLimit = skip + limitNum;
+
   // Ejecución en paralelo de ambas consultas
   const platformPromise = prisma.platformEvent.findMany({
     where: platformWhere,
     include: {
-      company: { select: { id: true, name: true, logo: true, website: true } },
+      company: { select: { id: true, name: true, website: true } },
       enterprise: {
-        select: { id: true, name: true, logo: true, website: true },
+        select: { id: true, name: true, website: true },
       },
       tags: { include: { tag: true } },
     },
     orderBy: { start_date: "asc" },
+    take: fetchLimit,
   });
   const platformCountPromise = prisma.platformEvent.count({
     where: platformWhere,
@@ -112,10 +115,11 @@ const getAllEvents = catchAsync(async (req, res, next) => {
         where: serviceWhere,
         include: {
           enterprise: {
-            select: { id: true, name: true, logo: true, website: true },
+            select: { id: true, name: true, website: true },
           },
         },
         orderBy: { start_at: "asc" },
+        take: fetchLimit,
       })
     : Promise.resolve([]);
 
@@ -731,6 +735,7 @@ const getMyEnterpriseEvents = catchAsync(async (req, res, next) => {
   const pageNum = Math.max(1, parseInt(page, 10));
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
   const skip = (pageNum - 1) * limitNum;
+  const fetchLimit = skip + limitNum;
 
   const [platformEvents, totalPlatform, serviceEvents, totalService] =
     await Promise.all([
@@ -739,22 +744,24 @@ const getMyEnterpriseEvents = catchAsync(async (req, res, next) => {
         include: {
           tags: { include: { tag: true } },
           enterprise: {
-            select: { id: true, name: true, logo: true, website: true },
+            select: { id: true, name: true, website: true },
           },
           _count: { select: { participants: true } },
         },
         orderBy: { start_date: "asc" },
+        take: fetchLimit,
       }),
       prisma.platformEvent.count({ where: { enterprise_id: enterpriseId } }),
       prisma.serviceEvent.findMany({
         where: { enterprise_id: enterpriseId },
         include: {
           enterprise: {
-            select: { id: true, name: true, logo: true, website: true },
+            select: { id: true, name: true, website: true },
           },
           _count: { select: { participants: true } },
         },
         orderBy: { start_at: "asc" },
+        take: fetchLimit,
       }),
       prisma.serviceEvent.count({ where: { enterprise_id: enterpriseId } }),
     ]);

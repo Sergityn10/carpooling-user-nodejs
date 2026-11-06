@@ -32,6 +32,7 @@ import { methods as account } from "./controllers/account.js";
 import errorHandler from "./middlewares/errorHandler.js";
 import AppError from "./utils/appError.js";
 import { paymentEventHandler } from "./services/paymentEventHandler.js";
+import { autoCaptureService } from "./services/autoCaptureService.js";
 import { OAuth2Client } from "google-auth-library";
 import { getUserData } from "./providers/google-auth.js";
 import jsonwebtoken from "jsonwebtoken";
@@ -236,6 +237,25 @@ app.get("/api/enterprise/auth/validate", (req, res) =>
   enterpriseAuthentication.validate(req, res),
 );
 
+// --- Google OAuth for Enterprise ---
+app.post("/api/enterprise/auth/oauth", enterpriseAuthentication.oauthGoogle);
+app.get(
+  "/api/enterprise/auth/oauth/register",
+  enterpriseAuthentication.oauthGoogleRegisterCallback,
+);
+app.get(
+  "/api/enterprise/auth/oauth/login",
+  enterpriseAuthentication.oauthGoogleLoginCallback,
+);
+app.post(
+  "/api/enterprise/auth/google",
+  enterpriseAuthentication.oauthGoogleToken,
+);
+app.post(
+  "/api/enterprise/auth/oauth/google",
+  enterpriseAuthentication.oauthGoogleToken,
+);
+
 // --- Enterprise Self-Service ---
 app.get(
   "/api/enterprise/me",
@@ -323,6 +343,11 @@ app.get(
   "/api/enterprise/service-events/:id",
   enterpriseAuthorization.isEnterpriseLoged,
   (req, res) => enterpriseServiceEvents.getById(req, res),
+);
+app.get(
+  "/api/enterprise/service-events/:id/metrics",
+  enterpriseAuthorization.isEnterpriseLoged,
+  (req, res) => enterpriseServiceEvents.getMetrics(req, res),
 );
 app.patch(
   "/api/enterprise/service-events/:id",
@@ -734,6 +759,10 @@ app.post(
   payment.captureTripPayments,
 );
 app.post(
+  "/api/payment/auto-capture-expiring",
+  payment.triggerAutoCapture,
+);
+app.post(
   "/api/payment/payment-intent/cancel",
   authorization.isLoged,
   payment.cancelPaymentIntent,
@@ -1046,5 +1075,7 @@ paymentEventHandler.start().catch((err) => {
     err?.message ?? err,
   );
 });
+
+autoCaptureService.startAutoCaptureJob();
 
 export default app;

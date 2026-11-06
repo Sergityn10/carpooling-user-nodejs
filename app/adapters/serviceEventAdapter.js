@@ -4,6 +4,16 @@
  * compatible con los componentes del frontend (EventCard, EventDetail, SearchTrayectos).
  */
 
+function getSafeLogo(rawLogo) {
+  if (!rawLogo || typeof rawLogo !== "string") return null;
+  // Si es una URL o cadena base64 ligera (< 10KB), se conserva
+  if (rawLogo.length <= 10000) {
+    return rawLogo;
+  }
+  // Omitir cadenas base64 masivas en contratos de eventos para evitar bloat de decenas de MB
+  return null;
+}
+
 export function mapServiceEventToStandardEvent(se, distanceKm = null) {
   if (!se) return null;
 
@@ -15,7 +25,7 @@ export function mapServiceEventToStandardEvent(se, distanceKm = null) {
       : undefined;
 
   const enterpriseName = se.enterprise?.name || "Organización";
-  const enterpriseLogo = se.enterprise?.logo || null;
+  const enterpriseLogo = getSafeLogo(se.enterprise?.logo);
   const enterpriseWebsite = se.enterprise?.website || null;
 
   const locationName =
@@ -50,6 +60,10 @@ export function mapServiceEventToStandardEvent(se, distanceKm = null) {
     end_date: se.end_at || se.end_date || se.start_at || se.start_date,
     latitude: se.latitude != null ? Number(se.latitude) : null,
     longitude: se.longitude != null ? Number(se.longitude) : null,
+    attendees_estimate:
+      se.attendees_estimate != null ? Number(se.attendees_estimate) : null,
+    max_attendees:
+      se.attendees_estimate != null ? Number(se.attendees_estimate) : null,
     location_name: locationName,
     address: se.address_line1 || locationName,
     venue_name: se.venue_name || null,
@@ -69,8 +83,8 @@ export function mapServiceEventToStandardEvent(se, distanceKm = null) {
       ? {
           id: se.enterprise.id,
           name: se.enterprise.name,
-          logo: se.enterprise.logo,
-          website: se.enterprise.website,
+          logo: enterpriseLogo,
+          website: enterpriseWebsite,
         }
       : {
           id: se.enterprise_id,
@@ -80,6 +94,8 @@ export function mapServiceEventToStandardEvent(se, distanceKm = null) {
         },
     tags,
     chat_id: se.chat_id || null,
+    attendees_estimate: se.attendees_estimate ?? null,
+    max_attendees: se.attendees_estimate ?? null,
     ...(resolvedDistance !== undefined ? { distance_km: resolvedDistance } : {}),
     event_type: "service_event",
     is_corporate: true,
@@ -104,25 +120,42 @@ export function normalizePlatformEvent(pe, distanceKm = null) {
     pe.company_name ||
     pe.enterprise?.name ||
     "Organizador";
-  const companyLogo =
-    pe.company?.logo || pe.company_logo || pe.enterprise?.logo || null;
+  const companyLogo = getSafeLogo(
+    pe.company?.logo || pe.company_logo || pe.enterprise?.logo,
+  );
   const companyWebsite =
     pe.company?.website || pe.url || pe.enterprise?.website || null;
 
   const locationName =
     pe.location_name || pe.address || companyName || "Recinto Principal";
 
+  const safePe = { ...pe };
+  if (safePe.enterprise && safePe.enterprise.logo) {
+    safePe.enterprise = {
+      ...safePe.enterprise,
+      logo: getSafeLogo(safePe.enterprise.logo),
+    };
+  }
+  if (safePe.company && safePe.company.logo) {
+    safePe.company = {
+      ...safePe.company,
+      logo: getSafeLogo(safePe.company.logo),
+    };
+  }
+
   return {
-    ...pe,
+    ...safePe,
     name: pe.name,
     title: pe.name,
     latitude: pe.latitude != null ? Number(pe.latitude) : null,
     longitude: pe.longitude != null ? Number(pe.longitude) : null,
+    attendees_estimate: null,
+    max_attendees: null,
     location_name: locationName,
     company_id: pe.company_id || pe.enterprise_id,
     company_name: companyName,
     company_logo: companyLogo,
-    company: pe.company || {
+    company: safePe.company || {
       id: pe.company_id || pe.enterprise_id,
       name: companyName,
       logo: companyLogo,

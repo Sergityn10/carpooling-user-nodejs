@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { eventBus } from "../services/eventBus.js";
 import { sseManager } from "../services/sseManager.js";
 import { notificationsService } from "../services/notificationsService.js";
+import { cacheService } from "../services/cacheService.js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const STRIPE_PERCENT = parseFloat(process.env.STRIPE_FEE_PERCENT ?? "0.015");
@@ -186,7 +187,10 @@ async function handleStripeEvent(req, res) {
   if (jsonData.type === "payment_intent.created") {
     await handlePaymentIntentCreated(jsonData.data);
   }
-  if (jsonData.type === "payment_intent.updated") {
+  if (
+    jsonData.type === "payment_intent.updated" ||
+    jsonData.type === "payment_intent.amount_capturable_updated"
+  ) {
     await handlePaymentIntentUpdated(jsonData.data);
   }
   if (jsonData.type === "payment_intent.succeeded") {
@@ -207,8 +211,26 @@ async function handleStripeEvent(req, res) {
   if (jsonData.type === "customer.deleted") {
     await handleCustomerDeleted(jsonData.data);
   }
-  if (jsonData.type === "charge.succeeded") {
+  if (
+    jsonData.type === "charge.succeeded" ||
+    jsonData.type === "charge.captured"
+  ) {
     await handleChargeSucceeded(jsonData.data);
+    const charge = jsonData.data?.object;
+    const dest =
+      charge?.destination ||
+      charge?.transfer_data?.destination ||
+      charge?.metadata?.destination_account ||
+      jsonData.account;
+    if (dest) {
+      await cacheService.invalidateBalance({ stripeAccountId: dest });
+    }
+  }
+  if (jsonData.type === "balance.available") {
+    const accountId = jsonData.account || jsonData.data?.object?.account;
+    if (accountId) {
+      await cacheService.invalidateBalance({ stripeAccountId: accountId });
+    }
   }
   if (String(jsonData.type ?? "").startsWith("payout.")) {
     await handlePayoutEvent(jsonData);
@@ -240,6 +262,7 @@ async function handlePayoutEvent(stripeEvent) {
     return;
   }
 
+  const targetAccount = payout.destination || stripeEvent?.account || null;
   const stripePayoutId = payout.id ?? null;
   const stripeEventId = stripeEvent.id ?? null;
   const stripeStatus = payout.status ?? null;
@@ -284,6 +307,13 @@ async function handlePayoutEvent(stripeEvent) {
 
       if (!walletPayout) {
         return;
+      }
+
+      if (walletPayout) {
+        await cacheService.invalidateBalance({
+          userId: walletPayout.user_id,
+          stripeAccountId: targetAccount,
+        });
       }
 
       const prevStatus = String(walletPayout.status ?? "");
@@ -596,6 +626,13 @@ async function handlePaymentIntentSucceeded(jsonData) {
     receiverUserId,
     platformUserId,
   });
+
+  if (receiverUserId || destinationAccount) {
+    await cacheService.invalidateBalance({
+      userId: receiverUserId,
+      stripeAccountId: destinationAccount,
+    });
+  }
 
   if (!payerUserId || !receiverUserId) {
     console.error("[webhook] Cannot resolve payerUserId or receiverUserId:", {

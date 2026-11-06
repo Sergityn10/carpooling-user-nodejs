@@ -75,6 +75,71 @@ async function handleGoogleAuthentication(idToken, consents, req, res, next) {
   const name = payload.name || "";
   const picture = payload.picture || "";
 
+  const authType = req.body?.auth_type;
+
+  // Si se solicita autenticación como Organización / Empresa
+  if (authType === "enterprise") {
+    let rawEnterprise = await prisma.enterprise.findUnique({
+      where: { email },
+      include: { role: true },
+    });
+
+    if (!rawEnterprise) {
+      const crypto = await import("crypto");
+      const { methods: utils } = await import("../utils/hashing.js");
+      const randomPassword = crypto.randomBytes(24).toString("hex") + "A1!";
+      const passwordHash = await utils.hashValue(10, randomPassword);
+      const defaultName =
+        name.trim().length > 0 ? name.trim() : email.split("@")[0];
+
+      rawEnterprise = await prisma.enterprise.create({
+        data: {
+          name: defaultName,
+          email,
+          password: passwordHash,
+          verified: true,
+          onboarding_ended: false,
+          is_active: true,
+          is_deleted: false,
+          role_id: 3,
+          country: "ES",
+        },
+        include: { role: true },
+      });
+    }
+
+    const domainEnterprise =
+      IdentityFactory.createFromEnterprise(rawEnterprise);
+
+    if (domainEnterprise.isDeleted) {
+      return next(
+        new AppError(
+          "Esta organización ha sido dada de baja. Contacta con el administrador del sistema.",
+          403,
+          "ORGANIZATION_DELETED",
+        ),
+      );
+    }
+
+    if (!domainEnterprise.isActive) {
+      return next(
+        new AppError(
+          "Esta cuenta de organización se encuentra temporalmente desactivada.",
+          403,
+          "ORGANIZATION_INACTIVE",
+        ),
+      );
+    }
+
+    const token = domainEnterprise.generateJwtToken();
+    res.cookie("enterprise_access_token", token, getEnterpriseCookieOptions());
+    res.cookie("access_token", token, buildAccessCookieOptions());
+
+    return res
+      .status(200)
+      .json(domainEnterprise.toUnifiedAuthResponse({ token }));
+  }
+
   let rawUser = await prisma.user.findFirst({
     where: { OR: [{ email }, { google_id: googleId }] },
     include: {

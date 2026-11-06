@@ -87,20 +87,43 @@ async function handleReservaPaymentRequired(event) {
 
   const sender = await prisma.user.findUnique({
     where: { id: String(user_id) },
-    select: { stripe_customer_account: true, stripe_account: true },
+    select: { id: true, email: true, name: true, surname: true, stripe_customer_account: true, stripe_account: true },
   });
 
   if (!sender) {
     console.error("[paymentEventHandler] Sender user not found:", user_id);
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "sender_user_not_found");
     return;
   }
 
+  // Si el usuario no dispone de cuenta cliente en Stripe, se crea automáticamente
   if (!sender.stripe_customer_account) {
-    console.error(
-      "[paymentEventHandler] Sender has no Stripe customer account:",
-      user_id,
-    );
-    return;
+    try {
+      console.log("[paymentEventHandler] Sender has no Stripe customer account, creating one...", user_id);
+      const fullName =
+        [sender.name, sender.surname].filter(Boolean).join(" ") ||
+        "Pasajero YouConnext";
+      const customer = await stripe.customers.create({
+        email: sender.email || undefined,
+        name: fullName,
+        metadata: {
+          userId: String(sender.id),
+        },
+      });
+      await prisma.user.update({
+        where: { id: String(user_id) },
+        data: { stripe_customer_account: customer.id },
+      });
+      sender.stripe_customer_account = customer.id;
+      console.log("[paymentEventHandler] Created Stripe customer:", customer.id);
+    } catch (customerError) {
+      console.error(
+        "[paymentEventHandler] Failed to create Stripe customer:",
+        customerError?.message ?? customerError,
+      );
+      await eventBus.paymentIntentFailed(null, String(id_reserva), "customer_creation_failed");
+      return;
+    }
   }
 
   const recipient = await prisma.user.findUnique({
@@ -113,6 +136,7 @@ async function handleReservaPaymentRequired(event) {
       "[paymentEventHandler] Recipient user not found:",
       recipient_user_id,
     );
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "recipient_user_not_found");
     return;
   }
 
@@ -121,9 +145,11 @@ async function handleReservaPaymentRequired(event) {
       "[paymentEventHandler] Recipient has no Stripe Connect account:",
       recipient_user_id,
     );
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "recipient_no_stripe_account");
     return;
   }
 
+  let canReceiveTransfers = false;
   const recipientAccount = await prisma.account.findUnique({
     where: { stripe_account_id: recipient.stripe_account },
     select: {
@@ -133,11 +159,44 @@ async function handleReservaPaymentRequired(event) {
     },
   });
 
-  if (!recipientAccount || !recipientAccount.transfers_enabled) {
+  if (recipientAccount?.transfers_enabled) {
+    canReceiveTransfers = true;
+  } else {
+    try {
+      const stripeAcc = await stripe.accounts.retrieve(recipient.stripe_account);
+      if (stripeAcc?.transfers_enabled || stripeAcc?.charges_enabled) {
+        canReceiveTransfers = true;
+        await prisma.account
+          .upsert({
+            where: { stripe_account_id: recipient.stripe_account },
+            create: {
+              stripe_account_id: recipient.stripe_account,
+              charges_enabled: !!stripeAcc.charges_enabled,
+              transfers_enabled: !!stripeAcc.transfers_enabled,
+              details_submitted: !!stripeAcc.details_submitted,
+            },
+            update: {
+              charges_enabled: !!stripeAcc.charges_enabled,
+              transfers_enabled: !!stripeAcc.transfers_enabled,
+              details_submitted: !!stripeAcc.details_submitted,
+            },
+          })
+          .catch(() => {});
+      }
+    } catch (accErr) {
+      console.warn(
+        "[paymentEventHandler] Error retrieving recipient account from Stripe:",
+        accErr?.message ?? accErr,
+      );
+    }
+  }
+
+  if (!canReceiveTransfers) {
     console.error(
       "[paymentEventHandler] Recipient Stripe onboarding incomplete:",
       recipient_user_id,
     );
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "recipient_onboarding_incomplete");
     return;
   }
 
@@ -181,37 +240,52 @@ async function handleReservaPaymentRequired(event) {
     stripe_fee_cents: String(pricing.stripe_fee_cents),
   };
 
-  const checkout_session = await stripe.checkout.sessions.create({
-    customer: sender.stripe_customer_account,
-    line_items: [
-      {
-        price_data: {
-          currency,
-          product_data: {
-            name: "Reserva de trayecto",
-            description:
-              description || `Pago a ${recipient.name || "conductor"}`,
+  let checkout_session;
+  try {
+    checkout_session = await stripe.checkout.sessions.create({
+      customer: sender.stripe_customer_account,
+      line_items: [
+        {
+          price_data: {
+            currency,
+            product_data: {
+              name: "Reserva de trayecto",
+              description:
+                description || `Pago a ${recipient.name || "conductor"}`,
+            },
+            unit_amount: pricing.total_cents,
           },
-          unit_amount: pricing.total_cents,
+          quantity: 1,
         },
-        quantity: 1,
-      },
-    ],
-    payment_intent_data: {
-      application_fee_amount: pricing.application_fee_cents,
-      capture_method: "manual",
-      transfer_data: {
-        destination: recipient.stripe_account,
+      ],
+      payment_intent_data: {
+        application_fee_amount: pricing.application_fee_cents,
+        capture_method: "manual",
+        payment_method_options: {
+          card: {
+            request_extended_authorization: "if_available",
+          },
+        },
+        transfer_data: {
+          destination: recipient.stripe_account,
+        },
+        metadata: sharedMetadata,
       },
       metadata: sharedMetadata,
-    },
-    metadata: sharedMetadata,
-    submit_type: "pay",
-    mode: "payment",
-    expand: ["payment_intent"],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-  });
+      submit_type: "pay",
+      mode: "payment",
+      expand: ["payment_intent"],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
+  } catch (stripeError) {
+    console.error(
+      "[paymentEventHandler] Error creating Stripe checkout session:",
+      stripeError?.message ?? stripeError,
+    );
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "stripe_checkout_error");
+    return;
+  }
 
   const paymentIntentId =
     typeof checkout_session.payment_intent === "string"
@@ -386,15 +460,36 @@ async function handleReservaPaymentResume(event) {
 
   const sender = await prisma.user.findUnique({
     where: { id: String(user_id) },
-    select: { stripe_customer_account: true, stripe_account: true },
+    select: { id: true, email: true, name: true, surname: true, stripe_customer_account: true, stripe_account: true },
   });
 
-  if (!sender?.stripe_customer_account) {
-    console.error(
-      "[paymentEventHandler] Sender has no Stripe customer account:",
-      user_id,
-    );
+  if (!sender) {
+    console.error("[paymentEventHandler] Sender user not found for resume:", user_id);
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "sender_user_not_found");
     return;
+  }
+
+  if (!sender.stripe_customer_account) {
+    try {
+      console.log("[paymentEventHandler] Sender has no Stripe customer account for resume, creating...", user_id);
+      const fullName =
+        [sender.name, sender.surname].filter(Boolean).join(" ") ||
+        "Pasajero YouConnext";
+      const customer = await stripe.customers.create({
+        email: sender.email || undefined,
+        name: fullName,
+        metadata: { userId: String(sender.id) },
+      });
+      await prisma.user.update({
+        where: { id: String(user_id) },
+        data: { stripe_customer_account: customer.id },
+      });
+      sender.stripe_customer_account = customer.id;
+    } catch (cusErr) {
+      console.error("[paymentEventHandler] Failed to create Stripe customer for resume:", cusErr?.message ?? cusErr);
+      await eventBus.paymentIntentFailed(null, String(id_reserva), "customer_creation_failed");
+      return;
+    }
   }
 
   const destinationAccount =
@@ -451,39 +546,54 @@ async function handleReservaPaymentResume(event) {
     stripe_fee_cents: String(pricing.stripe_fee_cents),
   };
 
-  const checkout_session = await stripe.checkout.sessions.create({
-    customer: sender.stripe_customer_account,
-    line_items: [
-      {
-        price_data: {
-          currency: String(paymentIntent.currency || currency),
-          product_data: {
-            name: "Reserva de trayecto (pago pendiente)",
-            description:
-              description ||
-              paymentIntent.description ||
-              `Pago a ${recipient?.name || "conductor"}`,
+  let checkout_session;
+  try {
+    checkout_session = await stripe.checkout.sessions.create({
+      customer: sender.stripe_customer_account,
+      line_items: [
+        {
+          price_data: {
+            currency: String(paymentIntent.currency || currency),
+            product_data: {
+              name: "Reserva de trayecto (pago pendiente)",
+              description:
+                description ||
+                paymentIntent.description ||
+                `Pago a ${recipient?.name || "conductor"}`,
+            },
+            unit_amount: pricing.total_cents,
           },
-          unit_amount: pricing.total_cents,
+          quantity: 1,
         },
-        quantity: 1,
-      },
-    ],
-    payment_intent_data: {
-      application_fee_amount: pricing.application_fee_cents,
-      capture_method: "manual",
-      transfer_data: {
-        destination: destinationAccount,
+      ],
+      payment_intent_data: {
+        application_fee_amount: pricing.application_fee_cents,
+        capture_method: "manual",
+        payment_method_options: {
+          card: {
+            request_extended_authorization: "if_available",
+          },
+        },
+        transfer_data: {
+          destination: destinationAccount,
+        },
+        metadata: sharedMetadata,
       },
       metadata: sharedMetadata,
-    },
-    metadata: sharedMetadata,
-    submit_type: "pay",
-    mode: "payment",
-    expand: ["payment_intent"],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-  });
+      submit_type: "pay",
+      mode: "payment",
+      expand: ["payment_intent"],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
+  } catch (stripeError) {
+    console.error(
+      "[paymentEventHandler] Error creating resumed Stripe checkout session:",
+      stripeError?.message ?? stripeError,
+    );
+    await eventBus.paymentIntentFailed(null, String(id_reserva), "stripe_checkout_error");
+    return;
+  }
 
   const newPaymentIntentId =
     typeof checkout_session.payment_intent === "string"
