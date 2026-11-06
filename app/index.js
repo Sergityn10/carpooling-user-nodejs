@@ -73,6 +73,31 @@ const secret_id = process.env.GOOGLE_OAUTH;
 app.use(express.static(path.join(__dirname, "public")));
 app.set("trust proxy", 1); // <--- ESTO ES VITAL EN VERCEL
 app.use(helmet({ crossOriginResourcePolicy: false }));
+
+const corsOptions = {
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:4001",
+    "http://localhost:3000",
+    "https://www.youconnext.es",
+    "https://app.youconnext.es",
+    "https://admin.youconnext.es",
+    "https://youconnext-nextjs.vercel.app",
+    "https://carpooling-webapp-ten.vercel.app",
+    "https://youconnext-landing-page.vercel.app",
+
+    origin,
+    origin_without,
+    trayectos_origin,
+    messsages_origin,
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+app.use(cors(corsOptions));
+
 app.use(morgan("dev")); // Middleware para registrar las peticiones HTTP en la consola
 app.use("/api/", generalApiLimiter);
 
@@ -93,31 +118,6 @@ app.use(
   }),
 );
 app.use(cookieParser());
-
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://localhost:4001",
-      "http://localhost:3000",
-      "https://www.youconnext.es",
-      "https://app.youconnext.es",
-      "https://admin.youconnext.es",
-      "https://youconnext-nextjs.vercel.app",
-      "https://carpooling-webapp-ten.vercel.app",
-      "https://youconnext-landing-page.vercel.app",
-
-      origin,
-      origin_without,
-      trayectos_origin,
-      messsages_origin,
-    ], // Cambia esto a la URL de tu frontend
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    credentials: true, // Permite el uso de cookies
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-);
 
 // Endpoint de salud y diagnóstico de disponibilidad (Healthcheck para K8s / PM2 / Uptime monitors)
 app.get("/health", (req, res) => {
