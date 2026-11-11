@@ -25,6 +25,8 @@ import {
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { eventBus } from "../services/eventBus.js";
+import { getUserData } from "../providers/google-auth.js";
+import { methods as dbUtils } from "../utils/db.js";
 dotenv.config();
 const client_id = process.env.GOOGLE_CLIENT_ID;
 const secret_id = process.env.GOOGLE_OAUTH;
@@ -767,11 +769,188 @@ const existEmail = catchAsync(async (req, res, next) => {
   });
 });
 
+function getFrontendUrl() {
+  const rawOrigin = process.env.ORIGIN || "http://localhost:5173/";
+  return rawOrigin.endsWith("/") ? rawOrigin : `${rawOrigin}/`;
+}
+
+function getBackendOrigin() {
+  const rawOrigin = process.env.MY_ORIGIN || "http://localhost:4000/";
+  return rawOrigin.endsWith("/") ? rawOrigin : `${rawOrigin}/`;
+}
+
+/**
+ * Callback de redirección de Google OAuth para registro de usuario.
+ * GET /api/auth/oauth/register
+ */
+const oauthGoogleRegisterCallback = async (req, res) => {
+  const code = req.query.code;
+  const stateRaw = req.query.state;
+  const frontendUrl = getFrontendUrl();
+  try {
+    let consents = null;
+    if (stateRaw) {
+      try {
+        consents = JSON.parse(
+          Buffer.from(stateRaw, "base64").toString("utf-8"),
+        );
+      } catch {
+        consents = null;
+      }
+    }
+
+    const consentCheck = validateConsents(consents);
+    if (!consentCheck.valid) {
+      res.redirect(`${frontendUrl}register?error=consents_required`);
+      return;
+    }
+
+    const backendRedirectUrl = `${getBackendOrigin()}api/auth/oauth/register`;
+    const oauth2Client = new OAuth2Client(
+      client_id,
+      secret_id,
+      backendRedirectUrl,
+    );
+
+    const result = await oauth2Client.getToken(code);
+    const { tokens } = result;
+    await oauth2Client.setCredentials(tokens);
+    const googleUserData = await getUserData(tokens.access_token);
+
+    const comprobarUser = await dbUtils.existUser(googleUserData.email);
+
+    if (comprobarUser) {
+      res.redirect(`${frontendUrl}register?error=user_exists`);
+      return;
+    }
+
+    const userResult = await dbUtils.createUser(
+      {
+        email: googleUserData.email,
+        password: "",
+        name: googleUserData.name,
+      },
+      "google",
+      googleUserData.sub,
+    );
+
+    if (userResult?.status !== "Success") {
+      res.redirect(`${frontendUrl}register?error=auth_failed`);
+      return;
+    }
+
+    const ipAddress =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      null;
+    const userAgent = req.headers["user-agent"] || null;
+    await saveLegalConsents(
+      userResult.user.id,
+      consents,
+      ipAddress,
+      userAgent,
+    );
+
+    const payload = {
+      userId: userResult?.user?.id,
+      email: googleUserData.email,
+      role: userResult?.user?.role?.name ?? "user",
+    };
+    const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
+      expiresIn: process.env.EXPIRATION_TIME,
+      algorithm: JWT_ALGORITHM,
+    });
+
+    const finalRedirectUrl = `${frontendUrl}register/personal-info?token=${jwtToken}&userId=${encodeURIComponent(String(userResult?.user?.id ?? ""))}&img_perfil=${encodeURIComponent(String(googleUserData.picture ?? ""))}`;
+    res.cookie("access_token", jwtToken, {
+      expires: new Date(
+        Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
+      ),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      path: "/",
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
+    });
+    await issueRefreshToken(res, userResult?.user?.id);
+    res.redirect(finalRedirectUrl);
+  } catch (error) {
+    console.error("Error en el flujo OAuth:", error);
+    const errorRedirectUrl = `${frontendUrl}register?error=auth_failed`;
+    res.redirect(errorRedirectUrl);
+  }
+};
+
+/**
+ * Callback de redirección de Google OAuth para inicio de sesión de usuario.
+ * GET /api/auth/oauth/login
+ */
+const oauthGoogleLoginCallback = async (req, res) => {
+  const code = req.query.code;
+  const frontendUrl = getFrontendUrl();
+  const backendRedirectUrl = `${getBackendOrigin()}api/auth/oauth/login`;
+  const errorUrl = `${frontendUrl}login`;
+  try {
+    const oauth2Client = new OAuth2Client(
+      client_id,
+      secret_id,
+      backendRedirectUrl,
+    );
+
+    const result = await oauth2Client.getToken(code);
+    const { tokens } = result;
+    await oauth2Client.setCredentials(tokens);
+    const googleUserData = await getUserData(tokens.access_token);
+
+    const comprobarUser = await dbUtils.getUser(googleUserData.email);
+
+    if (!comprobarUser) {
+      res.redirect(`${errorUrl}?error=user_no_exists`);
+      return;
+    }
+    if (comprobarUser.auth_method !== "google") {
+      res.redirect(`${errorUrl}?error=auth_method_not_google`);
+      return;
+    }
+
+    const payload = {
+      userId: comprobarUser.id,
+      email: comprobarUser.email,
+      role: comprobarUser.role?.name ?? "user",
+    };
+    const jwtToken = jsonwebtoken.sign(payload, PRIVATE_KEY, {
+      expiresIn: process.env.EXPIRATION_TIME,
+      algorithm: JWT_ALGORITHM,
+    });
+
+    const finalRedirectUrl = `${frontendUrl}?token=${jwtToken}&userId=${encodeURIComponent(String(comprobarUser.id ?? ""))}&img_perfil=${encodeURIComponent(String(googleUserData.picture ?? ""))}`;
+    res.cookie("access_token", jwtToken, {
+      expires: new Date(
+        Date.now() + process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
+      ),
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      maxAge: process.env.JWT_COOKIES_EXPIRATION_TIME * 60 * 1000,
+    });
+
+    await issueRefreshToken(res, comprobarUser.id);
+    res.redirect(finalRedirectUrl);
+  } catch (error) {
+    console.error("Error en el flujo OAuth:", error);
+    const errorRedirectUrl = `${errorUrl}?error=auth_failed`;
+    res.redirect(errorRedirectUrl);
+  }
+};
+
 export const methods = {
   login,
   register,
   oauthGoogle,
   oauthGoogleAndroid,
+  oauthGoogleRegisterCallback,
+  oauthGoogleLoginCallback,
   logout,
   refresh,
   validate,

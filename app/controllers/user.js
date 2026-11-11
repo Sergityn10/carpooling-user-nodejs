@@ -869,7 +869,75 @@ const getPublicUserProfile = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Listado administrativo de todos los usuarios (solo admin).
+ */
+const getAllUsers = async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      include: { role: true },
+    });
+    const decryptedRows = users.map((r) => {
+      const decrypted = cryptoUtils.decryptFields(
+        r,
+        cryptoUtils.USER_SENSITIVE_FIELDS,
+      );
+      return { ...decrypted, role: r.role?.name ?? "user" };
+    });
+    return res.status(200).json(UserDTO.toAdminList(decryptedRows));
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    return res
+      .status(500)
+      .json({ status: "Error", message: "Failed to fetch users" });
+  }
+};
+
+/**
+ * Consulta privada de perfil de usuario por ID (solo propietario o admin).
+ */
+const getUserById = async (req, res) => {
+  const { id } = req.params;
+  const isOwnerOrAdmin =
+    String(req.user?.id) === String(id) || req.user?.role?.name === "admin";
+  if (!isOwnerOrAdmin) {
+    return res.status(403).json({
+      status: "Error",
+      message: "No tienes autorización para acceder a este perfil de usuario.",
+    });
+  }
+
+  try {
+    const findUser = await prisma.user.findUnique({
+      where: { id },
+      include: { role: true },
+    });
+    if (!findUser) {
+      return res
+        .status(404)
+        .json({ status: "Error", message: "User not found" });
+    }
+    const decrypted = cryptoUtils.decryptFields(
+      findUser,
+      cryptoUtils.USER_SENSITIVE_FIELDS,
+    );
+    return res.status(200).json(
+      UserDTO.toPrivate({
+        ...decrypted,
+        role: findUser.role?.name ?? "user",
+      }),
+    );
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    return res
+      .status(500)
+      .json({ status: "Error", message: "Failed to fetch user" });
+  }
+};
+
 export const methods = {
+  getAllUsers,
+  getUserById,
   updateUserPatch,
   removeUser,
   getUserInfo,
