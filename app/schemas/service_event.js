@@ -56,10 +56,17 @@ const ServiceEventSchema = z.object({
 
 const ServiceEventSchemaCreate = z
   .object({
-    name: z.string().min(1),
-    location: z.string().min(1),
-    startDate: z.string().min(1),
+    name: z.string().optional(),
+    title: z.string().optional(),
+    location: z.string().optional(),
+    address: z.string().optional(),
+    address_line1: z.string().optional(),
+    startDate: z.string().optional(),
+    start_date: z.string().optional(),
+    start_at: z.string().optional(),
     endDate: z.string().nullable().optional(),
+    end_date: z.string().nullable().optional(),
+    end_at: z.string().nullable().optional(),
     description: z.string().max(5000).nullable().optional().default(""),
     image: z.string().nullable().optional(),
     latitude: coordinateField,
@@ -72,6 +79,17 @@ const ServiceEventSchemaCreate = z
   })
   .transform((data) => {
     const result = { ...data };
+    result.name = (result.name || result.title || "").trim();
+    result.location = (
+      result.location ||
+      result.address ||
+      result.address_line1 ||
+      ""
+    ).trim();
+    result.startDate =
+      result.startDate || result.start_date || result.start_at || "";
+    result.endDate =
+      result.endDate || result.end_date || result.end_at || null;
     const estimate =
       result.attendees_estimate ??
       result.max_attendees ??
@@ -80,8 +98,30 @@ const ServiceEventSchemaCreate = z
     result.attendees_estimate = estimate;
     delete result.max_attendees;
     delete result.asistentes;
+    delete result.title;
+    delete result.address;
+    delete result.address_line1;
+    delete result.start_date;
+    delete result.start_at;
+    delete result.end_date;
+    delete result.end_at;
     return result;
-  });
+  })
+  .pipe(
+    z.object({
+      name: z.string().min(1, "El nombre del evento es obligatorio"),
+      location: z.string().min(1, "La ubicación o dirección es obligatoria"),
+      startDate: z.string().min(1, "La fecha de inicio es obligatoria"),
+      endDate: z.string().nullable().optional(),
+      description: z.string().max(5000).nullable().optional().default(""),
+      image: z.string().nullable().optional(),
+      latitude: coordinateField,
+      longitude: coordinateField,
+      venue_name: z.string().max(255).nullable().optional(),
+      city: z.string().max(120).nullable().optional(),
+      attendees_estimate: attendeesField,
+    })
+  );
 
 const ServiceEventSchemaPartial = z
   .object({
