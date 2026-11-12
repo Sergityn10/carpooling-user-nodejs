@@ -45,6 +45,7 @@ const EXPECTED_API_ENDPOINTS = [
   // Enterprise & Enterprises
   "POST /api/enterprise/auth/register",
   "POST /api/enterprise/auth/login",
+  "POST /api/enterprise/auth/logout",
   "GET /api/enterprise/auth/logout",
   "GET /api/enterprise/auth/validate",
   "POST /api/enterprise/auth/oauth",
@@ -320,7 +321,7 @@ describe("Estructura Modular de Rutas (app/routes/)", () => {
     await rabbitmq.close();
   });
 
-  it("debe registrar exactamente los 169 endpoints /api/* esperados sin duplicados ni omisiones", () => {
+  it("debe registrar exactamente los 170 endpoints /api/* esperados sin duplicados ni omisiones", () => {
     const actualRoutes = [
       ...extractRoutesFromRouter(webhookRoutes, "/api/webhook"),
       ...extractRoutesFromRouter(apiRoutes, "/api"),
@@ -348,7 +349,7 @@ describe("Estructura Modular de Rutas (app/routes/)", () => {
       [],
       `Se encontraron rutas inesperadas: ${unexpected.join(", ")}`,
     );
-    assert.equal(normalizedActual.length, 169);
+    assert.equal(normalizedActual.length, 170);
   });
 
   it("debe mantener las rutas estáticas antes que las parametrizadas en cada router", () => {

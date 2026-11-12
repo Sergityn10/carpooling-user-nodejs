@@ -13,6 +13,7 @@ const router = Router();
 // --- Enterprise Public Auth ---
 router.post("/auth/register", enterpriseAuthentication.register);
 router.post("/auth/login", enterpriseAuthentication.login);
+router.post("/auth/logout", enterpriseAuthentication.logout);
 router.get("/auth/logout", enterpriseAuthentication.logout);
 router.get("/auth/validate", enterpriseAuthentication.validate);
 

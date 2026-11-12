@@ -7,8 +7,11 @@ import prisma from "../lib/prisma.js";
 import { methods as utils } from "../utils/hashing.js";
 import { EnterpriseSchemas } from "../schemas/enterprise.js";
 import { enterpriseAuthorization } from "../middlewares/enterpriseAuthorization.js";
-import { PRIVATE_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
-import { authorization } from "../middlewares/authorization.js";
+import { PRIVATE_KEY, PUBLIC_KEY, JWT_ALGORITHM } from "../utils/jwtKeys.js";
+import {
+  authorization,
+  clearAccessCookie,
+} from "../middlewares/authorization.js";
 import { EnterpriseUser } from "../domain/EnterpriseUser.js";
 import { getUserData } from "../providers/google-auth.js";
 import AppError from "../utils/appError.js";
@@ -30,7 +33,7 @@ function getFrontendUrl() {
 }
 
 function getBackendOrigin() {
-  let be = process.env.MY_ORIGIN || "http://localhost:3000/";
+  let be = process.env.MY_ORIGIN || "http://localhost:4000/";
   return be.endsWith("/") ? be : `${be}/`;
 }
 
@@ -80,7 +83,8 @@ async function register(req, res) {
   }
 
   const hash = await utils.hashValue(10, password);
-  const defaultName = name && name.trim().length > 0 ? name.trim() : email.split("@")[0];
+  const defaultName =
+    name && name.trim().length > 0 ? name.trim() : email.split("@")[0];
 
   try {
     const enterprise = await prisma.enterprise.create({
@@ -114,7 +118,8 @@ async function register(req, res) {
     console.error("Error registrando empresa:", error);
     return res.status(500).json({
       status: "Error",
-      message: "No se pudo completar el registro de la empresa en la base de datos.",
+      message:
+        "No se pudo completar el registro de la empresa en la base de datos.",
     });
   }
 }
@@ -149,7 +154,8 @@ async function login(req, res) {
   if (enterprise.is_deleted) {
     return res.status(403).json({
       status: "Error",
-      message: "Esta organización ha sido dada de baja. Contacta con el administrador del sistema.",
+      message:
+        "Esta organización ha sido dada de baja. Contacta con el administrador del sistema.",
     });
   }
 
@@ -229,7 +235,8 @@ async function changePassword(req, res) {
 
     return res.status(200).json({
       status: "Success",
-      message: "Contraseña modificada correctamente con las directivas de seguridad requeridas.",
+      message:
+        "Contraseña modificada correctamente con las directivas de seguridad requeridas.",
     });
   } catch (error) {
     console.error("Error al actualizar la contraseña de la empresa:", error);
@@ -240,16 +247,63 @@ async function changePassword(req, res) {
   }
 }
 
+function getEnterpriseCookieClearOptions() {
+  const isProduction = process.env.NODE_ENV === "production";
+  return {
+    path: "/",
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+  };
+}
+
+function isEnterpriseAccessTokenCookie(req) {
+  const accessCookieToken = req?.cookies?.access_token;
+  if (!accessCookieToken) return false;
+
+  const enterpriseCookieToken = req?.cookies?.enterprise_access_token;
+  const authHeader = req?.headers?.authorization;
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.replace("Bearer ", "").trim()
+      : null;
+
+  if (
+    accessCookieToken === enterpriseCookieToken ||
+    accessCookieToken === bearerToken
+  ) {
+    return true;
+  }
+
+  try {
+    const decoded = jsonwebtoken.verify(accessCookieToken, PUBLIC_KEY, {
+      algorithms: [JWT_ALGORITHM],
+    });
+    return (
+      decoded?.role === "enterprise" ||
+      Boolean(decoded?.enterprise_id && !decoded?.userId)
+    );
+  } catch (_err) {
+    const decoded = jsonwebtoken.decode(accessCookieToken);
+    return Boolean(
+      decoded &&
+        typeof decoded === "object" &&
+        (decoded.role === "enterprise" ||
+          (decoded.enterprise_id && !decoded.userId)),
+    );
+  }
+}
+
 /**
  * Cierre de sesión de la organización.
  */
 async function logout(req, res) {
-  res.clearCookie("enterprise_access_token", {
-    path: "/",
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-  });
+  res.clearCookie("enterprise_access_token", getEnterpriseCookieClearOptions());
+
+  if (isEnterpriseAccessTokenCookie(req)) {
+    clearAccessCookie(res);
+  }
+
   return res.status(200).json({
     status: "Success",
     message: "Sesión cerrada correctamente.",
@@ -285,12 +339,10 @@ async function validate(req, res) {
       data: domainEntity.toSafeJSON(),
     });
   } catch (error) {
-    res.clearCookie("enterprise_access_token", {
-      path: "/",
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
+    res.clearCookie(
+      "enterprise_access_token",
+      getEnterpriseCookieClearOptions(),
+    );
     return res.status(401).json({
       status: "Error",
       message: "No se pudo verificar la sesión. Inicia sesión de nuevo.",
@@ -304,6 +356,8 @@ async function validate(req, res) {
  * POST /api/enterprise/auth/oauth?method=login|register
  */
 const oauthGoogle = catchAsync(async (req, res, next) => {
+  res.header("Access-Control-Allow-origin", `${process.env.ORIGIN}`);
+  res.header("Referrer-Policy", "no-referrer-when-downgrade");
   const method = req.query.method || req.body?.method;
   const backendOrigin = getBackendOrigin();
   let redirectUrl;
@@ -351,7 +405,9 @@ async function oauthGoogleRegisterCallback(req, res) {
 
   try {
     if (!code) {
-      return res.redirect(`${frontendUrl}enterprise/register?error=code_missing`);
+      return res.redirect(
+        `${frontendUrl}enterprise/register?error=code_missing`,
+      );
     }
 
     const oauth2Client = new OAuth2Client(
@@ -366,7 +422,9 @@ async function oauthGoogleRegisterCallback(req, res) {
 
     const googleUserData = await getUserData(tokens.access_token);
     if (!googleUserData || !googleUserData.email) {
-      return res.redirect(`${frontendUrl}enterprise/register?error=google_no_email`);
+      return res.redirect(
+        `${frontendUrl}enterprise/register?error=google_no_email`,
+      );
     }
 
     const email = googleUserData.email.toLowerCase().trim();
@@ -376,7 +434,9 @@ async function oauthGoogleRegisterCallback(req, res) {
     });
 
     if (existingEnterprise) {
-      return res.redirect(`${frontendUrl}enterprise/register?error=enterprise_exists`);
+      return res.redirect(
+        `${frontendUrl}enterprise/register?error=enterprise_exists`,
+      );
     }
 
     // Contraseña segura aleatoria para inicializar el registro
@@ -412,7 +472,10 @@ async function oauthGoogleRegisterCallback(req, res) {
     )}`;
     return res.redirect(finalRedirectUrl);
   } catch (error) {
-    console.error("Error en el flujo Google OAuth Register para Empresa:", error);
+    console.error(
+      "Error en el flujo Google OAuth Register para Empresa:",
+      error,
+    );
     return res.redirect(`${frontendUrl}enterprise/register?error=auth_failed`);
   }
 }
@@ -444,7 +507,9 @@ async function oauthGoogleLoginCallback(req, res) {
 
     const googleUserData = await getUserData(tokens.access_token);
     if (!googleUserData || !googleUserData.email) {
-      return res.redirect(`${frontendUrl}enterprise/login?error=google_no_email`);
+      return res.redirect(
+        `${frontendUrl}enterprise/login?error=google_no_email`,
+      );
     }
 
     const email = googleUserData.email.toLowerCase().trim();
@@ -455,15 +520,21 @@ async function oauthGoogleLoginCallback(req, res) {
     });
 
     if (!enterprise) {
-      return res.redirect(`${frontendUrl}enterprise/login?error=enterprise_not_found`);
+      return res.redirect(
+        `${frontendUrl}enterprise/login?error=enterprise_not_found`,
+      );
     }
 
     if (enterprise.is_deleted) {
-      return res.redirect(`${frontendUrl}enterprise/login?error=enterprise_deleted`);
+      return res.redirect(
+        `${frontendUrl}enterprise/login?error=enterprise_deleted`,
+      );
     }
 
     if (!enterprise.is_active) {
-      return res.redirect(`${frontendUrl}enterprise/login?error=enterprise_inactive`);
+      return res.redirect(
+        `${frontendUrl}enterprise/login?error=enterprise_inactive`,
+      );
     }
 
     const domainEntity = new EnterpriseUser(enterprise);

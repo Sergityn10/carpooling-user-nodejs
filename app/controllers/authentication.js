@@ -333,7 +333,7 @@ const oauthGoogle = catchAsync(async (req, res, next) => {
   res.header("Referrer-Policy", "no-referrer-when-downgrade");
   const method = req.query.method;
   let redirectUrl;
-  let origin = process.env.MY_ORIGIN;
+  const origin = getBackendOrigin();
   switch (method) {
     case "login":
       redirectUrl = `${origin}api/auth/oauth/login`;

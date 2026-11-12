@@ -121,6 +121,41 @@ describe("Google OAuth para Organizaciones / Empresas", () => {
       assert.equal(errorThrown.statusCode, 400);
       assert.equal(errorThrown.errorCode, "INVALID_OAUTH_METHOD");
     });
+
+    it("debe usar puerto 4000 por defecto cuando MY_ORIGIN no está definido y normalizar barra final", async () => {
+      const prevOrigin = process.env.MY_ORIGIN;
+      const runWithOrigin = async (originValue) => {
+        if (originValue === undefined) {
+          delete process.env.MY_ORIGIN;
+        } else {
+          process.env.MY_ORIGIN = originValue;
+        }
+        let jsonCalled = null;
+        await enterpriseAuth.oauthGoogle(
+          { query: { method: "login" } },
+          { status: () => ({ json: (d) => { jsonCalled = d; } }) },
+          () => {},
+        );
+        return new URL(jsonCalled.url).searchParams.get("redirect_uri");
+      };
+
+      try {
+        assert.equal(
+          await runWithOrigin(undefined),
+          "http://localhost:4000/api/enterprise/auth/oauth/login",
+        );
+        assert.equal(
+          await runWithOrigin("https://usuarios.youconnext.es"),
+          "https://usuarios.youconnext.es/api/enterprise/auth/oauth/login",
+        );
+      } finally {
+        if (prevOrigin === undefined) {
+          delete process.env.MY_ORIGIN;
+        } else {
+          process.env.MY_ORIGIN = prevOrigin;
+        }
+      }
+    });
   });
 
   describe("3. Redirección y Ruteo Inteligente Post-Autenticación", () => {
